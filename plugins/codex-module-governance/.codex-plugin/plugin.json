@@ -1,7 +1,7 @@
 {
   "name": "codex-module-governance",
-  "version": "0.2.0",
-  "description": "Private Codex module governance with safe new-project registration.",
+  "version": "0.3.0",
+  "description": "Private Codex module governance with safe project registration and a verified module ledger.",
   "author": {
     "name": "QIANYI"
   },
@@ -9,11 +9,11 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Codex 模块治理",
-    "shortDescription": "私有多任务施工治理与新项目建档。",
-    "longDescription": "为 Codex 模块提供仓库外私有建档、重复检查，以及后续任务、证据、冲突控制和恢复能力。",
+    "shortDescription": "私有多任务施工治理、建档与工程总账。",
+    "longDescription": "为 Codex 模块提供仓库外私有建档、唯一详细工程总账与不可覆盖回执，以及后续任务、证据、冲突控制和恢复能力。",
     "developerName": "QIANYI",
     "category": "Productivity",
-    "capabilities": ["Private project registration", "Duplicate detection"],
-    "defaultPrompt": "启动新项目建档：先检查旧版、半成品和平行机制，先不要派发或施工。"
+    "capabilities": ["Private project registration", "Verified module ledger", "Duplicate detection"],
+    "defaultPrompt": "读取 Codex 模块工程总账，先检查权限、回执完整性和硬停项，不要施工。"
   }
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dependency-free preflight for the manifest and bundled C02 Skill."""
+"""Dependency-free preflight for the manifest and bundled governance Skills."""
 
 import json
 import re
@@ -53,20 +53,32 @@ def main():
     if not isinstance(interface.get("capabilities"), list) or not all(str(item).strip() for item in interface["capabilities"]):
         fail("capabilities must be a non-empty string list")
 
-    skill_path = plugin_root / "skills" / "new-project-initializer" / "SKILL.md"
-    skill_contents = skill_path.read_text(encoding="utf-8")
-    if not skill_contents.startswith("---\n") or "\n---" not in skill_contents[4:]:
-        fail("C02 Skill frontmatter is missing or not closed")
-    frontmatter = skill_contents[4:skill_contents.find("\n---", 4)]
-    if not re.search(r"^name:\s*new-project-initializer\s*$", frontmatter, re.MULTILINE):
-        fail("C02 Skill name is missing")
-    if not re.search(r"^description:\s*\S", frontmatter, re.MULTILINE):
-        fail("C02 Skill description is missing")
+    skills = {
+        "new-project-initializer": "C02",
+        "engineering-ledger-manager": "C03",
+    }
+    for skill_name, stage in skills.items():
+        skill_root = plugin_root / "skills" / skill_name
+        skill_path = skill_root / "SKILL.md"
+        skill_contents = skill_path.read_text(encoding="utf-8")
+        if not skill_contents.startswith("---\n") or "\n---" not in skill_contents[4:]:
+            fail(f"{stage} Skill frontmatter is missing or not closed")
+        frontmatter = skill_contents[4:skill_contents.find("\n---", 4)]
+        if not re.search(rf"^name:\s*{re.escape(skill_name)}\s*$", frontmatter, re.MULTILINE):
+            fail(f"{stage} Skill name is missing")
+        if not re.search(r"^description:\s*\S", frontmatter, re.MULTILINE):
+            fail(f"{stage} Skill description is missing")
+
+    agent_manifest = plugin_root / "skills" / "engineering-ledger-manager" / "agents" / "openai.yaml"
+    agent_contents = agent_manifest.read_text(encoding="utf-8")
+    for required_line in ("interface:", "display_name:", "short_description:", "default_prompt:"):
+        if required_line not in agent_contents:
+            fail(f"C03 Skill agent metadata is missing {required_line}")
 
     for path in plugin_root.rglob("*"):
         if path.is_file() and "[TODO:" in path.read_text(encoding="utf-8", errors="ignore"):
             fail(f"unresolved placeholder in {path.relative_to(plugin_root)}")
-    print("Plugin manifest and C02 Skill contract preflight passed.")
+    print("Plugin manifest and C02/C03 Skill contract preflight passed.")
 
 
 if __name__ == "__main__":

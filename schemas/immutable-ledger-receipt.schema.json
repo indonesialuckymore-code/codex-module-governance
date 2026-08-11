@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/immutable-ledger-receipt.schema.json",
+  "title": "C03 immutable ledger receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "recordType", "receiptId", "createdAt", "projectId", "module", "writerId", "operation", "beforeRevision", "afterRevision", "beforeLedgerDigest", "afterLedgerDigest", "changeSummary", "afterLedger"],
+  "properties": {
+    "schemaVersion": { "const": "0.3.0" },
+    "recordType": { "const": "C03_IMMUTABLE_LEDGER_RECEIPT" },
+    "receiptId": { "type": "string", "minLength": 1 },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "projectId": { "type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$" },
+    "module": { "const": "codex" },
+    "writerId": { "const": "codex-module-central" },
+    "operation": { "type": "string", "minLength": 1 },
+    "beforeRevision": { "type": ["integer", "null"], "minimum": 0 },
+    "afterRevision": { "type": "integer", "minimum": 0 },
+    "beforeLedgerDigest": { "type": "string", "minLength": 1 },
+    "afterLedgerDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "changeSummary": { "type": "object" },
+    "afterLedger": { "type": "object" }
+  }
+}

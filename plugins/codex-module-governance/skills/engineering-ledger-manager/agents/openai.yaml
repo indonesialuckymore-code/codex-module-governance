@@ -1,0 +1,4 @@
+interface:
+  display_name: "工程总账管理器"
+  short_description: "维护 Codex 模块唯一详细工程总账、回执、状态与占用"
+  default_prompt: "使用 $engineering-ledger-manager 读取或维护 Codex 模块工程总账，先检查写入权限和状态。"

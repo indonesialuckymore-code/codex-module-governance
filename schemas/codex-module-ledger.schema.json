@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-module-ledger.schema.json",
+  "title": "C03 Codex module engineering ledger",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "recordType", "ledgerId", "projectId", "module", "createdAt", "revision", "status", "writerPolicy", "partitions", "tasks", "windows", "subAgents", "objectOccupancies", "evidenceRefs", "adjudications", "skills", "recovery", "hardStops", "receiptIds", "latestReceiptId"],
+  "properties": {
+    "schemaVersion": { "const": "0.3.0" },
+    "recordType": { "const": "C03_CODEX_MODULE_ENGINEERING_LEDGER" },
+    "ledgerId": { "type": "string", "pattern": "^codex-module:[a-z][a-z0-9-]{2,63}$" },
+    "projectId": { "type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$" },
+    "module": { "const": "codex" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "revision": { "type": "integer", "minimum": 0 },
+    "status": { "const": "ACTIVE" },
+    "writerPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["soleWriter", "deniedDirectWriters"],
+      "properties": {
+        "soleWriter": { "const": "codex-module-central" },
+        "deniedDirectWriters": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "partitions": { "type": "object" },
+    "tasks": { "type": "object" },
+    "windows": { "type": "object" },
+    "subAgents": { "type": "object" },
+    "objectOccupancies": { "type": "object" },
+    "evidenceRefs": { "type": "object" },
+    "adjudications": { "type": "object" },
+    "skills": { "type": "object" },
+    "recovery": { "type": "object" },
+    "hardStops": { "type": "array" },
+    "receiptIds": { "type": "array", "items": { "type": "string" } },
+    "latestReceiptId": { "type": ["string", "null"] }
+  }
+}

@@ -4,9 +4,9 @@
   "title": "Codex Module Governance configuration",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "module", "models", "subAgentPolicy", "storage", "publishing"],
+  "required": ["schemaVersion", "module", "models", "subAgentPolicy", "storage", "projectInitialization", "ledger", "publishing"],
   "properties": {
-    "schemaVersion": { "const": "0.2.0" },
+    "schemaVersion": { "const": "0.3.0" },
     "module": {
       "type": "object",
       "additionalProperties": false,
@@ -50,6 +50,17 @@
       "properties": {
         "requireExplicitApply": { "const": true },
         "denyGitWorktrees": { "const": true }
+      }
+    },
+    "ledger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["soleWriter", "allowCrossModuleDetailedWrites", "allowTaskWindowDirectWrites", "allowSubAgentDirectWrites"],
+      "properties": {
+        "soleWriter": { "const": "codex-module-central" },
+        "allowCrossModuleDetailedWrites": { "const": false },
+        "allowTaskWindowDirectWrites": { "const": false },
+        "allowSubAgentDirectWrites": { "const": false }
       }
     },
     "publishing": {
