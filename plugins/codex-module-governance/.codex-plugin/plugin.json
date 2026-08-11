@@ -1,0 +1,19 @@
+{
+  "name": "codex-module-governance",
+  "version": "0.1.0",
+  "description": "Private Codex module governance scaffold for controlled multi-task delivery.",
+  "author": {
+    "name": "QIANYI"
+  },
+  "license": "UNLICENSED",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Codex 模块治理",
+    "shortDescription": "私有多任务施工治理骨架。",
+    "longDescription": "为 Codex 模块提供项目隔离、任务包、证据、冲突控制和恢复能力的私有产品骨架。",
+    "developerName": "QIANYI",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "初始化 Codex 模块施工控制台。先检查依赖和重复建设，不要施工。"
+  }
+}

@@ -1,0 +1,26 @@
+# Local operating state and user business materials: never commit
+.DS_Store
+.env
+.env.*
+!.env.example
+private/
+runtime/
+projects/
+evidence/
+backups/
+logs/
+*.sqlite
+*.sqlite3
+*.db
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local development and tool caches
+node_modules/
+dist/
+coverage/
+.cache/
+.codex/
+

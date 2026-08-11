@@ -1,0 +1,25 @@
+{
+  "$schema": "../schemas/module-config.schema.json",
+  "schemaVersion": "0.1.0",
+  "module": {
+    "id": "replace-with-module-id",
+    "displayName": "Codex 模块"
+  },
+  "models": {
+    "central": "gpt-5.6-sol",
+    "taskWindow": "gpt-5.6-terra",
+    "subAgent": "gpt-5.6-terra"
+  },
+  "subAgentPolicy": {
+    "maxConcurrentFirstLevel": 3,
+    "allowGrandchildren": false
+  },
+  "storage": {
+    "userDataRoot": "replace-with-user-selected-private-directory"
+  },
+  "publishing": {
+    "mode": "private",
+    "allowRemotePublish": false
+  }
+}
+

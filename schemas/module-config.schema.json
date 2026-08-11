@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/module-config.schema.json",
+  "title": "Codex Module Governance configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "module", "models", "subAgentPolicy", "storage", "publishing"],
+  "properties": {
+    "schemaVersion": { "const": "0.1.0" },
+    "module": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "displayName"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "displayName": { "type": "string", "minLength": 1 }
+      }
+    },
+    "models": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["central", "taskWindow", "subAgent"],
+      "properties": {
+        "central": { "const": "gpt-5.6-sol" },
+        "taskWindow": { "const": "gpt-5.6-terra" },
+        "subAgent": { "const": "gpt-5.6-terra" }
+      }
+    },
+    "subAgentPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxConcurrentFirstLevel", "allowGrandchildren"],
+      "properties": {
+        "maxConcurrentFirstLevel": { "const": 3 },
+        "allowGrandchildren": { "const": false }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["userDataRoot"],
+      "properties": {
+        "userDataRoot": { "type": "string", "minLength": 1 }
+      }
+    },
+    "publishing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "allowRemotePublish"],
+      "properties": {
+        "mode": { "const": "private" },
+        "allowRemotePublish": { "const": false }
+      }
+    }
+  }
+}
+
