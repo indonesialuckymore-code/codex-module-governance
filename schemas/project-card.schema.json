@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/project-card.schema.json",
+  "title": "C02 project startup card",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "recordType", "createdAt", "project", "state", "executionBoundary", "nextRequiredDecision"],
+  "properties": {
+    "schemaVersion": { "const": "0.2.0" },
+    "recordType": { "const": "C02_PROJECT_STARTUP_CARD" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "displayName", "scopeSummary"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "scopeSummary": { "type": "string", "minLength": 1, "maxLength": 2000 }
+      }
+    },
+    "state": { "const": "PROJECT_REGISTERED" },
+    "executionBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dispatchAllowed", "testCreationAllowed", "businessWriteAllowed"],
+      "properties": {
+        "dispatchAllowed": { "const": false },
+        "testCreationAllowed": { "const": false },
+        "businessWriteAllowed": { "const": false }
+      }
+    },
+    "nextRequiredDecision": { "const": "C03_ENGINEERING_LEDGER_GOVERNANCE_REQUIRED" }
+  }
+}

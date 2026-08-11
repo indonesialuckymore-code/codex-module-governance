@@ -23,4 +23,5 @@ dist/
 coverage/
 .cache/
 .codex/
-
+__pycache__/
+*.py[cod]

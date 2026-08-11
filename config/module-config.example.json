@@ -1,6 +1,6 @@
 {
   "$schema": "../schemas/module-config.schema.json",
-  "schemaVersion": "0.1.0",
+  "schemaVersion": "0.2.0",
   "module": {
     "id": "replace-with-module-id",
     "displayName": "Codex 模块"
@@ -17,9 +17,12 @@
   "storage": {
     "userDataRoot": "replace-with-user-selected-private-directory"
   },
+  "projectInitialization": {
+    "requireExplicitApply": true,
+    "denyGitWorktrees": true
+  },
   "publishing": {
     "mode": "private",
     "allowRemotePublish": false
   }
 }
-

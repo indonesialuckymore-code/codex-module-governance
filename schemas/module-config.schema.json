@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schemaVersion", "module", "models", "subAgentPolicy", "storage", "publishing"],
   "properties": {
-    "schemaVersion": { "const": "0.1.0" },
+    "schemaVersion": { "const": "0.2.0" },
     "module": {
       "type": "object",
       "additionalProperties": false,
@@ -43,6 +43,15 @@
         "userDataRoot": { "type": "string", "minLength": 1 }
       }
     },
+    "projectInitialization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requireExplicitApply", "denyGitWorktrees"],
+      "properties": {
+        "requireExplicitApply": { "const": true },
+        "denyGitWorktrees": { "const": true }
+      }
+    },
     "publishing": {
       "type": "object",
       "additionalProperties": false,
@@ -54,4 +63,3 @@
     }
   }
 }
-
