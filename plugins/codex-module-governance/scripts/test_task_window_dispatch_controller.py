@@ -61,6 +61,10 @@ def confirm(root, value):
     return invoke(C10, ["--data-root", str(root), "--project-id", fixture.PROJECT_ID, "--writer-id", "codex-module-central", "confirm", "--dispatch-id", "dispatch-c10-001", "--confirmation", str(path)])
 
 
+def export_fallback(root):
+    return invoke(C10, ["--data-root", str(root), "--project-id", fixture.PROJECT_ID, "--writer-id", "codex-module-central", "export-fallback", "--dispatch-id", "dispatch-c10-001"])
+
+
 def return_payload(agent_id, status="NEEDS_REVIEW", return_id=None):
     return {"returnSchemaVersion": "0.10.0", "recordType": "C10_SUB_AGENT_RETURN", "dispatchId": "dispatch-c10-001", "subAgentId": agent_id, "returnId": return_id or f"return-{agent_id}", "submittedToWindowId": "window-c10-001", "status": status, "evidenceRefs": [f"evidence-{agent_id}"], "unresolvedRefs": []}
 
@@ -166,6 +170,22 @@ class C10Tests(unittest.TestCase):
             root = Path(temp) / "private"; setup_ready(root); specs = [{"subAgentId": "agent-c10-001", "role": "A", "level": 1}]; prepare(root, dispatch_request(specs)); confirm(root, confirmation(agents=[{"subAgentId": "agent-c10-001", "status": "CREATED", "runtimeAgentRef": "runtime-agent-c10-001"}]))
             path = write(root / "c10-inputs" / "return.json", return_payload("agent-c10-001")); args = ["--data-root", str(root), "--project-id", fixture.PROJECT_ID, "--writer-id", "codex-module-central", "record-return", "--dispatch-id", "dispatch-c10-001", "--sub-agent-id", "agent-c10-001", "--return-file", str(path)]
             self.assertEqual(invoke(C10, args)[0], 0); code, second = invoke(C10, args); self.assertEqual(second["status"], "IDEMPOTENT_SUB_AGENT_RETURN")
+
+    def test_manual_fallback_is_copyable_and_does_not_advance_task(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "private"; setup_ready(root); self.assertEqual(prepare(root, dispatch_request())[0], 0)
+            ledger_path = root / "module-ledgers" / fixture.PROJECT_ID / "ledger.json"; before = ledger_path.read_bytes()
+            code, output = export_fallback(root)
+            self.assertEqual(code, 0, output); self.assertEqual(output["status"], "READY_FOR_MANUAL_COPY"); self.assertFalse(output["dispatchPerformed"]); self.assertEqual(before, ledger_path.read_bytes())
+            artifact = json.loads(Path(output["artifact"]).read_text(encoding="utf-8"))
+            self.assertIn("请按以下已批准任务包执行", artifact["copyablePrompt"]); self.assertFalse(artifact["boundary"]["ledgerUpdated"])
+            code, second = export_fallback(root); self.assertEqual(code, 0); self.assertEqual(second["status"], "IDEMPOTENT_MANUAL_FALLBACK_PACKAGE")
+
+    def test_manual_fallback_refuses_after_runtime_confirmation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "private"; setup_ready(root); prepare(root, dispatch_request()); confirm(root, confirmation())
+            code, output = export_fallback(root)
+            self.assertEqual(code, 2); self.assertEqual(output["reason"], "C10_RUNTIME_ALREADY_CONFIRMED")
 
 
 if __name__ == "__main__": unittest.main(verbosity=2)

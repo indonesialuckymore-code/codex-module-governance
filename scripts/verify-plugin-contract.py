@@ -88,7 +88,18 @@ def main():
     for path in plugin_root.rglob("*"):
         if path.is_file() and "[TODO:" in path.read_text(encoding="utf-8", errors="ignore"):
             fail(f"unresolved placeholder in {path.relative_to(plugin_root)}")
-    print("Plugin manifest and C02/C03/C04/C05/C06/C07/C08/C09/C10/C11/C12 Skill contract preflight passed.")
+    marketplace = json.loads((repo_root / ".agents" / "plugins" / "marketplace.json").read_text(encoding="utf-8"))
+    if marketplace.get("name") != "qianyi-codex-governance":
+        fail("marketplace must use the project-specific name qianyi-codex-governance")
+    entries = marketplace.get("plugins")
+    if not isinstance(entries, list) or len(entries) != 1 or entries[0].get("name") != "codex-module-governance":
+        fail("marketplace must expose exactly the governance plugin")
+    source = entries[0].get("source")
+    if source != {"source": "local", "path": "./plugins/codex-module-governance"}:
+        fail("marketplace plugin source is invalid")
+    if manifest.get("repository") != "https://github.com/indonesialuckymore-code/codex-module-governance":
+        fail("plugin repository metadata is invalid")
+    print("Plugin manifest, marketplace, and C02/C03/C04/C05/C06/C07/C08/C09/C10/C11/C12 Skill contract preflight passed.")
 
 
 if __name__ == "__main__":

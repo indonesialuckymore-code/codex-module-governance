@@ -1,16 +1,42 @@
-# 安装说明（C12 阶段）
+# 安装说明
 
-当前仓库已包含 C02–C12。您可以在 Codex 中直接用业务语言调用治理入口；C10 可以在 Boss 批准后调度 Codex 任务窗口和一级子 Agent，但产品仍不能直接修改业务系统，也不会自行创建 TEST。
+## Boss 实际怎么安装
 
-后续 C13 验收时，将提供：
+前提：电脑已安装 Codex CLI，GitHub 账号已获准访问私有仓库 `indonesialuckymore-code/codex-module-governance`。
 
-1. 从私有 GitHub 仓库取得源码；
-2. 注册本仓库 marketplace；
-3. 安装 `codex-module-governance` 插件；
-4. 新开 Codex 任务并执行首次初始化；
-5. 在用户选择的仓库外私有目录建立项目数据。
+```bash
+codex plugin marketplace add indonesialuckymore-code/codex-module-governance --ref main
+codex plugin add codex-module-governance@qianyi-codex-governance
+```
 
-## C02–C12 开发预览
+安装后新开一个 Codex 任务，说：
+
+> 初始化 Codex 模块施工控制台。先检查依赖和重复建设，不要施工。
+
+也可以显式调用 `$codex-governance-gateway`。插件先让用户选择仓库外私有数据目录；不会把工程总账或业务资料写进 GitHub 仓库。
+
+## 升级
+
+```bash
+codex plugin marketplace upgrade qianyi-codex-governance
+codex plugin add codex-module-governance@qianyi-codex-governance
+```
+
+升级前先保留当前可用版本的 Git commit 或 tag；升级后新开任务测试。程序包和用户私有数据分离，升级不迁移、不覆盖工程总账。`scripts/c13-release-validator.py` 可在隔离目录验证安装、备份、升级、失败保全和回退。
+
+## 回退
+
+推荐把 Marketplace 固定回已知可用 tag 或 commit 后重新安装。若使用 C13 隔离验证器留下的备份，则运行：
+
+```bash
+python3 scripts/c13-release-validator.py rollback \
+  --installed-plugin <隔离安装目录>/codex-module-governance \
+  --backup <备份目录>/codex-module-governance-<旧版本>
+```
+
+回退程序不删除、不回退用户工程总账；如新版本改变私有配置 schema，另按版本文档恢复上一份配置副本。
+
+## 初始化和业务边界
 
 1. 把 `config/module-config.example.json` 复制到**仓库外、未被 Git 管理**的私有位置，并填写 `storage.userDataRoot`。
 2. 在 Codex 中使用“启动新项目建档”调用；系统先做只读查重。
@@ -25,5 +51,6 @@
 11. C10 按绿黄红门禁准备派发单；Codex 真实创建或复用任务并返回 ID 后，才登记 C03 并进入 `IN_PROGRESS`。子 Agent 回传先交父窗口汇总。
 12. C11 登记外部 Skill 的固定来源、版本、许可证和权限；不自动安装。
 13. C12 接收 Boss 业务语言，区分只看、准备和批准执行，再把标准请求交给 C09 唯一中央。
+14. 平台不能自动建窗时，C10 `export-fallback` 只生成可复制任务包；在真实任务 ID 回传前，任务不会被误记为 `IN_PROGRESS`。
 
-项目启动卡不包含任务、窗口、证据或业务数据。C03 总账只保存私有的结构化施工状态和不透明引用；C04 任务包和 C05 占用请求只保存去敏施工合同、对象键及交接引用，不包含真实业务对象。C13 完成前，完整安装流程仍仅用于开发预览，不能作为生产启用步骤。
+项目启动卡不包含任务、窗口、证据或业务数据。C03 总账只保存私有的结构化施工状态和不透明引用；C04 任务包和 C05 占用请求只保存去敏施工合同、对象键及交接引用，不包含真实业务对象。安装完成只说明治理产品可加载，不等于任何真实业务链已上线或验收。

@@ -56,6 +56,10 @@ def confirmation_path(root: Path, project_id: str, dispatch_id: str) -> Path:
     return dispatch_dir(root, project_id, dispatch_id) / "dispatch-confirmation.json"
 
 
+def fallback_path(root: Path, project_id: str, dispatch_id: str) -> Path:
+    return dispatch_dir(root, project_id, dispatch_id) / "manual-task-package.json"
+
+
 def return_path(root: Path, project_id: str, dispatch_id: str, sub_agent_id: str) -> Path:
     return dispatch_dir(root, project_id, dispatch_id) / "sub-agent-returns" / f"{sub_agent_id}.json"
 
@@ -263,6 +267,73 @@ def confirm(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     return {"status": "RUNTIME_DISPATCH_CONFIRMED", "dispatchId": dispatch_id, "windowId": confirmation["windowId"], "subAgentCount": len(confirmation["agents"]), "taskStatus": "IN_PROGRESS", "ledgerReceiptId": result["receiptId"], "writePerformed": True, "dispatchPerformed": True, "businessWritePerformed": False}, 0
 
 
+def export_fallback(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
+    root = load_data_root(args)
+    project_id = require_ref(args.project_id, "C10_PROJECT_ID_INVALID")
+    dispatch_id = require_ref(args.dispatch_id, "C10_DISPATCH_ID_INVALID")
+    if args.writer_id != CENTRAL_WRITER:
+        raise DispatchError("C10_WRITER_NOT_AUTHORIZED")
+    plan = read_json(plan_path(root, project_id, dispatch_id), "C10_DISPATCH_PLAN_NOT_FOUND_OR_INVALID")
+    if plan.get("status") != "PENDING_RUNTIME_CONFIRMATION":
+        raise DispatchError("C10_DISPATCH_PLAN_NOT_PENDING")
+    if confirmation_path(root, project_id, dispatch_id).exists():
+        raise DispatchError("C10_RUNTIME_ALREADY_CONFIRMED")
+    target = fallback_path(root, project_id, dispatch_id)
+    if target.exists():
+        existing = read_json(target, "C10_EXISTING_FALLBACK_INVALID")
+        if existing.get("sourcePlanDigest") == canonical_digest(plan):
+            return {
+                "status": "IDEMPOTENT_MANUAL_FALLBACK_PACKAGE",
+                "dispatchId": dispatch_id,
+                "artifact": str(target),
+                "writePerformed": False,
+                "dispatchPerformed": False,
+                "ledgerUpdated": False,
+            }, 0
+        raise DispatchError("C10_FALLBACK_ALREADY_EXISTS_WITH_DIFFERENT_PLAN")
+    package = {
+        "schemaVersion": "0.13.0",
+        "recordType": "C13_MANUAL_TASK_PACKAGE",
+        "dispatchId": dispatch_id,
+        "projectId": project_id,
+        "taskId": plan["taskId"],
+        "createdAt": utc_now(),
+        "model": plan["windowAction"]["model"],
+        "windowActionRequested": plan["windowAction"],
+        "subAgents": plan["subAgents"],
+        "taskPackage": plan["taskPackage"],
+        "copyablePrompt": (
+            "请按以下已批准任务包执行。先复述目标、边界、写入占用和硬停条件；"
+            "不得扩大范围，不得自行宣布 DONE。任务包：\n"
+            + json.dumps(plan["taskPackage"], ensure_ascii=False, indent=2, sort_keys=True)
+        ),
+        "sourcePlanDigest": canonical_digest(plan),
+        "boundary": {
+            "runtimeCreationUnavailable": True,
+            "manualCopyRequired": True,
+            "runtimeConfirmed": False,
+            "ledgerUpdated": False,
+            "taskStatusChanged": False,
+            "businessWritePerformed": False,
+            "requiresNormalC10ConfirmationAfterManualCreation": True,
+        },
+    }
+    with dispatch_lock(root, project_id):
+        if target.exists():
+            raise DispatchError("C10_FALLBACK_RACE_DETECTED")
+        write_exclusive(target, package)
+    return {
+        "status": "READY_FOR_MANUAL_COPY",
+        "dispatchId": dispatch_id,
+        "artifact": str(target),
+        "writePerformed": True,
+        "dispatchPerformed": False,
+        "ledgerUpdated": False,
+        "taskStatusChanged": False,
+        "businessWritePerformed": False,
+    }, 0
+
+
 def validate_return(raw: Dict[str, Any], dispatch_id: str, sub_agent_id: str, window_id: str) -> Dict[str, Any]:
     value = exact(raw, {"returnSchemaVersion", "recordType", "dispatchId", "subAgentId", "returnId", "submittedToWindowId", "status", "evidenceRefs", "unresolvedRefs"}, "C10_SUB_AGENT_RETURN_SCHEMA_UNSUPPORTED")
     if value["returnSchemaVersion"] != SCHEMA_VERSION or value["recordType"] != "C10_SUB_AGENT_RETURN" or value["dispatchId"] != dispatch_id or value["subAgentId"] != sub_agent_id or value["submittedToWindowId"] != window_id:
@@ -312,6 +383,7 @@ def parse_args() -> argparse.Namespace:
     commands = parser.add_subparsers(dest="command", required=True)
     prepare_parser = commands.add_parser("prepare"); prepare_parser.add_argument("--package-id", required=True); prepare_parser.add_argument("--review-id", required=True); prepare_parser.add_argument("--request", required=True)
     confirm_parser = commands.add_parser("confirm"); confirm_parser.add_argument("--dispatch-id", required=True); confirm_parser.add_argument("--confirmation", required=True)
+    fallback_parser = commands.add_parser("export-fallback"); fallback_parser.add_argument("--dispatch-id", required=True)
     return_parser = commands.add_parser("record-return"); return_parser.add_argument("--dispatch-id", required=True); return_parser.add_argument("--sub-agent-id", required=True); return_parser.add_argument("--return-file", required=True)
     return parser.parse_args()
 
@@ -319,7 +391,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     try:
-        handlers = {"prepare": prepare, "confirm": confirm, "record-return": record_return}; result, code = handlers[args.command](args); print_result(result); return code
+        handlers = {"prepare": prepare, "confirm": confirm, "export-fallback": export_fallback, "record-return": record_return}; result, code = handlers[args.command](args); print_result(result); return code
     except (C02Error, DispatchError, LedgerError) as error:
         print_result({"status": "REFUSED", "reason": str(error), "writePerformed": False, "dispatchPerformed": False, "businessWritePerformed": False}); return 2
 

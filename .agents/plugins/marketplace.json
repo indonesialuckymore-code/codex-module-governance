@@ -1,7 +1,7 @@
 {
-  "name": "personal",
+  "name": "qianyi-codex-governance",
   "interface": {
-    "displayName": "Personal"
+    "displayName": "QIANYI Codex Governance"
   },
   "plugins": [
     {
