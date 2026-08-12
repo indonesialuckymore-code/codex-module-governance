@@ -12,7 +12,8 @@ description: 作为 Codex 模块唯一中央路由器，接收 C12 自然语言�
 - 仓库中的同名 Skill 是可发布的产品源。
 - 安装到 Codex 的同名 Skill 是运行镜像，不是第二个中央。
 - 不创建平行中央、不维护第二套详细任务状态。
-- Boss 与 Fable 负责施工大纲、任务拆分、模块分配和最终裁定。
+- Boss 与唯一获授权总设计师负责整个项目的施工大纲、总体架构、任务拆分、模块分配和跨模块接口；最终批准和裁定仍归 Boss。总设计师可以是 Fable、C00 `construction-outline-planner` 或 Boss 指定的其他规划方，但同一版本只能有一个总设计师。
+- 中央把冻结的全项目大纲作为设计依据，只登记和运营明确归属 Codex 的施工范围；Claude、人工或外部模块只保留交接引用，不复制其详细状态，也不建立第三套全项目任务中心。
 - 中央只负责路由、冲突控制、验收回传、恢复控制和工程总账更新。
 - 中央禁止直接修改业务系统、业务数据或业务自动化。
 - C12 只把 Boss 口语转换为本 Skill 的标准请求；不维护状态、不替中央路由、不绕过下游门禁。
@@ -31,6 +32,7 @@ description: 作为 Codex 模块唯一中央路由器，接收 C12 自然语言�
 
 | Boss 的要求 | 主能力 | 业务作用 |
 |---|---|---|
+| 构建或修订整个项目施工大纲 | C00 `construction-outline-planner` | 直接进入总设计师窗口；不经过中央路由、不写总账 |
 | 新建项目 | C02 `new-project-initializer` | 建私有项目卡，不开工 |
 | 查总账、登记任务或窗口状态 | C03 `engineering-ledger-manager` | 维护唯一详细状态 |
 | 生成施工任务包 | C04 `task-package-generator` | 只生成待审草稿 |
@@ -116,7 +118,7 @@ python3 plugins/codex-module-governance/scripts/central_construction_controller.
 
 C04 生成的任务包必须覆盖：窗口身份、业务目标、依赖、必读材料、实时核查对象、允许动作、绝对禁区、施工前快照、执行顺序、正反例与幂等验收、硬停条件、回滚点、交付清单和回传规则。
 
-任务包只能引用 Boss + Fable 已规划的一个边界清晰目标。任务窗口回传前须经 Boss 批准；未批准只能保持 `NEEDS_REVIEW`，不能成为下一任务的完成依赖。
+任务包只能引用 Boss 已批准、由唯一总设计师写入冻结全项目大纲且明确归属 Codex 的一个边界清晰目标。C00 的 `P-xx / NOT_REGISTERED` 只是候选键，必须先核对 `centralRegistrationScope.policy = CODEX_ONLY`，再由 C03 查重并重新编号后才能进入 C04。归属 Claude、人工或外部系统的候选任务不得写入 C03。任务窗口回传前须经 Boss 批准；未批准只能保持 `NEEDS_REVIEW`，不能成为下一任务的完成依赖。
 
 ### 接收回传和放行下一任务
 

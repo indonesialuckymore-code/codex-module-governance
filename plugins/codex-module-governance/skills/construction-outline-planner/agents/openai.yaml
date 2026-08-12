@@ -1,0 +1,4 @@
+interface:
+  display_name: "施工大纲规划"
+  short_description: "担任整个项目总设计师，形成可交中央运营的全项目施工大纲"
+  default_prompt: "使用 $construction-outline-planner 作为整个项目总设计师，基于本任务已有内容继续构建全项目施工大纲，先只读梳理并一次问我一个问题。"

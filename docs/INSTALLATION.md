@@ -15,6 +15,17 @@ codex plugin add codex-module-governance@qianyi-codex-governance
 
 也可以显式调用 `$codex-governance-gateway`。插件先让用户选择仓库外私有数据目录；不会把工程总账或业务资料写进 GitHub 仓库。
 
+## 本人本地试用当前施工版
+
+当前分支尚未发布新标签时，可以直接从本地产品仓库安装，不需要先上传 GitHub：
+
+```bash
+codex plugin marketplace add <本地仓库路径>
+codex plugin add codex-module-governance@qianyi-codex-governance
+```
+
+安装后必须新开 Codex 任务，再从 `/` 菜单选择“施工大纲规划”或“中央处理器”。本地施工版会随产品源变化，正式分享给其他用户时仍应固定 Git tag。
+
 ## 升级
 
 新稳定版发布后，先移除当前程序插件和旧 Marketplace 引用，再按新版本标签重新注册并安装。这个操作只处理程序缓存，不处理仓库外私有总账：

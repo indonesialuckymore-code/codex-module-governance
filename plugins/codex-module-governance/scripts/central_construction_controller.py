@@ -20,12 +20,13 @@ CENTRAL_SKILL = "central-construction-controller"
 CENTRAL_MODEL = "gpt-5.6-sol"
 TASK_MODEL = "gpt-5.6-terra"
 REFERENCE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
-REPO_ROOT = Path(__file__).resolve().parents[3]
-REGISTRY_PATH = REPO_ROOT / "config" / "core-capability-registry.json"
-PLUGIN_SKILLS = REPO_ROOT / "plugins" / "codex-module-governance" / "skills"
-PLUGIN_SCRIPTS = REPO_ROOT / "plugins" / "codex-module-governance" / "scripts"
+PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+REGISTRY_PATH = PLUGIN_ROOT / "config" / "core-capability-registry.json"
+PLUGIN_SKILLS = PLUGIN_ROOT / "skills"
+PLUGIN_SCRIPTS = PLUGIN_ROOT / "scripts"
 
 EXPECTED = {
+    "C00": ("PLANNER", "construction-outline-planner", None),
     "C02": ("EXECUTOR", "new-project-initializer", "initialize_project.py"),
     "C03": ("EXECUTOR", "engineering-ledger-manager", "ledger_manager.py"),
     "C04": ("EXECUTOR", "task-package-generator", "task_package_generator.py"),
@@ -120,8 +121,11 @@ def validate_registry(registry: Dict[str, Any], check_files: bool = True) -> Dic
         entry = by_stage[stage]
         if set(entry) != {"stage", "role", "skill", "script", "status"} or (entry.get("role"), entry.get("skill"), entry.get("script"), entry.get("status")) != (role, skill, script, "READY"):
             raise CentralRoutingError(f"C09_{stage}_CAPABILITY_CONTRACT_INVALID")
-        if check_files and (not (PLUGIN_SKILLS / skill / "SKILL.md").is_file() or not (PLUGIN_SCRIPTS / script).is_file()):
-            raise CentralRoutingError(f"C09_{stage}_CAPABILITY_FILE_MISSING")
+        if check_files:
+            if not (PLUGIN_SKILLS / skill / "SKILL.md").is_file():
+                raise CentralRoutingError(f"C09_{stage}_CAPABILITY_FILE_MISSING")
+            if script is not None and not (PLUGIN_SCRIPTS / script).is_file():
+                raise CentralRoutingError(f"C09_{stage}_CAPABILITY_FILE_MISSING")
     pending = {entry.get("stage"): entry.get("status") for entry in registry.get("pendingCapabilities", []) if isinstance(entry, dict)}
     if pending:
         raise CentralRoutingError("C09_PENDING_CAPABILITY_BOUNDARY_INVALID")

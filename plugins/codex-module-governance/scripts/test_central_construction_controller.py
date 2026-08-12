@@ -89,6 +89,7 @@ class C09Tests(unittest.TestCase):
             self.assertEqual(code, 0, output)
             self.assertEqual(output["centralEntryCount"], 1)
             self.assertEqual(output["canonicalCentralSkill"], "central-construction-controller")
+            self.assertIn("C00", output["readyStages"])
             self.assertEqual(output["models"], {"central": "gpt-5.6-sol", "taskWindow": "gpt-5.6-terra", "subAgent": "gpt-5.6-terra"})
             self.assertEqual(output["subAgentPolicy"], {"maxConcurrentFirstLevel": 3, "allowGrandchildren": False})
 
@@ -98,6 +99,27 @@ class C09Tests(unittest.TestCase):
         duplicate["capabilities"].append({"stage": "C99", "role": "CENTRAL", "skill": "parallel-central", "script": "parallel.py", "status": "READY"})
         with self.assertRaisesRegex(central.CentralRoutingError, "MULTIPLE_OR_MISSING_CENTRAL"):
             central.validate_registry(duplicate, check_files=False)
+
+    def test_c00_is_one_non_central_planner_without_runtime_script(self):
+        registry = json.loads(central.REGISTRY_PATH.read_text(encoding="utf-8"))
+        validated = central.validate_registry(registry, check_files=True)
+        planners = [entry for entry in validated["capabilities"] if entry["role"] == "PLANNER"]
+        self.assertEqual(planners, [{
+            "stage": "C00",
+            "role": "PLANNER",
+            "skill": "construction-outline-planner",
+            "script": None,
+            "status": "READY",
+        }])
+
+    def test_c00_is_whole_project_chief_designer_with_codex_only_handoff(self):
+        planner_root = central.PLUGIN_SKILLS / "construction-outline-planner"
+        skill = (planner_root / "SKILL.md").read_text(encoding="utf-8")
+        template = (planner_root / "references" / "outline-template.md").read_text(encoding="utf-8")
+        self.assertIn("整个项目的总设计师", skill)
+        self.assertIn("只接管 Codex 施工范围", skill)
+        self.assertIn("centralRegistrationScope", template)
+        self.assertIn("policy: CODEX_ONLY", template)
 
     def test_new_project_routes_to_c02_without_creating_project(self):
         with tempfile.TemporaryDirectory() as temporary:

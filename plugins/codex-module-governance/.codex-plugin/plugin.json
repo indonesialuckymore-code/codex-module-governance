@@ -1,7 +1,7 @@
 {
   "name": "codex-module-governance",
   "version": "0.13.0",
-  "description": "Private Codex governance with a Boss-facing natural-language gateway, one central router, and controlled execution gates.",
+  "description": "Private Codex governance with a reusable construction-outline planner, Boss-facing natural-language gateway, one central router, and controlled execution gates.",
   "author": {
     "name": "QIANYI"
   },
@@ -11,10 +11,10 @@
   "interface": {
     "displayName": "Codex 模块治理",
     "shortDescription": "私有多任务施工治理、建档与工程总账。",
-    "longDescription": "用自然语言入口连接唯一中央，统筹私有建档、总账、占用、调度、验收、裁定、恢复与外部 Skill 适配；不直接修改业务系统。",
+    "longDescription": "先由唯一总设计师窗口与 Boss 形成整个项目施工大纲，再用自然语言入口连接 Codex 唯一中央，只接管大纲中归属 Codex 的私有建档、总账、占用、调度、验收、裁定、恢复与外部 Skill 适配；不直接修改业务系统。",
     "developerName": "QIANYI",
     "category": "Productivity",
-    "capabilities": ["Boss natural-language governance gateway", "Single central governance router", "Deterministic C02-C11 routing", "Two-phase task-window dispatch", "First-level sub-agent control", "External Skill registry and adapters", "Verified module ledger", "Atomic occupancy review", "Independent validation", "Boss-controlled adjudication", "Disconnection recovery control"],
+    "capabilities": ["Reusable construction-outline planning", "Boss natural-language governance gateway", "Single central governance router", "Deterministic C02-C11 routing", "Two-phase task-window dispatch", "First-level sub-agent control", "External Skill registry and adapters", "Verified module ledger", "Atomic occupancy review", "Independent validation", "Boss-controlled adjudication", "Disconnection recovery control"],
     "defaultPrompt": "使用自然语言入口理解 Boss 的单一治理动作，区分只看、准备和批准执行，再交给唯一中央路由到 C02-C11；不猜测含糊批准。"
   }
 }

@@ -17,6 +17,7 @@ from typing import Any
 PLUGIN = "codex-module-governance"
 MARKETPLACE = "qianyi-codex-governance"
 REQUIRED_SKILLS = {
+    "construction-outline-planner",
     "new-project-initializer",
     "engineering-ledger-manager",
     "task-package-generator",
@@ -75,6 +76,10 @@ def assert_repo(repo: Path) -> None:
         raise C13Error("C13_PLUGIN_VERSION_MISMATCH")
     if metadata.get("repository") != "https://github.com/indonesialuckymore-code/codex-module-governance":
         raise C13Error("C13_REPOSITORY_METADATA_MISMATCH")
+    source_registry = load_json(repo / "config" / "core-capability-registry.json")
+    bundled_registry = load_json(plugin_root(repo) / "config" / "core-capability-registry.json")
+    if bundled_registry != source_registry:
+        raise C13Error("C13_BUNDLED_CAPABILITY_REGISTRY_MISMATCH")
     skill_root = plugin_root(repo) / "skills"
     present = {path.parent.name for path in skill_root.glob("*/SKILL.md")}
     if present != REQUIRED_SKILLS:
