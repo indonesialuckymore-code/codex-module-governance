@@ -32,7 +32,9 @@ description: 在 Boss 对单项任务或中央启动图作出范围化批准且 
 2. Git 项目默认用 `project + worktree`；非 Git 项目用 `project + local`。禁止 `projectless` 和中央自造任务目录。
 3. 派发单必须记录 `runtimeTarget`，运行时严格照此创建，不得另传自定义目录。
 4. 创建后回读真实 `projectId`、工作目录和运行环境：Git 必须是 Codex 标准 worktree 且目录名与项目一致；本地模式必须等于保存项目路径。
-5. 项目或目录不匹配时，不写 C03、不推进任务，报告 `PROJECT_ASSOCIATION_MISMATCH / NEEDS_REVIEW`。
+5. Git worktree 目录正确但 `projectId` 为空时，不要重新创建平行任务：对同一任务执行一次原生交接到保存项目根目录，回读正确项目 ID 后再交接回原 worktree，最后再次回读项目 ID 和目录。
+6. 往返交接后的最终任务必须同时满足正确 `projectId` 和标准 worktree 路径；私有确认中保留初始、项目本地和最终任务引用，C03 只登记最终任务引用及修复方式。
+7. 项目或目录仍不匹配时，不写 C03、不推进任务，报告 `PROJECT_ASSOCIATION_MISMATCH / NEEDS_REVIEW`。
 
 “同一项目”指 Codex 左栏归入同一个项目。Git 并行任务仍使用不同 worktree 物理目录，这是本地文件隔离，不是跑到另一个项目。
 
@@ -48,6 +50,7 @@ description: 在 Boss 对单项任务或中央启动图作出范围化批准且 
 - C10 调度 Codex 任务，不直接修改业务系统。
 - 派发单不等于运行时已成功。
 - 任务卡出现在“最近”或自定义目录，不等于已正确归入项目。
+- 仅有标准 worktree 路径也不等于项目归属成功；应用回读的 `projectId` 为空仍须修复或硬停。
 - 可复制任务包也不等于运行时已成功，不得伪造任务或 Agent ID。
 - 任务窗口不得绕过任务包、对象占用和硬停条件。
 - 失联后保留占用并转 C08，不自动重派。

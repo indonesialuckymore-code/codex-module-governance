@@ -12,15 +12,29 @@
     "taskWindow": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["status", "windowId", "runtimeThreadRef", "runtimeProjectId", "runtimeCwd", "environmentType"],
+      "required": ["status", "windowId", "runtimeThreadRef", "runtimeProjectId", "runtimeCwd", "environmentType", "associationMethod", "associationHandoffRefs"],
       "properties": {
         "status": { "enum": ["CREATED", "REUSED"] },
         "windowId": { "type": "string" },
         "runtimeThreadRef": { "type": "string" },
         "runtimeProjectId": { "type": "string" },
         "runtimeCwd": { "type": "string" },
-        "environmentType": { "enum": ["LOCAL", "WORKTREE"] }
-      }
+        "environmentType": { "enum": ["LOCAL", "WORKTREE"] },
+        "associationMethod": { "enum": ["DIRECT", "LOCAL_HANDOFF_ROUNDTRIP"] },
+        "associationHandoffRefs": {
+          "type": "array",
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": { "type": "string" }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "associationMethod": { "const": "DIRECT" } } },
+          "then": { "properties": { "associationHandoffRefs": { "maxItems": 0 } } },
+          "else": { "properties": { "associationHandoffRefs": { "minItems": 2, "maxItems": 2 } } }
+        }
+      ]
     },
     "subAgents": { "type": "array", "maxItems": 3 }
   }

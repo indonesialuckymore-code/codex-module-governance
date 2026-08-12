@@ -57,8 +57,8 @@ def prepare(root, payload):
     return invoke(C10, ["--data-root", str(root), "--project-id", fixture.PROJECT_ID, "--writer-id", "codex-module-central", "prepare", "--package-id", fixture.PACKAGE_ID, "--review-id", fixture.REVIEW_ID, "--request", str(path)])
 
 
-def confirmation(window_id="window-c10-001", reused=False, agents=None, project_id="codex-project-001", cwd="/tmp/.codex/worktrees/abcd/fictional-project", environment="WORKTREE"):
-    return {"confirmationSchemaVersion": "0.14.0", "recordType": "C10_RUNTIME_CONFIRMATION", "dispatchId": "dispatch-c10-001", "taskWindow": {"status": "REUSED" if reused else "CREATED", "windowId": window_id, "runtimeThreadRef": "thread-c10-001", "runtimeProjectId": project_id, "runtimeCwd": cwd, "environmentType": environment}, "subAgents": agents or []}
+def confirmation(window_id="window-c10-001", reused=False, agents=None, project_id="codex-project-001", cwd="/tmp/.codex/worktrees/abcd/fictional-project", environment="WORKTREE", association_method="DIRECT", handoff_refs=None, runtime_ref="thread-c10-001"):
+    return {"confirmationSchemaVersion": "0.14.0", "recordType": "C10_RUNTIME_CONFIRMATION", "dispatchId": "dispatch-c10-001", "taskWindow": {"status": "REUSED" if reused else "CREATED", "windowId": window_id, "runtimeThreadRef": runtime_ref, "runtimeProjectId": project_id, "runtimeCwd": cwd, "environmentType": environment, "associationMethod": association_method, "associationHandoffRefs": handoff_refs or []}, "subAgents": agents or []}
 
 
 def confirm(root, value):
@@ -81,6 +81,7 @@ class C10Tests(unittest.TestCase):
             code, output = prepare(root, dispatch_request())
             self.assertEqual(code, 0, output); self.assertEqual(output["trafficLight"], "GREEN"); self.assertFalse(output["dispatchPerformed"])
             self.assertEqual(output["runtimeTarget"], {"type": "project", "projectId": "codex-project-001", "environment": {"type": "worktree"}})
+            self.assertEqual(output["projectAssociationProtocol"]["onMissingProjectId"], "HANDOFF_TO_PROJECT_LOCAL_THEN_RETURN")
             self.assertEqual(output["authorizationScope"]["type"], "EXECUTION_MAP")
 
     def test_yellow_isolated_write_plan(self):
@@ -146,6 +147,29 @@ class C10Tests(unittest.TestCase):
             ledger_path = root / "module-ledgers" / fixture.PROJECT_ID / "ledger.json"; before = ledger_path.read_bytes()
             code, output = confirm(root, confirmation(project_id="wrong-project"))
             self.assertEqual(code, 2); self.assertEqual(output["reason"], "C10_RUNTIME_PROJECT_ASSOCIATION_MISMATCH"); self.assertEqual(before, ledger_path.read_bytes())
+
+    def test_local_handoff_roundtrip_repairs_project_association(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "private"; setup_ready(root); self.assertEqual(prepare(root, dispatch_request())[0], 0)
+            value = confirmation(association_method="LOCAL_HANDOFF_ROUNDTRIP", handoff_refs=["thread-initial", "thread-project-local"], runtime_ref="thread-final-worktree")
+            code, output = confirm(root, value)
+            self.assertEqual(code, 0, output); self.assertEqual(output["associationMethod"], "LOCAL_HANDOFF_ROUNDTRIP")
+            ledger = json.loads((root / "module-ledgers" / fixture.PROJECT_ID / "ledger.json").read_text())
+            self.assertEqual(ledger["windows"]["window-c10-001"]["associationMethod"], "LOCAL_HANDOFF_ROUNDTRIP")
+
+    def test_handoff_repair_requires_two_prior_thread_refs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "private"; setup_ready(root); self.assertEqual(prepare(root, dispatch_request())[0], 0)
+            ledger_path = root / "module-ledgers" / fixture.PROJECT_ID / "ledger.json"; before = ledger_path.read_bytes()
+            value = confirmation(association_method="LOCAL_HANDOFF_ROUNDTRIP", handoff_refs=["thread-initial"])
+            code, output = confirm(root, value)
+            self.assertEqual(code, 2); self.assertEqual(output["reason"], "C10_PROJECT_ASSOCIATION_REPAIR_EVIDENCE_INVALID"); self.assertEqual(before, ledger_path.read_bytes())
+
+    def test_direct_association_refuses_false_handoff_evidence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "private"; setup_ready(root); self.assertEqual(prepare(root, dispatch_request())[0], 0)
+            code, output = confirm(root, confirmation(handoff_refs=["thread-not-used"]))
+            self.assertEqual(code, 2); self.assertEqual(output["reason"], "C10_PROJECT_ASSOCIATION_REPAIR_EVIDENCE_INVALID")
 
     def test_custom_directory_is_not_accepted_as_project_worktree(self):
         with tempfile.TemporaryDirectory() as temp:

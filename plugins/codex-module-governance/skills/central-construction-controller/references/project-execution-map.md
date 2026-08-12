@@ -61,6 +61,7 @@ runtimeProject:
 - 非 Git 项目：使用 `target.type=project` 和 `environment.type=local`。
 - 不允许 `projectless`，不允许中央自行命名其他物理目录。
 - 创建后回读的 `projectId` 必须一致；Git worktree 目录必须是 Codex 标准 worktree，非 Git 本地目录必须等于保存项目路径。
+- 若 Git worktree 路径正确但回读 `projectId` 为空，C10 对同一任务执行一次原生往返交接：先到保存项目根目录完成项目绑定，再回到原 worktree，最后重新核对项目 ID、目录和最终任务 ID。修复失败保持 `NEEDS_REVIEW`。
 
 ## 6. 范围化批准
 
