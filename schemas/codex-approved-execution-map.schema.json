@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-approved-execution-map.schema.json",
+  "title": "C09 Boss-approved project execution map",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["executionMapSchemaVersion", "recordType", "planId", "projectId", "authorization", "executionPlan"],
+  "properties": {
+    "executionMapSchemaVersion": { "const": "0.16.0" },
+    "recordType": { "const": "C09_APPROVED_EXECUTION_MAP" },
+    "planId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$" },
+    "projectId": { "type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$" },
+    "authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scopeId", "scopeDigest", "bossApprovalRef"],
+      "properties": {
+        "scopeId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$" },
+        "scopeDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "bossApprovalRef": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$" }
+      }
+    },
+    "executionPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tasks"],
+      "properties": {
+        "tasks": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["taskId", "dependencies", "packageId", "c05ReviewId", "c05ReviewPath", "c10RequestPath"],
+            "properties": {
+              "taskId": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9._-]{2,127}$" },
+              "dependencies": {
+                "type": "array",
+                "maxItems": 40,
+                "uniqueItems": true,
+                "items": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9._-]{2,127}$" }
+              },
+              "packageId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$" },
+              "c05ReviewId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$" },
+              "c05ReviewPath": { "type": "string", "minLength": 1 },
+              "c10RequestPath": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    }
+  }
+}

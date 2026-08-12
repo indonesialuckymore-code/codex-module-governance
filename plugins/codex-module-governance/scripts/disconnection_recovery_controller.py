@@ -240,7 +240,7 @@ def affected_context(ledger: Dict[str, Any], incident: Dict[str, Any]) -> Dict[s
     sub_agent_ids: List[str] = []
     if incident_type == "TASK_WINDOW":
         window = ledger["windows"].get(target_id)
-        if not isinstance(window, dict) or window.get("taskId") != task_id:
+        if not isinstance(window, dict) or task_id not in {window.get("taskId"), window.get("currentTaskId"), window.get("reservedForTaskId")}:
             raise RecoveryError("C08_WINDOW_TASK_MISMATCH")
         window_ids = [target_id]
         sub_agent_ids = [key for key, value in ledger["subAgents"].items() if value.get("windowId") == target_id]

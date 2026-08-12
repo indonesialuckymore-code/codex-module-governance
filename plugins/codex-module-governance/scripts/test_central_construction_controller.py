@@ -92,8 +92,11 @@ class C09Tests(unittest.TestCase):
             self.assertIn("C00", output["readyStages"])
             self.assertEqual(output["models"], {"central": "gpt-5.6-sol", "taskWindow": "gpt-5.6-terra", "subAgent": "gpt-5.6-terra"})
             self.assertEqual(output["subAgentPolicy"], {"maxConcurrentFirstLevel": 3, "allowGrandchildren": False})
+            self.assertEqual(output["windowPolicy"], {"maxSequentialAssignments": 2, "allowConcurrentAssignments": False, "centralChoosesReuse": True})
             self.assertTrue(output["boundaries"]["onePassExecutionMapAvailable"])
             self.assertTrue(output["boundaries"]["scopedBatchApprovalAvailable"])
+            self.assertTrue(output["boundaries"]["automaticSuccessorDispatchAvailable"])
+            self.assertTrue(output["boundaries"]["twoTaskWindowLifecycleEnforced"])
             self.assertTrue(output["boundaries"]["projectBoundDispatchRequired"])
 
     def test_duplicate_central_registry_is_refused(self):

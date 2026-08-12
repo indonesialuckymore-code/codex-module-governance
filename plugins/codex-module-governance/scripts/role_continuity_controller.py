@@ -28,6 +28,7 @@ from ledger_manager import (
     canonical_digest,
     load_ledger,
     verify_ledger,
+    window_current_task_id,
 )
 
 
@@ -345,7 +346,13 @@ def prepare_handover(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             return {"status": "IDEMPOTENT_HANDOVER_PACKAGE", "handoverId": request["handoverId"], "writePerformed": False}, 0
         raise ContinuityError("C08C_HANDOVER_ID_REUSED")
     task_status = {task_id: task.get("status") for task_id, task in sorted(ledger["tasks"].items())}
-    windows = [{key: value.get(key) for key in ("windowId", "taskId", "runtimeThreadRef", "generation", "status")} for value in ledger["windows"].values()]
+    windows = [
+        {
+            **{key: value.get(key) for key in ("windowId", "taskId", "runtimeThreadRef", "generation", "status", "assignmentCount", "maxAssignments")},
+            "currentTaskId": window_current_task_id(value),
+        }
+        for value in ledger["windows"].values()
+    ]
     open_adjudications = sorted(key for key, value in ledger["adjudications"].items() if value.get("stage") != "BOSS_DECIDED")
     package = {
         "schemaVersion": SCHEMA_VERSION, "recordType": "C08_ROLE_HANDOVER_PACKAGE", "createdAt": utc_now(),
@@ -475,7 +482,7 @@ def submit_event(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     task = ledger["tasks"].get(event["taskIdentity"]["taskId"]); window = ledger["windows"].get(event["sourceWindow"]["windowId"])
     if not isinstance(task, dict) or canonical_task_title(task) != event["taskIdentity"]["canonicalTitle"]:
         raise ContinuityError("C08C_TASK_IDENTITY_MISMATCH")
-    if not isinstance(window, dict) or window.get("taskId") != task["taskId"] or window.get("runtimeThreadRef", window.get("windowId")) != event["sourceWindow"]["runtimeThreadRef"] or window.get("generation", 1) != event["sourceWindow"]["generation"]:
+    if not isinstance(window, dict) or window_current_task_id(window) != task["taskId"] or window.get("runtimeThreadRef", window.get("windowId")) != event["sourceWindow"]["runtimeThreadRef"] or window.get("generation", 1) != event["sourceWindow"]["generation"]:
         raise ContinuityError("C08C_SOURCE_WINDOW_MISMATCH")
     target = event_path(data_root, project_id, event["eventId"])
     if target.exists():

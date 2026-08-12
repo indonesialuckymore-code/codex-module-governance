@@ -16,6 +16,7 @@ from initialize_project import C02Error, PROJECT_ID_PATTERN, is_within, load_dat
 from ledger_manager import (
     CENTRAL_WRITER,
     LedgerError,
+    MAX_TASKS_PER_WINDOW,
     TASK_ID_PATTERN,
     canonical_digest,
     commit_mutation,
@@ -24,6 +25,9 @@ from ledger_manager import (
     receipt_directory as ledger_receipt_directory,
     utc_now,
     verify_ledger,
+    window_assignment_count,
+    window_assignments,
+    window_current_task_id,
 )
 from occupancy_conflict_checker import OccupancyError, verify_decision_data as verify_c05_decision
 from task_package_generator import TaskPackageError, load_package, verify_package
@@ -269,7 +273,7 @@ def verified_sources(data_root: Path, project_id: str, package_id: str, handback
     window = ledger["windows"].get(handback["windowId"])
     if not isinstance(task, dict) or task.get("status") != "NEEDS_REVIEW":
         raise HandoverValidationError("C06_REQUIRES_NEEDS_REVIEW_TASK")
-    if not isinstance(window, dict) or window.get("taskId") != handback["taskId"]:
+    if not isinstance(window, dict) or window_current_task_id(window) != handback["taskId"]:
         raise HandoverValidationError("C06_HANDBACK_WINDOW_MISMATCH")
     if handback["completionSignalId"] not in task.get("completionSignalIds", []):
         raise HandoverValidationError("C06_COMPLETION_SIGNAL_NOT_RECORDED")
@@ -537,7 +541,23 @@ def verify_finalization_data(data_root: Path, project_id: str, validation_id: st
         or boundary.get("occupancyReleased") is not False
     ):
         raise HandoverValidationError("C06_FINALIZATION_RECEIPT_CHAIN_INVALID")
-    linked_ledger_receipt(data_root, project_id, finalization["ledgerMutation"], expected_operation, expected_status)
+    linked = linked_ledger_receipt(data_root, project_id, finalization["ledgerMutation"], expected_operation, expected_status)
+    window_mutation = finalization.get("windowMutation", {})
+    successor = finalization.get("successorDispatch", {})
+    snapshot_window = linked.get("afterLedger", {}).get("windows", {}).get(decision.get("windowId"), {})
+    if (
+        window_mutation.get("windowId") != decision.get("windowId")
+        or window_mutation.get("assignmentCount") != window_assignment_count(snapshot_window)
+        or window_mutation.get("windowStatusAfter") != snapshot_window.get("status")
+        or window_mutation.get("currentTaskIdAfter") != window_current_task_id(snapshot_window)
+        or successor.get("required") != (expected_status == "DONE")
+        or successor.get("authorizationSource") != "VERIFY_EXISTING_APPROVED_EXECUTION_MAP"
+        or successor.get("dispatchOnlyIfScopeVerified") is not True
+        or successor.get("bossRepromptRequired") is not False
+        or successor.get("completedTaskId") != decision.get("taskId")
+        or successor.get("completedWindowId") != decision.get("windowId")
+    ):
+        raise HandoverValidationError("C06_FINALIZATION_WINDOW_OR_SUCCESSOR_TRIGGER_INVALID")
     return finalization
 
 
@@ -560,7 +580,10 @@ def finalize(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         return {
             "status": "IDEMPOTENT_EXISTING_C06_FINALIZATION", "validationId": validation_id,
             "taskId": decision["taskId"], "taskStatusAfter": finalization["ledgerMutation"]["taskStatusAfter"],
-            "doneRecorded": finalization["bossDecision"] == "APPROVED", "writePerformed": False,
+            "doneRecorded": finalization["bossDecision"] == "APPROVED",
+            "nextDispatchRequired": finalization["successorDispatch"]["required"],
+            "completedWindowStatus": finalization["windowMutation"]["windowStatusAfter"],
+            "writePerformed": False,
         }, 0
     with validation_lock(data_root, project_id):
         if finalization_path(data_root, project_id, validation_id).exists():
@@ -570,7 +593,10 @@ def finalize(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             return {
                 "status": "IDEMPOTENT_EXISTING_C06_FINALIZATION", "validationId": validation_id,
                 "taskId": decision["taskId"], "taskStatusAfter": finalization["ledgerMutation"]["taskStatusAfter"],
-                "doneRecorded": finalization["bossDecision"] == "APPROVED", "writePerformed": False,
+                "doneRecorded": finalization["bossDecision"] == "APPROVED",
+                "nextDispatchRequired": finalization["successorDispatch"]["required"],
+                "completedWindowStatus": finalization["windowMutation"]["windowStatusAfter"],
+                "writePerformed": False,
             }, 0
         with ledger_lock(data_root, project_id):
             _, ledger_exit = verify_ledger(argparse.Namespace(data_root=str(data_root), config=None, project_id=project_id))
@@ -583,14 +609,36 @@ def finalize(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             if not isinstance(task, dict) or task.get("status") != "NEEDS_REVIEW":
                 raise HandoverValidationError("C06_FINALIZATION_REQUIRES_NEEDS_REVIEW_TASK")
             target_status = "DONE" if boss_decision == "APPROVED" else "NEEDS_REVIEW"
+            window_before = before["windows"].get(decision["windowId"])
+            if not isinstance(window_before, dict) or window_current_task_id(window_before) != decision["taskId"]:
+                raise HandoverValidationError("C06_FINALIZATION_WINDOW_ASSIGNMENT_MISMATCH")
 
             def mutate(after: Dict[str, Any]) -> None:
+                completed_at = utc_now()
                 target = after["tasks"][decision["taskId"]]
                 target["status"] = target_status
                 target["history"].append({
-                    "at": utc_now(), "event": "C06_BOSS_FINALIZATION", "validationId": validation_id,
+                    "at": completed_at, "event": "C06_BOSS_FINALIZATION", "validationId": validation_id,
                     "bossDecision": boss_decision, "to": target_status, "by": CENTRAL_WRITER,
                 })
+                if boss_decision == "APPROVED":
+                    target_window = after["windows"][decision["windowId"]]
+                    history = [dict(item) for item in window_assignments(target_window)]
+                    if not history or history[-1].get("taskId") != decision["taskId"]:
+                        raise HandoverValidationError("C06_FINALIZATION_WINDOW_ASSIGNMENT_MISMATCH")
+                    history[-1]["status"] = "DONE"
+                    history[-1]["completedAt"] = completed_at
+                    assignment_count = len(history)
+                    target_window["assignmentHistory"] = history
+                    target_window["assignmentCount"] = assignment_count
+                    target_window["maxAssignments"] = MAX_TASKS_PER_WINDOW
+                    target_window["currentTaskId"] = None
+                    target_window["status"] = "AVAILABLE_FOR_REUSE" if assignment_count < MAX_TASKS_PER_WINDOW else "RETIRED"
+                    target_window["lastCompletedAt"] = completed_at
+                    for agent in after["subAgents"].values():
+                        if agent.get("windowId") == decision["windowId"] and agent.get("status") in {"REGISTERED", "FROZEN", "DISCONNECTED"}:
+                            agent["status"] = "COMPLETED"
+                            agent["completedAt"] = completed_at
 
             operation = "C06_FINALIZE_DONE" if boss_decision == "APPROVED" else "C06_RECORD_BOSS_REJECTION"
             ledger_result = commit_mutation(
@@ -598,6 +646,8 @@ def finalize(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
                 {"validationId": validation_id, "taskId": decision["taskId"], "bossDecision": boss_decision}, mutate,
             )
             after = load_ledger(data_root, project_id)
+        window_after = after["windows"][decision["windowId"]]
+        assignment_count = window_assignment_count(window_after)
         finalization = {
             "schemaVersion": SCHEMA_VERSION, "recordType": "C06_BOSS_FINALIZATION",
             "validationId": validation_id, "projectId": project_id, "taskId": decision["taskId"],
@@ -606,6 +656,26 @@ def finalize(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             "ledgerMutation": {
                 "receiptId": ledger_result["receiptId"], "afterRevision": after["revision"],
                 "afterLedgerDigest": canonical_digest(after), "taskId": decision["taskId"], "taskStatusAfter": target_status,
+            },
+            "windowMutation": {
+                "windowId": decision["windowId"],
+                "assignmentCount": assignment_count,
+                "maxAssignments": MAX_TASKS_PER_WINDOW,
+                "currentTaskIdAfter": window_current_task_id(window_after),
+                "windowStatusAfter": window_after.get("status"),
+                "canReceiveOneMoreTask": boss_decision == "APPROVED" and assignment_count == 1,
+            },
+            "successorDispatch": {
+                "required": boss_decision == "APPROVED",
+                "action": "RECALCULATE_AND_DISPATCH_ALL_NEXT_ELIGIBLE_TASKS" if boss_decision == "APPROVED" else "NONE",
+                "completedTaskId": decision["taskId"],
+                "completedWindowId": decision["windowId"],
+                "authorizationSource": "VERIFY_EXISTING_APPROVED_EXECUTION_MAP",
+                "dispatchOnlyIfScopeVerified": True,
+                "bossRepromptRequired": False,
+                "centralChoosesWindow": True,
+                "windowMaxAssignments": MAX_TASKS_PER_WINDOW,
+                "scopeChangeRequiresBoss": True,
             },
             "executionBoundary": {
                 "doneRecorded": boss_decision == "APPROVED", "testCreated": False,
@@ -616,7 +686,9 @@ def finalize(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     return {
         "status": "DONE" if boss_decision == "APPROVED" else "NEEDS_REVIEW",
         "validationId": validation_id, "taskId": decision["taskId"], "taskStatusAfter": target_status,
-        "doneRecorded": boss_decision == "APPROVED", "occupancyReleased": False,
+        "doneRecorded": boss_decision == "APPROVED", "nextDispatchRequired": boss_decision == "APPROVED",
+        "bossRepromptRequired": False, "completedWindowStatus": window_after.get("status"),
+        "windowAssignmentCount": assignment_count, "occupancyReleased": False,
         "businessWriteAllowed": False, "ledgerReceiptId": ledger_result["receiptId"],
         "finalizationReceiptId": FINAL_RECEIPT_ID, "writePerformed": True,
     }, 0
@@ -635,6 +707,7 @@ def verify_command(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         "validationId": validation_id, "taskId": decision["taskId"], "validationOutcome": decision["outcome"],
         "bossFinalization": finalization["bossDecision"] if finalization else "PENDING",
         "doneRecorded": bool(finalization and finalization["bossDecision"] == "APPROVED"),
+        "nextDispatchRequired": bool(finalization and finalization["successorDispatch"]["required"]),
         "businessWriteAllowed": False, "occupancyReleased": False, "writePerformed": False,
     }, 0
 

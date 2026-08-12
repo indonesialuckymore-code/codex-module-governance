@@ -45,6 +45,17 @@
 
 完成一个任务后只重算其下游和共享对象，不把全项目重新串行。
 
+前置任务合法 `DONE` 后，C06 的 `successorDispatch` 是中央继续运行的持久触发。中央直接放行当前所有满足依赖与 C05 的任务，不再询问 Boss 是否继续；若没有合格任务，只报告等待的明确前置或变化项。
+
+## 4.1 窗口承接计划
+
+启动图的“窗口”列是中央建议，不是永久绑定。每次真实派发前由中央依据最新总账重新判断：
+
+- `NEW`：新 Terra 窗口，第 1 次承接；
+- `REUSE:<windowId>`：该窗口已完成第 1 项，本任务是第 2 次且最后一次承接；
+- 一个窗口绝不同时运行两项任务，也绝不承接第 3 项；
+- 第 2 项完成后窗口退役，后续任务必须新开或选择另一条只完成过 1 项的窗口。
+
 ## 5. Codex 项目绑定
 
 中央必须通过当前 Codex 项目清单记录：
@@ -80,6 +91,38 @@ authorizationScope:
 建议批准语句：`批准中央启动图 central-plan-001（摘要前 12 位），按图登记并派发；后续波次满足前置和 C05 后继续放行。`
 
 此批准只覆盖图中列明的任务、对象、动作、风险和波次。以下任一变化会使受影响范围失效并重新交 Boss：新增任务、扩大写入对象、唯一写入方变化、风险升级、依赖变化、项目绑定变化、出现 UNKNOWN/CONFLICT、删除/批量覆盖/生产上线/付款/外发或重大权限变化未被逐项列明。
+
+## 6.1 自动续派机器文件
+
+Boss 批准后的运行版必须保存为私有 JSON，并符合 `schemas/codex-approved-execution-map.schema.json`。`scopeDigest` 是对 `executionPlan` 采用排序键、无多余空格的 UTF-8 JSON 计算 SHA-256；C05/C10 输入也必须引用同一个 `bossApprovalRef`、`scopeId`、`scopeDigest` 和完整 `taskIds`。
+
+```json
+{
+  "executionMapSchemaVersion": "0.16.0",
+  "recordType": "C09_APPROVED_EXECUTION_MAP",
+  "planId": "central-plan-001",
+  "projectId": "example-project",
+  "authorization": {
+    "scopeId": "central-plan-001",
+    "scopeDigest": "<64位sha256>",
+    "bossApprovalRef": "boss-approval-central-plan-001"
+  },
+  "executionPlan": {
+    "tasks": [
+      {
+        "taskId": "C-001",
+        "dependencies": [],
+        "packageId": "c001-package-001",
+        "c05ReviewId": "c05-review-c001",
+        "c05ReviewPath": "<私有数据目录内绝对路径>",
+        "c10RequestPath": "<私有数据目录内绝对路径>"
+      }
+    ]
+  }
+}
+```
+
+每份 C05 `windowReview` 还必须记录 `contextCompatibility` 与证据引用：明确兼容才可复用为第 2 项；不兼容或未评估时新开 Terra；存在唯一旧窗口但兼容性为 `UNKNOWN` 时只阻塞该任务。C05 在决定第 2 项复用时原子预留唯一承接槽，避免同一批两个任务同时抢到同一旧窗口。
 
 ## 7. 派发结果
 

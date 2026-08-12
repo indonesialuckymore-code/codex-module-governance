@@ -14,6 +14,7 @@ C02 = SCRIPTS / "initialize_project.py"
 C03 = SCRIPTS / "ledger_manager.py"
 C08 = SCRIPTS / "disconnection_recovery_controller.py"
 import test_independent_handover_validator as c06_fixture
+from disconnection_recovery_controller import affected_context
 PROJECT = "c08-demo-project"
 TASK = "C-08"
 WINDOW = "window-c08-001"
@@ -81,6 +82,23 @@ def release_input(rollback=True, outstanding=False, validation=None):
 
 
 class C08Tests(unittest.TestCase):
+    def test_reserved_second_assignment_is_visible_to_controlled_recovery(self):
+        ledger = {
+            "tasks": {"C-OLD": {"status": "DONE"}, TASK: {"status": "READY"}},
+            "windows": {
+                WINDOW: {
+                    "windowId": WINDOW,
+                    "taskId": "C-OLD",
+                    "currentTaskId": None,
+                    "reservedForTaskId": TASK,
+                    "status": "RESERVED_FOR_REUSE",
+                }
+            },
+            "subAgents": {},
+        }
+        context = affected_context(ledger, incident())
+        self.assertEqual(context, {"windowIds": [WINDOW], "subAgentIds": []})
+
     def freeze(self, root, path, action="--apply", writer="codex-module-central"):
         args = ["--data-root", str(root), "--project-id", PROJECT]
         if writer:

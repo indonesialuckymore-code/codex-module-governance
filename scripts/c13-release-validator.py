@@ -16,7 +16,7 @@ from typing import Any
 
 PLUGIN = "codex-module-governance"
 MARKETPLACE = "qianyi-codex-governance"
-CURRENT_VERSION = "0.15.0"
+CURRENT_VERSION = "0.16.0"
 REQUIRED_SKILLS = {
     "construction-outline-planner",
     "new-project-initializer",

@@ -22,6 +22,7 @@ from initialize_project import C02Error, PROJECT_ID_PATTERN, REGISTRY_DIRECTORY,
 SCHEMA_VERSION = "0.3.0"
 MODULE = "codex"
 CENTRAL_WRITER = "codex-module-central"
+MAX_TASKS_PER_WINDOW = 2
 LEDGERS_DIRECTORY = Path("module-ledgers")
 LEDGER_FILENAME = "ledger.json"
 RECEIPTS_DIRECTORY = "receipts"
@@ -86,6 +87,41 @@ def task_titles(task_id: str, raw_title: str) -> Tuple[str, str]:
     if not title:
         raise LedgerError("TASK_TITLE_INVALID")
     return title, f"{task_id}｜{title}"
+
+
+def window_assignments(window: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return assignment history, including a safe view of pre-0.16 windows."""
+    history = window.get("assignmentHistory")
+    if isinstance(history, list) and history:
+        return history
+    task_id = window.get("taskId")
+    if not isinstance(task_id, str):
+        return []
+    return [{
+        "assignmentNumber": 1,
+        "taskId": task_id,
+        "canonicalTitle": window.get("canonicalTitle"),
+        "runtimeTitle": window.get("runtimeTitle"),
+        "generation": window.get("generation", 1),
+        "contextMode": window.get("contextMode", "NEW"),
+        "dispatchId": window.get("dispatchId"),
+        "assignedAt": window.get("registeredAt"),
+        "completedAt": None,
+        "status": "ACTIVE",
+    }]
+
+
+def window_assignment_count(window: Dict[str, Any]) -> int:
+    count = window.get("assignmentCount")
+    declared = count if isinstance(count, int) and count >= 0 else 0
+    return max(declared, len(window_assignments(window)))
+
+
+def window_current_task_id(window: Dict[str, Any]) -> Optional[str]:
+    if "currentTaskId" in window:
+        value = window.get("currentTaskId")
+        return value if isinstance(value, str) else None
+    return window.get("taskId") if window.get("status") == "REGISTERED" else None
 
 
 def require_object_key(value: str) -> str:
@@ -473,6 +509,7 @@ def register_window(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         ledger["windows"][window_id] = {
             "windowId": window_id,
             "taskId": task_id,
+            "currentTaskId": task_id,
             "canonicalTitle": canonical_title,
             "generation": generation,
             "runtimeTitle": f"{canonical_title}｜G{generation}",
@@ -480,6 +517,20 @@ def register_window(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             "model": "gpt-5.6-terra",
             "contextMode": context_mode,
             "status": "REGISTERED",
+            "maxAssignments": MAX_TASKS_PER_WINDOW,
+            "assignmentCount": 1,
+            "assignmentHistory": [{
+                "assignmentNumber": 1,
+                "taskId": task_id,
+                "canonicalTitle": canonical_title,
+                "generation": generation,
+                "runtimeTitle": f"{canonical_title}｜G{generation}",
+                "contextMode": context_mode,
+                "dispatchId": None,
+                "assignedAt": utc_now(),
+                "completedAt": None,
+                "status": "ACTIVE",
+            }],
             "registeredAt": utc_now(),
         }
 

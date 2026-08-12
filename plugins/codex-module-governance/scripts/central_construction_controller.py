@@ -9,10 +9,14 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from initialize_project import C02Error, PROJECT_ID_PATTERN, load_data_root
-from ledger_manager import LedgerError, load_ledger
+from initialize_project import C02Error, PROJECT_ID_PATTERN, is_within, load_data_root
+from independent_handover_validator import HandoverValidationError, verify_finalization_data
+from ledger_manager import CENTRAL_WRITER, LedgerError, TASK_ID_PATTERN, load_ledger, verify_ledger
+from occupancy_conflict_checker import OccupancyError, evaluate as evaluate_occupancy
+from task_package_generator import TaskPackageError
+from task_window_dispatch_controller import DispatchError, prepare as prepare_dispatch
 
 
 SCHEMA_VERSION = "0.12.0"
@@ -24,6 +28,7 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = PLUGIN_ROOT / "config" / "core-capability-registry.json"
 PLUGIN_SKILLS = PLUGIN_ROOT / "skills"
 PLUGIN_SCRIPTS = PLUGIN_ROOT / "scripts"
+SUCCESSOR_ROOT = Path("successor-dispatches")
 
 EXPECTED = {
     "C00": ("PLANNER", "construction-outline-planner", None),
@@ -101,6 +106,88 @@ def load_json(path: Path, error: str) -> Dict[str, Any]:
     if not isinstance(value, dict):
         raise CentralRoutingError(error)
     return value
+
+
+def load_private_json(data_root: Path, raw_path: str, error: str) -> Dict[str, Any]:
+    path = Path(raw_path).expanduser().resolve()
+    if not path.is_file() or not is_within(path, data_root):
+        raise CentralRoutingError("C09_INPUT_MUST_BE_INSIDE_PRIVATE_DATA_ROOT")
+    return load_json(path, error)
+
+
+def successor_batch_dir(data_root: Path, project_id: str, validation_id: str) -> Path:
+    return data_root / SUCCESSOR_ROOT / project_id / validation_id
+
+
+def successor_batch_paths(data_root: Path, project_id: str, validation_id: str) -> List[Path]:
+    root = successor_batch_dir(data_root, project_id, validation_id)
+    paths = sorted(root.glob("successor-batch-r*.json")) if root.is_dir() else []
+    legacy = root / "successor-batch.json"
+    if legacy.is_file():
+        paths.insert(0, legacy)
+    return paths
+
+
+def write_exclusive(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with path.open("x", encoding="utf-8") as stream:
+            stream.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+    except FileExistsError:
+        raise CentralRoutingError("C09_SUCCESSOR_BATCH_ALREADY_EXISTS")
+
+
+def validate_execution_map(value: Dict[str, Any], project_id: str) -> Dict[str, Any]:
+    required = {"executionMapSchemaVersion", "recordType", "planId", "projectId", "authorization", "executionPlan"}
+    if set(value) != required or value.get("executionMapSchemaVersion") != "0.16.0" or value.get("recordType") != "C09_APPROVED_EXECUTION_MAP" or value.get("projectId") != project_id:
+        raise CentralRoutingError("C09_EXECUTION_MAP_SCHEMA_UNSUPPORTED")
+    plan_id = require_reference(value.get("planId"), "C09_EXECUTION_MAP_ID_INVALID")
+    authorization = value.get("authorization")
+    if not isinstance(authorization, dict) or set(authorization) != {"scopeId", "scopeDigest", "bossApprovalRef"}:
+        raise CentralRoutingError("C09_EXECUTION_MAP_AUTHORIZATION_INVALID")
+    if authorization.get("scopeId") != plan_id:
+        raise CentralRoutingError("C09_EXECUTION_MAP_SCOPE_ID_MISMATCH")
+    scope_digest = authorization.get("scopeDigest")
+    if not isinstance(scope_digest, str) or not re.fullmatch(r"[a-f0-9]{64}", scope_digest):
+        raise CentralRoutingError("C09_EXECUTION_MAP_DIGEST_INVALID")
+    require_reference(authorization.get("bossApprovalRef"), "C09_EXECUTION_MAP_BOSS_APPROVAL_INVALID")
+    execution_plan = value.get("executionPlan")
+    if not isinstance(execution_plan, dict) or set(execution_plan) != {"tasks"} or canonical_digest(execution_plan) != scope_digest:
+        raise CentralRoutingError("C09_EXECUTION_MAP_DIGEST_MISMATCH")
+    raw_tasks = execution_plan.get("tasks")
+    if not isinstance(raw_tasks, list) or not 1 <= len(raw_tasks) <= 100:
+        raise CentralRoutingError("C09_EXECUTION_MAP_TASKS_INVALID")
+    tasks: List[Dict[str, Any]] = []
+    seen = set()
+    required_task_keys = {"taskId", "dependencies", "packageId", "c05ReviewId", "c05ReviewPath", "c10RequestPath"}
+    for raw in raw_tasks:
+        if not isinstance(raw, dict) or set(raw) != required_task_keys:
+            raise CentralRoutingError("C09_EXECUTION_MAP_TASK_INVALID")
+        task_id = require_reference(raw.get("taskId"), "C09_EXECUTION_MAP_TASK_ID_INVALID")
+        if not TASK_ID_PATTERN.fullmatch(task_id) or task_id in seen:
+            raise CentralRoutingError("C09_EXECUTION_MAP_TASK_ID_INVALID")
+        seen.add(task_id)
+        dependencies = raw.get("dependencies")
+        if not isinstance(dependencies, list) or len(dependencies) > 40 or len(dependencies) != len(set(dependencies)):
+            raise CentralRoutingError("C09_EXECUTION_MAP_DEPENDENCIES_INVALID")
+        for dependency in dependencies:
+            if not isinstance(dependency, str) or not TASK_ID_PATTERN.fullmatch(dependency):
+                raise CentralRoutingError("C09_EXECUTION_MAP_DEPENDENCIES_INVALID")
+        if task_id in dependencies:
+            raise CentralRoutingError("C09_EXECUTION_MAP_SELF_DEPENDENCY")
+        if not isinstance(raw.get("c05ReviewPath"), str) or not raw["c05ReviewPath"].strip():
+            raise CentralRoutingError("C09_EXECUTION_MAP_REVIEW_PATH_INVALID")
+        if not isinstance(raw.get("c10RequestPath"), str) or not raw["c10RequestPath"].strip():
+            raise CentralRoutingError("C09_EXECUTION_MAP_REQUEST_PATH_INVALID")
+        tasks.append({
+            "taskId": task_id,
+            "dependencies": dependencies,
+            "packageId": require_reference(raw.get("packageId"), "C09_EXECUTION_MAP_PACKAGE_ID_INVALID"),
+            "c05ReviewId": require_reference(raw.get("c05ReviewId"), "C09_EXECUTION_MAP_REVIEW_ID_INVALID"),
+            "c05ReviewPath": raw["c05ReviewPath"].strip(),
+            "c10RequestPath": raw["c10RequestPath"].strip(),
+        })
+    return {**value, "executionPlan": {"tasks": tasks}}
 
 
 def validate_registry(registry: Dict[str, Any], check_files: bool = True) -> Dict[str, Any]:
@@ -188,6 +275,7 @@ def decision_base(request: Dict[str, Any], registry: Dict[str, Any]) -> Dict[str
         "intent": request["intent"],
         "models": {"central": CENTRAL_MODEL, "taskWindow": TASK_MODEL, "subAgent": TASK_MODEL},
         "subAgentPolicy": {"maxConcurrentFirstLevel": 3, "allowGrandchildren": False},
+        "windowPolicy": {"maxSequentialAssignments": 2, "allowConcurrentAssignments": False, "centralChoosesReuse": True},
         "boundaries": {
             "writePerformed": False,
             "downstreamInvoked": False,
@@ -268,8 +356,248 @@ def status(registry: Dict[str, Any]) -> Dict[str, Any]:
         "pendingStages": [],
         "models": {"central": CENTRAL_MODEL, "taskWindow": TASK_MODEL, "subAgent": TASK_MODEL},
         "subAgentPolicy": {"maxConcurrentFirstLevel": 3, "allowGrandchildren": False},
-        "boundaries": {"naturalLanguageGatewayAvailable": True, "onePassExecutionMapAvailable": True, "scopedBatchApprovalAvailable": True, "twoPhaseDispatchAvailable": True, "projectBoundDispatchRequired": True, "runtimeConfirmationRequired": True, "businessExecutionAvailable": False},
+        "windowPolicy": {"maxSequentialAssignments": 2, "allowConcurrentAssignments": False, "centralChoosesReuse": True},
+        "boundaries": {"naturalLanguageGatewayAvailable": True, "onePassExecutionMapAvailable": True, "scopedBatchApprovalAvailable": True, "automaticSuccessorDispatchAvailable": True, "twoPhaseDispatchAvailable": True, "twoTaskWindowLifecycleEnforced": True, "projectBoundDispatchRequired": True, "runtimeConfirmationRequired": True, "businessExecutionAvailable": False},
         "registryDigest": canonical_digest(registry),
+    }
+
+
+def continue_successors(args: argparse.Namespace, registry: Dict[str, Any]) -> Dict[str, Any]:
+    data_root = load_data_root(args)
+    project_id = require_reference(args.project_id, "C09_PROJECT_ID_INVALID")
+    validation_id = require_reference(args.validation_id, "C09_VALIDATION_ID_INVALID")
+    if args.writer_id != CENTRAL_WRITER:
+        raise CentralRoutingError("C09_WRITER_NOT_AUTHORIZED")
+    execution_map_raw = load_private_json(data_root, args.execution_map, "C09_EXECUTION_MAP_INVALID_JSON")
+    execution_map = validate_execution_map(execution_map_raw, project_id)
+    map_digest = canonical_digest(execution_map_raw)
+    existing_paths = successor_batch_paths(data_root, project_id, validation_id)
+    existing_batches = [load_json(path, "C09_SUCCESSOR_BATCH_INVALID") for path in existing_paths]
+    if any(batch.get("source", {}).get("executionMapDigest") != map_digest for batch in existing_batches):
+        raise CentralRoutingError("C09_SUCCESSOR_BATCH_EXISTS_FOR_DIFFERENT_MAP")
+    previously_prepared: Dict[str, Dict[str, Any]] = {}
+    for batch in existing_batches:
+        for item in batch.get("preparedTasks", []):
+            if isinstance(item, dict) and isinstance(item.get("taskId"), str):
+                previously_prepared[item["taskId"]] = item
+    finalization = verify_finalization_data(data_root, project_id, validation_id)
+    trigger = finalization.get("successorDispatch", {})
+    if (
+        finalization.get("bossDecision") != "APPROVED"
+        or trigger.get("required") is not True
+        or trigger.get("dispatchOnlyIfScopeVerified") is not True
+    ):
+        raise CentralRoutingError("C09_VALID_SUCCESSOR_TRIGGER_REQUIRED")
+    _, ledger_code = verify_ledger(argparse.Namespace(data_root=str(data_root), config=None, project_id=project_id))
+    if ledger_code != 0:
+        raise CentralRoutingError("C09_LEDGER_INTEGRITY_UNVERIFIED")
+    ledger = load_ledger(data_root, project_id)
+    if ledger.get("recovery", {}).get("state") not in {"NORMAL", "CLOSED"}:
+        raise CentralRoutingError("C09_RECOVERY_STATE_BLOCKS_SUCCESSOR_DISPATCH")
+    if ledger.get("hardStops"):
+        raise CentralRoutingError("C09_LEDGER_HARD_STOP_BLOCKS_SUCCESSOR_DISPATCH")
+
+    authorization = execution_map["authorization"]
+    task_ids = [item["taskId"] for item in execution_map["executionPlan"]["tasks"]]
+    successor_inputs: Dict[str, Dict[str, Any]] = {}
+
+    # These checks protect the integrity and authorization of the complete Boss-
+    # approved map, so they run before any task-specific mutation.
+    for item in execution_map["executionPlan"]["tasks"]:
+        if not isinstance(ledger.get("tasks", {}).get(item["taskId"]), dict):
+            raise CentralRoutingError(f"C09_EXECUTION_MAP_TASK_NOT_IN_LEDGER:{item['taskId']}")
+        missing_dependencies = [dependency for dependency in item["dependencies"] if dependency not in ledger.get("tasks", {})]
+        if missing_dependencies:
+            raise CentralRoutingError(f"C09_EXECUTION_MAP_DEPENDENCY_NOT_IN_LEDGER:{item['taskId']}")
+        review_path = Path(item["c05ReviewPath"]).expanduser().resolve()
+        request_path = Path(item["c10RequestPath"]).expanduser().resolve()
+        if not review_path.is_file() or not request_path.is_file() or not is_within(review_path, data_root) or not is_within(request_path, data_root):
+            raise CentralRoutingError("C09_SUCCESSOR_INPUT_OUTSIDE_PRIVATE_DATA_ROOT")
+        review_raw = load_json(review_path, "C09_SUCCESSOR_C05_REVIEW_INVALID")
+        request_raw = load_json(request_path, "C09_SUCCESSOR_C10_REQUEST_INVALID")
+        scope = request_raw.get("bossDispatchAuthorization", {}).get("scope", {})
+        boss_reference = request_raw.get("bossDispatchAuthorization", {}).get("reference")
+        if (
+            review_raw.get("taskId") != item["taskId"]
+            or review_raw.get("reviewId") != item["c05ReviewId"]
+            or review_raw.get("bossReview", {}).get("reference") != authorization["bossApprovalRef"]
+            or request_raw.get("taskId") != item["taskId"]
+            or scope.get("type") != "EXECUTION_MAP"
+            or scope.get("scopeId") != authorization["scopeId"]
+            or scope.get("scopeDigest") != authorization["scopeDigest"]
+            or set(scope.get("taskIds", [])) != set(task_ids)
+            or boss_reference != authorization["bossApprovalRef"]
+        ):
+            raise CentralRoutingError("C09_SUCCESSOR_AUTHORIZATION_SCOPE_MISMATCH")
+        successor_inputs[item["taskId"]] = {
+            "reviewPath": review_path,
+            "requestPath": request_path,
+            "request": request_raw,
+        }
+
+    prepared_tasks: List[Dict[str, Any]] = []
+    waiting_tasks: List[Dict[str, Any]] = []
+    completed_tasks: List[Dict[str, Any]] = []
+    active_tasks: List[Dict[str, Any]] = []
+    previously_prepared_tasks: List[Dict[str, Any]] = []
+    blocked_tasks: List[Dict[str, Any]] = []
+    failed_tasks: List[Dict[str, Any]] = []
+
+    for item in execution_map["executionPlan"]["tasks"]:
+        task = ledger["tasks"][item["taskId"]]
+        task_status = task.get("status")
+        if task_status == "DONE":
+            completed_tasks.append({"taskId": item["taskId"], "taskStatus": task_status})
+            continue
+        if task_status in {"IN_PROGRESS", "NEEDS_REVIEW", "PARTIAL"}:
+            active_tasks.append({"taskId": item["taskId"], "taskStatus": task_status})
+            continue
+        if item["taskId"] in previously_prepared:
+            if task_status != "READY":
+                raise CentralRoutingError(f"C09_PREPARED_TASK_LEDGER_STATE_INVALID:{item['taskId']}")
+            previously_prepared_tasks.append({
+                **previously_prepared[item["taskId"]],
+                "taskStatus": task_status,
+                "dispatchState": "PREPARED_AWAITING_RUNTIME_CONFIRMATION",
+            })
+            continue
+        if task_status not in {"PLANNED", "READY"}:
+            blocked_tasks.append({
+                "taskId": item["taskId"],
+                "stage": "LEDGER_STATUS",
+                "reason": "C09_TASK_STATUS_NOT_DISPATCHABLE",
+                "taskStatus": task_status,
+            })
+            continue
+        unmet = [dependency for dependency in item["dependencies"] if ledger.get("tasks", {}).get(dependency, {}).get("status") != "DONE"]
+        if unmet:
+            waiting_tasks.append({"taskId": item["taskId"], "taskStatus": task_status, "unmetDependencies": unmet})
+            continue
+
+        review_path = successor_inputs[item["taskId"]]["reviewPath"]
+        request_path = successor_inputs[item["taskId"]]["requestPath"]
+        request_raw = successor_inputs[item["taskId"]]["request"]
+        if task_status == "PLANNED":
+            try:
+                c05_preview, c05_preview_code = evaluate_occupancy(argparse.Namespace(
+                    data_root=str(data_root), config=None, project_id=project_id, writer_id=CENTRAL_WRITER,
+                    command="evaluate", package_id=item["packageId"], review=str(review_path), dry_run=True, apply=False,
+                ))
+            except (LedgerError, OccupancyError, TaskPackageError, ValueError) as error:
+                reason = str(error)
+                target_list = blocked_tasks if reason.startswith("C05_GATE_NOT_READY:") else failed_tasks
+                target_list.append({"taskId": item["taskId"], "stage": "C05_PREVIEW", "reason": reason})
+                continue
+            if c05_preview_code != 0 or c05_preview.get("status") != "ELIGIBLE_FOR_DISPATCH_APPROVAL":
+                blocked_tasks.append({
+                    "taskId": item["taskId"],
+                    "stage": "C05_PREVIEW",
+                    "reason": c05_preview.get("status", "C09_SUCCESSOR_C05_NOT_ELIGIBLE"),
+                })
+                continue
+            try:
+                c05_result, c05_code = evaluate_occupancy(argparse.Namespace(
+                    data_root=str(data_root), config=None, project_id=project_id, writer_id=CENTRAL_WRITER,
+                    command="evaluate", package_id=item["packageId"], review=str(review_path), dry_run=False, apply=True,
+                ))
+            except (LedgerError, OccupancyError, TaskPackageError, ValueError) as error:
+                reason = str(error)
+                target_list = blocked_tasks if reason.startswith("C05_GATE_NOT_READY:") else failed_tasks
+                target_list.append({"taskId": item["taskId"], "stage": "C05", "reason": reason})
+                continue
+            if c05_code != 0 or c05_result.get("status") not in {"ELIGIBLE_FOR_DISPATCH_APPROVAL", "IDEMPOTENT_EXISTING_C05_DECISION"}:
+                blocked_tasks.append({
+                    "taskId": item["taskId"],
+                    "stage": "C05",
+                    "reason": c05_result.get("status", "C09_SUCCESSOR_C05_NOT_ELIGIBLE"),
+                })
+                continue
+        try:
+            c10_result, c10_code = prepare_dispatch(argparse.Namespace(
+                data_root=str(data_root), config=None, project_id=project_id, writer_id=CENTRAL_WRITER,
+                command="prepare", package_id=item["packageId"], review_id=item["c05ReviewId"], request=str(request_path),
+            ))
+        except (DispatchError, LedgerError, OccupancyError, TaskPackageError, ValueError) as error:
+            failed_tasks.append({"taskId": item["taskId"], "stage": "C10", "reason": str(error)})
+            continue
+        if c10_code != 0 or c10_result.get("status") not in {"READY_FOR_RUNTIME_DISPATCH", "IDEMPOTENT_EXISTING_DISPATCH_PLAN"}:
+            blocked_tasks.append({
+                "taskId": item["taskId"],
+                "stage": "C10",
+                "reason": c10_result.get("status", "C09_SUCCESSOR_C10_NOT_READY"),
+            })
+            continue
+        prepared_tasks.append({
+            "taskId": item["taskId"],
+            "packageId": item["packageId"],
+            "reviewId": item["c05ReviewId"],
+            "dispatchId": request_raw.get("dispatchId"),
+            "windowAction": c10_result.get("windowAction"),
+            "c10Status": c10_result.get("status"),
+        })
+        ledger = load_ledger(data_root, project_id)
+
+    classifications = {
+        "waitingTasks": waiting_tasks,
+        "completedTasks": completed_tasks,
+        "activeTasks": active_tasks,
+        "previouslyPreparedTasks": previously_prepared_tasks,
+        "blockedTasks": blocked_tasks,
+        "failedTasks": failed_tasks,
+    }
+    if not prepared_tasks:
+        if existing_batches:
+            status_value = "IDEMPOTENT_SUCCESSOR_BATCH"
+        else:
+            status_value = "WAITING_FOR_SUCCESSOR_DEPENDENCIES" if waiting_tasks and not blocked_tasks and not failed_tasks else "NO_SUCCESSOR_READY"
+        return {
+            "status": status_value,
+            "validationId": validation_id,
+            "preparedCount": 0,
+            **classifications,
+            "writePerformed": False,
+            "runtimeDispatchPerformed": False,
+            "recomputedFromLiveLedger": True,
+        }
+    revision = len(existing_batches) + 1
+    target = successor_batch_dir(data_root, project_id, validation_id) / f"successor-batch-r{revision:04d}.json"
+    artifact = {
+        "schemaVersion": "0.16.0",
+        "recordType": "C09_SUCCESSOR_DISPATCH_BATCH",
+        "projectId": project_id,
+        "validationId": validation_id,
+        "revision": revision,
+        "completedTaskId": finalization["taskId"],
+        "planId": execution_map["planId"],
+        "authorization": authorization,
+        "preparedTasks": prepared_tasks,
+        **classifications,
+        "source": {
+            "executionMapDigest": map_digest,
+            "finalizationDigest": canonical_digest(finalization),
+            "registryDigest": canonical_digest(registry),
+            "previousBatchRefs": [str(path) for path in existing_paths],
+        },
+        "boundary": {
+            "c05AndC10PrepareInvoked": True,
+            "runtimeDispatchPerformed": False,
+            "runtimeConfirmationStillRequired": True,
+            "bossRepromptRequired": False,
+            "businessWritePerformed": False,
+        },
+    }
+    write_exclusive(target, artifact)
+    return {
+        "status": "READY_FOR_BATCH_RUNTIME_DISPATCH",
+        "validationId": validation_id,
+        "preparedCount": len(prepared_tasks),
+        "preparedTasks": prepared_tasks,
+        **classifications,
+        "batchArtifact": str(target),
+        "writePerformed": True,
+        "runtimeDispatchPerformed": False,
+        "bossRepromptRequired": False,
+        "recomputedFromLiveLedger": True,
     }
 
 
@@ -280,6 +608,11 @@ def parse_args() -> argparse.Namespace:
     subparsers.add_parser("status")
     route_parser = subparsers.add_parser("route")
     route_parser.add_argument("--request", required=True)
+    successor_parser = subparsers.add_parser("continue-successors")
+    successor_parser.add_argument("--project-id", required=True)
+    successor_parser.add_argument("--validation-id", required=True)
+    successor_parser.add_argument("--execution-map", required=True)
+    successor_parser.add_argument("--writer-id", required=True)
     return parser.parse_args()
 
 
@@ -290,14 +623,16 @@ def main() -> int:
         registry = load_registry()
         if args.command == "status":
             output = status(registry)
-        else:
+        elif args.command == "route":
             request_path = Path(args.request).expanduser().resolve()
             if data_root != request_path and data_root not in request_path.parents:
                 raise CentralRoutingError("C09_REQUEST_MUST_BE_INSIDE_PRIVATE_DATA_ROOT")
             output = route(data_root, load_json(request_path, "C09_ROUTING_REQUEST_INVALID_JSON"), registry)
+        else:
+            output = continue_successors(args, registry)
         print_result(output)
         return 0
-    except (C02Error, CentralRoutingError, ValueError) as error:
+    except (C02Error, CentralRoutingError, DispatchError, HandoverValidationError, LedgerError, OccupancyError, TaskPackageError, ValueError) as error:
         print_result({"status": "REFUSED", "reason": str(error), "writePerformed": False, "dispatchPerformed": False})
         return 2
 

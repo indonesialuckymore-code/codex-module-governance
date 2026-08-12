@@ -20,12 +20,23 @@ description: 在 Boss 对单项任务或中央启动图作出范围化批准且 
 5. 部分创建、标题不符或确认失败不得更新总账；报告 `TASK_IDENTITY_MISMATCH / NEEDS_REVIEW`，运行时应关闭本轮孤立对象或交 C08 冻结处理。
 6. 如果当前 Codex 表面不能自动创建或复用任务，`export-fallback` 只生成可复制任务包交 Boss 手工建窗；真实 ID 回传前不得确认派发成功。
 
+## 窗口两任务上限
+
+- 窗口是稳定运行身份，当前任务是窗口内的一次承接记录；C03 保存 `assignmentHistory`，避免第 2 项任务被误判成旧任务身份。
+- 新窗口登记第 1 次承接。只有第 1 项已由 C06 + Boss 记为 `DONE`、窗口为 `AVAILABLE_FOR_REUSE` 且没有当前任务时，C10 才接受第 2 次承接。
+- C05 对第 2 次承接使用 `RESERVED_FOR_REUSE + reservedForTaskId + reuseReservationId` 原子占住唯一剩余名额；C10 准备和确认都必须核对同一预留，其他任务不得抢占。
+- 运行时派发失败时保留该预留，允许重试同一不可覆盖派发单。若中央决定放弃，不得静默清除；以预留任务 ID 和窗口 ID 转 C08，由 Boss 控制恢复或取消。
+- 第 2 次派发必须把旧任务标题改成新任务的完整 `任务ID｜业务名称｜G代际` 并回读确认；只发送消息但标题仍旧，按身份不符停止。
+- 第 2 项完成后窗口为 `RETIRED`。`assignmentCount >= 2`、`currentTaskId` 非空或状态不是 `AVAILABLE_FOR_REUSE` 时，一律拒绝复用。
+- 复用窗口内不得并发两项任务；旧任务的一级子 Agent 必须在 `DONE` 时结束，才能为第 2 项重新计算最多 3 个一级子 Agent。
+
 ## 中央启动图批量授权
 
 - C10 接受 `SINGLE_TASK` 或 `EXECUTION_MAP` 两种批准范围。
 - `EXECUTION_MAP` 必须包含启动图 ID、SHA-256、当前波次和全部获批任务 ID；当前任务不在清单中就拒绝。
 - 同一波所有任务先分别通过 C04、C05 和 `prepare`，再批量调用运行时；某个任务失败不把其他已真实成功且无冲突的任务伪装成失败，但失败项不得写入 `IN_PROGRESS`。
 - 后续波次复用原启动图批准，但仍要验证前置任务已由 C06 + Boss 确认为 `DONE`，并重新运行 C05。
+- C06 返回 `successorDispatch.required=true` 时，中央直接准备并真实派发所有新近合格任务；范围未变化时不再向 Boss 请求“下一项”批准。
 
 ## 项目归属门禁
 

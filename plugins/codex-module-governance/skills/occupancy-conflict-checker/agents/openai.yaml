@@ -1,4 +1,4 @@
 interface:
   display_name: "占用与冲突检查器"
-  short_description: "检查任务对象占用、并行风险以及新旧窗口选择建议"
-  default_prompt: "Use $occupancy-conflict-checker to review a Boss-approved task package for occupancy conflicts without dispatching it."
+  short_description: "检查对象冲突及窗口第 2 次承接资格"
+  default_prompt: "使用 $occupancy-conflict-checker 检查已批准任务包的对象占用和窗口资格；只有完成一项且空闲的窗口可再用一次，达到两项时拒绝复用，不执行派发。"

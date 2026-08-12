@@ -13,7 +13,19 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from initialize_project import C02Error, PROJECT_ID_PATTERN, is_within, load_data_root
-from ledger_manager import CENTRAL_WRITER, LedgerError, canonical_digest, commit_mutation, ledger_lock, load_ledger, utc_now
+from ledger_manager import (
+    CENTRAL_WRITER,
+    LedgerError,
+    MAX_TASKS_PER_WINDOW,
+    canonical_digest,
+    commit_mutation,
+    ledger_lock,
+    load_ledger,
+    utc_now,
+    window_assignment_count,
+    window_assignments,
+    window_current_task_id,
+)
 from occupancy_conflict_checker import OccupancyError, verify_decision_data
 from task_package_generator import TaskPackageError, load_package, verify_package
 
@@ -233,6 +245,33 @@ def classify(decision: Dict[str, Any]) -> str:
     return "YELLOW"
 
 
+def next_task_generation(ledger: Dict[str, Any], task_id: str) -> int:
+    generations = []
+    for window in ledger["windows"].values():
+        for assignment in window_assignments(window):
+            if assignment.get("taskId") == task_id and isinstance(assignment.get("generation"), int):
+                generations.append(assignment["generation"])
+    return max(generations, default=0) + 1
+
+
+def window_ready_for_second_assignment(window: Dict[str, Any], ledger: Dict[str, Any], task_id: str, reservation_id: Optional[str]) -> bool:
+    if window_assignment_count(window) != 1:
+        return False
+    previous_task_id = window.get("taskId")
+    if ledger["tasks"].get(previous_task_id, {}).get("status") != "DONE":
+        return False
+    explicit = window.get("status") == "AVAILABLE_FOR_REUSE" and window_current_task_id(window) is None
+    legacy = "assignmentHistory" not in window and window.get("status") == "REGISTERED"
+    reserved = (
+        window.get("status") == "RESERVED_FOR_REUSE"
+        and window_current_task_id(window) is None
+        and window.get("reservedForTaskId") == task_id
+        and reservation_id is not None
+        and window.get("reuseReservationId") == reservation_id
+    )
+    return explicit or legacy or reserved
+
+
 def prepare(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     root = load_data_root(args); project_id = require_ref(args.project_id, "C10_PROJECT_ID_INVALID")
     if not PROJECT_ID_PATTERN.fullmatch(project_id): raise DispatchError("C10_PROJECT_ID_INVALID")
@@ -244,7 +283,15 @@ def prepare(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     if target.exists():
         existing = read_json(target, "C10_EXISTING_PLAN_INVALID")
         if existing.get("source", {}).get("requestDigest") == request_digest:
-            return {"status": "IDEMPOTENT_EXISTING_DISPATCH_PLAN", "dispatchId": request["dispatchId"], "trafficLight": existing["trafficLight"], "writePerformed": False, "dispatchPerformed": False}, 0
+            return {
+                "status": "IDEMPOTENT_EXISTING_DISPATCH_PLAN",
+                "dispatchId": request["dispatchId"],
+                "trafficLight": existing["trafficLight"],
+                "windowAction": existing.get("windowAction"),
+                "taskIdentity": existing.get("taskIdentity"),
+                "writePerformed": False,
+                "dispatchPerformed": False,
+            }, 0
         raise DispatchError("C10_DISPATCH_ID_REUSED_WITH_DIFFERENT_REQUEST")
     package, decision, ledger = verified_sources(root, project_id, package_id, review_id, request["taskId"])
     window = decision["windowDecision"]
@@ -259,20 +306,32 @@ def prepare(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     }
     task = ledger["tasks"][request["taskId"]]
     canonical_title = task.get("canonicalTitle", f"{request['taskId']}｜{task['title']}")
+    previous_task_id = None
+    assignment_number = 1
+    reuse_type = None
     if window["status"] == "OPEN_NEW_WINDOW":
-        generations = [
-            item.get("generation", 1)
-            for item in ledger["windows"].values()
-            if item.get("taskId") == request["taskId"] and isinstance(item.get("generation", 1), int)
-        ]
-        generation = max(generations, default=0) + 1
+        generation = next_task_generation(ledger, request["taskId"])
     else:
         existing_window = ledger["windows"].get(window.get("windowId"))
-        if not isinstance(existing_window, dict) or existing_window.get("taskId") != request["taskId"]:
-            raise DispatchError("C10_TASK_IDENTITY_MISMATCH")
-        generation = existing_window.get("generation", 1)
+        if not isinstance(existing_window, dict):
+            raise DispatchError("C10_REUSED_WINDOW_NOT_FOUND")
+        reuse_type = window.get("reuseType")
+        assignment_number = window.get("assignmentNumber", window_assignment_count(existing_window) + 1)
+        if reuse_type == "CURRENT_ASSIGNMENT":
+            if window_current_task_id(existing_window) != request["taskId"]:
+                raise DispatchError("C10_TASK_IDENTITY_MISMATCH")
+            generation = existing_window.get("generation", 1)
+            assignment_number = window_assignment_count(existing_window)
+        else:
+            previous_task_id = existing_window.get("taskId")
+            if (
+                assignment_number != 2
+                or not window_ready_for_second_assignment(existing_window, ledger, request["taskId"], window.get("reuseReservationId"))
+            ):
+                raise DispatchError("C10_WINDOW_NOT_ELIGIBLE_FOR_SECOND_ASSIGNMENT")
+            generation = next_task_generation(ledger, request["taskId"])
     runtime_title = f"{canonical_title}｜G{generation}"
-    task_identity = {"taskId": request["taskId"], "canonicalTitle": canonical_title, "runtimeTitle": runtime_title, "generation": generation}
+    task_identity = {"taskId": request["taskId"], "canonicalTitle": canonical_title, "runtimeTitle": runtime_title, "generation": generation, "assignmentNumber": assignment_number}
     plan = {
         "schemaVersion": SCHEMA_VERSION, "recordType": "C10_DISPATCH_PLAN", "dispatchId": request["dispatchId"],
         "createdAt": utc_now(), "projectId": project_id, "packageId": package_id, "reviewId": review_id,
@@ -284,7 +343,7 @@ def prepare(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         "runtimeProject": request["runtimeProject"],
         "runtimeTarget": {"type": "project", "projectId": request["runtimeProject"]["codexProjectId"], "environment": {"type": environment_type}},
         "projectAssociationProtocol": association_protocol,
-        "windowAction": {"action": "CREATE_TASK" if window["status"] == "OPEN_NEW_WINDOW" else "SEND_TO_EXISTING_TASK", "windowId": window.get("windowId"), "model": "gpt-5.6-terra", "contextMode": "NEW" if window["status"] == "OPEN_NEW_WINDOW" else "REUSED", "generation": generation, "runtimeTitle": runtime_title},
+        "windowAction": {"action": "CREATE_TASK" if window["status"] == "OPEN_NEW_WINDOW" else "SEND_TO_EXISTING_TASK", "windowId": window.get("windowId"), "model": "gpt-5.6-terra", "contextMode": "NEW" if window["status"] == "OPEN_NEW_WINDOW" else "REUSED", "generation": generation, "runtimeTitle": runtime_title, "assignmentNumber": assignment_number, "maxAssignments": MAX_TASKS_PER_WINDOW, "reuseType": reuse_type, "reuseReservationId": window.get("reuseReservationId"), "previousTaskId": previous_task_id, "renameRequired": bool(previous_task_id)},
         "subAgents": [{**item, "model": "gpt-5.6-terra", "parent": "TASK_WINDOW"} for item in request["subAgents"]],
         "taskPackage": {key: package[key] for key in ("displayName", "taskIdentity", "task", "requiredReading", "realTimeChecks", "allowedActions", "forbiddenActions", "preflightSnapshot", "executionSequence", "acceptance", "hardStops", "rollbackPlan", "deliverables", "handbackRule")},
         "boundary": {"runtimeCallPerformed": False, "ledgerUpdated": False, "businessWritePerformed": False, "requiresAllRuntimeResultsBeforeConfirm": True, "completionReturnsToParentWindow": True},
@@ -373,21 +432,49 @@ def confirm(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         if not isinstance(task, dict) or task.get("status") != "READY": raise DispatchError("C10_TASK_MUST_BE_READY_AT_CONFIRMATION")
         if plan["windowAction"]["action"] == "CREATE_TASK" and confirmation["windowId"] in before["windows"]: raise DispatchError("C10_WINDOW_ID_ALREADY_REGISTERED")
         if plan["windowAction"]["action"] == "SEND_TO_EXISTING_TASK" and confirmation["windowId"] not in before["windows"]: raise DispatchError("C10_REUSED_WINDOW_NOT_FOUND")
+        if plan["windowAction"]["action"] == "SEND_TO_EXISTING_TASK":
+            existing_window = before["windows"][confirmation["windowId"]]
+            if plan["windowAction"].get("reuseType") == "CURRENT_ASSIGNMENT":
+                if window_current_task_id(existing_window) != plan["taskId"]:
+                    raise DispatchError("C10_TASK_IDENTITY_MISMATCH")
+            elif (
+                not window_ready_for_second_assignment(existing_window, before, plan["taskId"], plan["windowAction"].get("reuseReservationId"))
+            ):
+                raise DispatchError("C10_WINDOW_NOT_ELIGIBLE_FOR_SECOND_ASSIGNMENT")
         active = [x for x in before["subAgents"].values() if x.get("windowId") == confirmation["windowId"] and x.get("status") in {"REGISTERED", "FROZEN", "DISCONNECTED"}]
         if len(active) + len(confirmation["agents"]) > 3: raise DispatchError("C10_FIRST_LEVEL_SUB_AGENT_LIMIT_EXCEEDED")
         agent_runtime = {x["subAgentId"]: x["runtimeAgentRef"] for x in confirmation["agents"]}
         plan_agents = {x["subAgentId"]: x for x in plan["subAgents"]}
         def mutate(after: Dict[str, Any]) -> None:
+            assigned_at = utc_now()
             if plan["windowAction"]["action"] == "CREATE_TASK":
-                after["windows"][confirmation["windowId"]] = {"windowId": confirmation["windowId"], "taskId": plan["taskId"], "canonicalTitle": plan["taskIdentity"]["canonicalTitle"], "generation": confirmation["generation"], "runtimeTitle": confirmation["runtimeTitle"], "model": "gpt-5.6-terra", "contextMode": "NEW", "status": "REGISTERED", "runtimeThreadRef": confirmation["runtimeThreadRef"], "runtimeProjectId": confirmation["runtimeProjectId"], "environmentType": confirmation["environmentType"], "associationMethod": confirmation["associationMethod"], "dispatchId": dispatch_id, "registeredAt": utc_now()}
+                assignment = {"assignmentNumber": 1, "taskId": plan["taskId"], "canonicalTitle": plan["taskIdentity"]["canonicalTitle"], "generation": confirmation["generation"], "runtimeTitle": confirmation["runtimeTitle"], "contextMode": "NEW", "dispatchId": dispatch_id, "assignedAt": assigned_at, "completedAt": None, "status": "ACTIVE"}
+                after["windows"][confirmation["windowId"]] = {"windowId": confirmation["windowId"], "taskId": plan["taskId"], "currentTaskId": plan["taskId"], "canonicalTitle": plan["taskIdentity"]["canonicalTitle"], "generation": confirmation["generation"], "runtimeTitle": confirmation["runtimeTitle"], "model": "gpt-5.6-terra", "contextMode": "NEW", "status": "REGISTERED", "maxAssignments": MAX_TASKS_PER_WINDOW, "assignmentCount": 1, "assignmentHistory": [assignment], "runtimeThreadRef": confirmation["runtimeThreadRef"], "runtimeProjectId": confirmation["runtimeProjectId"], "environmentType": confirmation["environmentType"], "associationMethod": confirmation["associationMethod"], "dispatchId": dispatch_id, "registeredAt": assigned_at}
             else:
-                if after["windows"][confirmation["windowId"]].get("runtimeTitle") != confirmation["runtimeTitle"]:
-                    raise DispatchError("C10_TASK_IDENTITY_MISMATCH")
-                after["windows"][confirmation["windowId"]]["runtimeThreadRef"] = confirmation["runtimeThreadRef"]
-                after["windows"][confirmation["windowId"]]["runtimeProjectId"] = confirmation["runtimeProjectId"]
-                after["windows"][confirmation["windowId"]]["environmentType"] = confirmation["environmentType"]
-                after["windows"][confirmation["windowId"]]["associationMethod"] = confirmation["associationMethod"]
-                after["windows"][confirmation["windowId"]]["dispatchId"] = dispatch_id
+                target_window = after["windows"][confirmation["windowId"]]
+                if plan["windowAction"].get("reuseType") == "CURRENT_ASSIGNMENT":
+                    if target_window.get("runtimeTitle") != confirmation["runtimeTitle"]:
+                        raise DispatchError("C10_TASK_IDENTITY_MISMATCH")
+                    target_window.setdefault("maxAssignments", MAX_TASKS_PER_WINDOW)
+                    target_window.setdefault("assignmentCount", window_assignment_count(target_window))
+                    target_window.setdefault("assignmentHistory", window_assignments(target_window))
+                    target_window.setdefault("currentTaskId", plan["taskId"])
+                    target_window["assignmentHistory"][-1]["dispatchId"] = dispatch_id
+                    target_window["assignmentHistory"][-1]["status"] = "ACTIVE"
+                else:
+                    history = [dict(item) for item in window_assignments(target_window)]
+                    history[-1]["status"] = "DONE"
+                    history[-1]["completedAt"] = history[-1].get("completedAt") or assigned_at
+                    history.append({"assignmentNumber": 2, "taskId": plan["taskId"], "canonicalTitle": plan["taskIdentity"]["canonicalTitle"], "generation": confirmation["generation"], "runtimeTitle": confirmation["runtimeTitle"], "contextMode": "REUSED", "dispatchId": dispatch_id, "assignedAt": assigned_at, "completedAt": None, "status": "ACTIVE"})
+                    target_window.update({"taskId": plan["taskId"], "currentTaskId": plan["taskId"], "canonicalTitle": plan["taskIdentity"]["canonicalTitle"], "generation": confirmation["generation"], "runtimeTitle": confirmation["runtimeTitle"], "contextMode": "REUSED", "status": "REGISTERED", "maxAssignments": MAX_TASKS_PER_WINDOW, "assignmentCount": 2, "assignmentHistory": history})
+                    target_window.pop("reservedForTaskId", None)
+                    target_window.pop("reuseReservationId", None)
+                    target_window.pop("reuseReservedAt", None)
+                target_window["runtimeThreadRef"] = confirmation["runtimeThreadRef"]
+                target_window["runtimeProjectId"] = confirmation["runtimeProjectId"]
+                target_window["environmentType"] = confirmation["environmentType"]
+                target_window["associationMethod"] = confirmation["associationMethod"]
+                target_window["dispatchId"] = dispatch_id
             for agent_id, runtime_ref in agent_runtime.items():
                 if agent_id in after["subAgents"]: raise DispatchError("C10_SUB_AGENT_ID_ALREADY_REGISTERED")
                 spec = plan_agents[agent_id]
@@ -395,9 +482,9 @@ def confirm(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             target_task = after["tasks"][plan["taskId"]]; target_task["status"] = "IN_PROGRESS"
             target_task["history"].append({"at": utc_now(), "event": "C10_RUNTIME_DISPATCH_CONFIRMED", "dispatchId": dispatch_id, "windowId": confirmation["windowId"], "from": "READY", "to": "IN_PROGRESS", "by": CENTRAL_WRITER})
         result = commit_mutation(root, project_id, before, CENTRAL_WRITER, "C10_CONFIRM_RUNTIME_DISPATCH", {"dispatchId": dispatch_id, "taskId": plan["taskId"], "windowId": confirmation["windowId"], "subAgentCount": len(confirmation["agents"])}, mutate)
-        artifact = {"schemaVersion": SCHEMA_VERSION, "recordType": "C10_DISPATCH_CONFIRMATION", "dispatchId": dispatch_id, "confirmedAt": utc_now(), "projectId": project_id, "taskId": plan["taskId"], "taskIdentity": plan["taskIdentity"], "windowId": confirmation["windowId"], "runtimeThreadRef": confirmation["runtimeThreadRef"], "runtimeProjectId": confirmation["runtimeProjectId"], "runtimeCwd": confirmation["runtimeCwd"], "environmentType": confirmation["environmentType"], "associationMethod": confirmation["associationMethod"], "associationHandoffRefs": confirmation["associationHandoffRefs"], "authorizationScope": plan["authorizationScope"], "subAgents": confirmation["agents"], "sourceConfirmationDigest": confirmation_digest, "ledgerReceiptId": result["receiptId"], "boundary": {"runtimeConfirmed": True, "projectAssociationVerified": True, "taskStatus": "IN_PROGRESS", "businessWritePerformed": False, "completionMustReturnToParentWindow": True}}
+        artifact = {"schemaVersion": SCHEMA_VERSION, "recordType": "C10_DISPATCH_CONFIRMATION", "dispatchId": dispatch_id, "confirmedAt": utc_now(), "projectId": project_id, "taskId": plan["taskId"], "taskIdentity": plan["taskIdentity"], "windowId": confirmation["windowId"], "windowAssignment": {"assignmentNumber": plan["windowAction"]["assignmentNumber"], "maxAssignments": MAX_TASKS_PER_WINDOW, "isFinalAllowedAssignment": plan["windowAction"]["assignmentNumber"] == MAX_TASKS_PER_WINDOW}, "runtimeThreadRef": confirmation["runtimeThreadRef"], "runtimeProjectId": confirmation["runtimeProjectId"], "runtimeCwd": confirmation["runtimeCwd"], "environmentType": confirmation["environmentType"], "associationMethod": confirmation["associationMethod"], "associationHandoffRefs": confirmation["associationHandoffRefs"], "authorizationScope": plan["authorizationScope"], "subAgents": confirmation["agents"], "sourceConfirmationDigest": confirmation_digest, "ledgerReceiptId": result["receiptId"], "boundary": {"runtimeConfirmed": True, "projectAssociationVerified": True, "taskStatus": "IN_PROGRESS", "businessWritePerformed": False, "completionMustReturnToParentWindow": True}}
         write_exclusive(target, artifact)
-    return {"status": "RUNTIME_DISPATCH_CONFIRMED", "dispatchId": dispatch_id, "windowId": confirmation["windowId"], "associationMethod": confirmation["associationMethod"], "subAgentCount": len(confirmation["agents"]), "taskStatus": "IN_PROGRESS", "ledgerReceiptId": result["receiptId"], "writePerformed": True, "dispatchPerformed": True, "businessWritePerformed": False}, 0
+    return {"status": "RUNTIME_DISPATCH_CONFIRMED", "dispatchId": dispatch_id, "windowId": confirmation["windowId"], "assignmentNumber": plan["windowAction"]["assignmentNumber"], "maxAssignments": MAX_TASKS_PER_WINDOW, "associationMethod": confirmation["associationMethod"], "subAgentCount": len(confirmation["agents"]), "taskStatus": "IN_PROGRESS", "ledgerReceiptId": result["receiptId"], "writePerformed": True, "dispatchPerformed": True, "businessWritePerformed": False}, 0
 
 
 def export_fallback(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:

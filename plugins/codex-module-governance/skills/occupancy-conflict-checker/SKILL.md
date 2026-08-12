@@ -12,7 +12,7 @@ description: 检查经 Boss 审阅的 Codex 待审任务包是否与当前任务
 1. 校验 C04 任务包和不可覆盖回执。
 2. 校验 C03 总账和回执链，确认任务仍为 `PLANNED`。
 3. 确认 Boss 已审阅任务包及本次对象范围，依赖已经明确满足。
-4. 检查窗口建议：无既有窗口时可建议新开；存在唯一匹配窗口时建议沿用；缺少可复用窗口或存在多个窗口时等待或硬停。
+4. 检查窗口建议：当前任务已有唯一活动窗口时沿用本次承接；已完成旧窗口只有 `assignmentCount=1`、`currentTaskId=null`、状态为 `AVAILABLE_FOR_REUSE` 时才能作为第 2 次且最后一次承接；达到 2 次或已退役时禁止复用。
 5. 比较每个对象的 `objectKey` 和 `conflictKey`。非排他只读可以并行；任一写入或排他资源重叠时，后启动任务硬停。
 6. 先预演。只有显式批准应用后，才把整组占用一次性写入 C03，并把任务推进到 `READY`；任何一项冲突时不得部分占用。
 
@@ -33,3 +33,4 @@ description: 检查经 Boss 审阅的 Codex 待审任务包是否与当前任务
 - 不把读回消息、任务窗口声明或跨模块情报当作写入授权。
 - `dispatchExecuted`、`taskWindowCreated`、`subAgentCreated`、`testCreationAllowed` 和 `businessWriteAllowed` 始终为 `false`。
 - C10 必须复用本检查器，不得另建子 Agent 锁。
+- 多个旧窗口都可复用时返回中央选择，不要求 Boss 裁定；中央无法证明上下文适配时应改为新开。

@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from occupancy_conflict_checker import resolve_window
+
 
 SCRIPT_DIRECTORY = Path(__file__).parent
 C02_SCRIPT = SCRIPT_DIRECTORY / "initialize_project.py"
@@ -94,7 +96,7 @@ def create_brief(data_root):
     return path
 
 
-def create_review(data_root, *, boss="APPROVED", dependencies="SATISFIED", cross_module="NOT_APPLICABLE", requests=None, window_mode="AUTO", window_id=None):
+def create_review(data_root, *, boss="APPROVED", dependencies="SATISFIED", cross_module="NOT_APPLICABLE", requests=None, window_mode="AUTO", window_id=None, context_compatibility="NOT_ASSESSED", compatibility_refs=None):
     review = {
         "reviewSchemaVersion": "0.5.0",
         "recordType": "C05_OCCUPANCY_REVIEW_REQUEST",
@@ -105,7 +107,12 @@ def create_review(data_root, *, boss="APPROVED", dependencies="SATISFIED", cross
         "bossReview": {"status": boss, "reference": "boss-review-001"},
         "dependencyGate": {"status": dependencies, "references": ["dependency-proof-001"] if dependencies == "SATISFIED" else []},
         "crossModuleGate": {"status": cross_module, "reference": "fable-handoff-001"},
-        "windowReview": {"mode": window_mode, "candidateWindowId": window_id},
+        "windowReview": {
+            "mode": window_mode,
+            "candidateWindowId": window_id,
+            "contextCompatibility": context_compatibility,
+            "compatibilityEvidenceRefs": compatibility_refs or [],
+        },
         "occupancyRequests": requests or [{
             "objectKey": "file:fictional-a", "conflictKey": "file:fictional-a",
             "resourceClass": "FILE", "intent": "WRITE", "exclusive": False,
@@ -268,6 +275,74 @@ class OccupancyConflictCheckerTests(unittest.TestCase):
             self.assertEqual(code, 0, output)
             self.assertEqual(output["windowDecision"]["status"], "REUSE_EXISTING_WINDOW")
             self.assertEqual(output["windowDecision"]["windowId"], "window-existing")
+
+    def test_available_window_gets_only_second_assignment_and_retired_window_is_refused(self):
+        ledger = {
+            "tasks": {
+                "C-OLD": {"taskId": "C-OLD", "status": "DONE"},
+                TASK_ID: {"taskId": TASK_ID, "status": "PLANNED"},
+            },
+            "windows": {
+                "window-available": {
+                    "windowId": "window-available", "taskId": "C-OLD", "currentTaskId": None,
+                    "model": "gpt-5.6-terra", "status": "AVAILABLE_FOR_REUSE",
+                    "assignmentCount": 1, "maxAssignments": 2,
+                    "assignmentHistory": [{"assignmentNumber": 1, "taskId": "C-OLD"}],
+                },
+                "window-retired": {
+                    "windowId": "window-retired", "taskId": "C-OLD", "currentTaskId": None,
+                    "model": "gpt-5.6-terra", "status": "RETIRED",
+                    "assignmentCount": 2, "maxAssignments": 2,
+                    "assignmentHistory": [
+                        {"assignmentNumber": 1, "taskId": "C-A"},
+                        {"assignmentNumber": 2, "taskId": "C-OLD"},
+                    ],
+                },
+            },
+        }
+        review = {"reviewId": REVIEW_ID, "taskId": TASK_ID, "windowReview": {"mode": "REUSE", "candidateWindowId": "window-available", "contextCompatibility": "COMPATIBLE"}}
+        decision = resolve_window({}, ledger, review)
+        self.assertEqual(decision["status"], "REUSE_EXISTING_WINDOW")
+        self.assertEqual(decision["assignmentNumber"], 2)
+        self.assertEqual(decision["reuseType"], "SECOND_AND_FINAL_ASSIGNMENT")
+        review["windowReview"]["candidateWindowId"] = "window-retired"
+        refused = resolve_window({}, ledger, review)
+        self.assertEqual(refused["status"], "WAITING_WINDOW_REUSE_CAP_REACHED")
+        self.assertEqual(refused["assignmentCount"], 2)
+
+    def test_auto_does_not_blindly_reuse_without_compatibility_evidence(self):
+        ledger = {
+            "tasks": {"C-OLD": {"taskId": "C-OLD", "status": "DONE"}, TASK_ID: {"taskId": TASK_ID, "status": "PLANNED"}},
+            "windows": {"window-available": {"windowId": "window-available", "taskId": "C-OLD", "currentTaskId": None, "model": "gpt-5.6-terra", "status": "AVAILABLE_FOR_REUSE", "assignmentCount": 1, "assignmentHistory": [{"assignmentNumber": 1, "taskId": "C-OLD"}]}},
+        }
+        incompatible = {"reviewId": REVIEW_ID, "taskId": TASK_ID, "windowReview": {"mode": "AUTO", "candidateWindowId": None, "contextCompatibility": "INCOMPATIBLE"}}
+        decision = resolve_window({}, ledger, incompatible)
+        self.assertEqual(decision["status"], "OPEN_NEW_WINDOW")
+        unknown = {"reviewId": REVIEW_ID, "taskId": TASK_ID, "windowReview": {"mode": "AUTO", "candidateWindowId": None, "contextCompatibility": "UNKNOWN"}}
+        self.assertEqual(resolve_window({}, ledger, unknown)["status"], "WAITING_FOR_WINDOW_CONTEXT_COMPATIBILITY")
+
+    def test_reserved_second_slot_cannot_be_selected_by_another_task(self):
+        ledger = {
+            "tasks": {
+                "C-OLD": {"taskId": "C-OLD", "status": "DONE"},
+                "C-FIRST-SUCCESSOR": {"taskId": "C-FIRST-SUCCESSOR", "status": "READY"},
+                TASK_ID: {"taskId": TASK_ID, "status": "PLANNED"},
+            },
+            "windows": {
+                "window-reserved": {
+                    "windowId": "window-reserved", "taskId": "C-OLD", "currentTaskId": None,
+                    "model": "gpt-5.6-terra", "status": "RESERVED_FOR_REUSE",
+                    "assignmentCount": 1, "maxAssignments": 2,
+                    "assignmentHistory": [{"assignmentNumber": 1, "taskId": "C-OLD"}],
+                    "reservedForTaskId": "C-FIRST-SUCCESSOR",
+                    "reuseReservationId": "window-slot:c05-review-first-successor",
+                }
+            },
+        }
+        automatic = {"reviewId": REVIEW_ID, "taskId": TASK_ID, "windowReview": {"mode": "AUTO", "candidateWindowId": None, "contextCompatibility": "COMPATIBLE"}}
+        self.assertEqual(resolve_window({}, ledger, automatic)["status"], "OPEN_NEW_WINDOW")
+        forced = {"reviewId": REVIEW_ID, "taskId": TASK_ID, "windowReview": {"mode": "REUSE", "candidateWindowId": "window-reserved", "contextCompatibility": "COMPATIBLE"}}
+        self.assertEqual(resolve_window({}, ledger, forced)["status"], "WAITING_FOR_REUSABLE_WINDOW")
 
     def test_decision_receipt_tampering_is_detected(self):
         with tempfile.TemporaryDirectory() as temporary:

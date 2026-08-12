@@ -17,6 +17,7 @@ from initialize_project import C02Error, PROJECT_ID_PATTERN, is_within, load_dat
 from ledger_manager import (
     CENTRAL_WRITER,
     LedgerError,
+    MAX_TASKS_PER_WINDOW,
     TASK_ID_PATTERN,
     canonical_digest,
     commit_mutation,
@@ -26,6 +27,8 @@ from ledger_manager import (
     require_object_key,
     utc_now,
     verify_ledger,
+    window_assignment_count,
+    window_current_task_id,
 )
 from task_package_generator import (
     TaskPackageError,
@@ -162,7 +165,10 @@ def validate_review(payload: Any, project_id: str, package_id: str) -> Dict[str,
         raise OccupancyError("C05_CROSS_MODULE_GATE_INVALID")
     cross_module_reference = require_reference(cross_module["reference"], "C05_CROSS_MODULE_REFERENCE_INVALID")
 
-    window = require_exact_object(review["windowReview"], {"mode", "candidateWindowId"}, "C05_WINDOW_REVIEW_INVALID")
+    raw_window = review["windowReview"]
+    if not isinstance(raw_window, dict) or not {"mode", "candidateWindowId"}.issubset(raw_window) or not set(raw_window).issubset({"mode", "candidateWindowId", "contextCompatibility", "compatibilityEvidenceRefs"}):
+        raise OccupancyError("C05_WINDOW_REVIEW_INVALID")
+    window = raw_window
     window_mode = str(window["mode"]).strip().upper()
     if window_mode not in {"AUTO", "NEW", "REUSE"}:
         raise OccupancyError("C05_WINDOW_REVIEW_INVALID")
@@ -175,6 +181,18 @@ def validate_review(payload: Any, project_id: str, package_id: str) -> Dict[str,
         raise OccupancyError("C05_NEW_WINDOW_MUST_NOT_HAVE_WINDOW_ID")
     if window_mode == "REUSE" and candidate_window_id is None:
         raise OccupancyError("C05_REUSE_WINDOW_ID_REQUIRED")
+    compatibility = str(window.get("contextCompatibility", "NOT_ASSESSED")).strip().upper()
+    if compatibility not in {"COMPATIBLE", "INCOMPATIBLE", "UNKNOWN", "NOT_ASSESSED"}:
+        raise OccupancyError("C05_WINDOW_CONTEXT_COMPATIBILITY_INVALID")
+    compatibility_refs = require_reference_list(
+        window.get("compatibilityEvidenceRefs", []),
+        "C05_WINDOW_COMPATIBILITY_EVIDENCE_INVALID",
+        allow_empty=compatibility != "COMPATIBLE",
+    )
+    if compatibility == "COMPATIBLE" and not compatibility_refs:
+        raise OccupancyError("C05_WINDOW_COMPATIBILITY_EVIDENCE_REQUIRED")
+    if window_mode == "REUSE" and compatibility != "COMPATIBLE":
+        raise OccupancyError("C05_REUSE_REQUIRES_COMPATIBLE_CONTEXT")
 
     raw_requests = review["occupancyRequests"]
     if not isinstance(raw_requests, list) or not 1 <= len(raw_requests) <= 80:
@@ -215,7 +233,12 @@ def validate_review(payload: Any, project_id: str, package_id: str) -> Dict[str,
         "bossReview": {"status": boss_status, "reference": boss_reference},
         "dependencyGate": {"status": dependency_status, "references": dependency_references},
         "crossModuleGate": {"status": cross_module_status, "reference": cross_module_reference},
-        "windowReview": {"mode": window_mode, "candidateWindowId": candidate_window_id},
+        "windowReview": {
+            "mode": window_mode,
+            "candidateWindowId": candidate_window_id,
+            "contextCompatibility": compatibility,
+            "compatibilityEvidenceRefs": compatibility_refs,
+        },
         "occupancyRequests": requests,
     }
 
@@ -261,35 +284,62 @@ def verified_sources(data_root: Path, project_id: str, package_id: str, review: 
 
 def resolve_window(package: Dict[str, Any], ledger: Dict[str, Any], review: Dict[str, Any]) -> Dict[str, Any]:
     task_id = review["taskId"]
-    matching = sorted(
+    current_matching = sorted(
         window_id for window_id, window in ledger["windows"].items()
-        if window.get("taskId") == task_id and window.get("status") == "REGISTERED"
+        if window_current_task_id(window) == task_id and window.get("status") == "REGISTERED"
     )
+    reusable = []
+    for window_id, window in ledger["windows"].items():
+        count = window_assignment_count(window)
+        current_task_id = window_current_task_id(window)
+        last_task_id = window.get("taskId")
+        last_task = ledger["tasks"].get(last_task_id, {})
+        explicitly_available = window.get("status") == "AVAILABLE_FOR_REUSE" and current_task_id is None
+        legacy_available = (
+            "assignmentHistory" not in window
+            and window.get("status") == "REGISTERED"
+            and last_task.get("status") == "DONE"
+        )
+        if (
+            count == 1
+            and window.get("model") == "gpt-5.6-terra"
+            and last_task.get("status") == "DONE"
+            and (explicitly_available or legacy_available)
+        ):
+            reusable.append(window_id)
+    reusable.sort()
     requested_mode = review["windowReview"]["mode"]
     candidate = review["windowReview"]["candidateWindowId"]
+    compatibility = review["windowReview"]["contextCompatibility"]
     if requested_mode == "AUTO":
-        if not matching:
-            return {"status": "OPEN_NEW_WINDOW", "windowId": None, "model": "gpt-5.6-terra"}
-        if len(matching) == 1:
-            return {"status": "REUSE_EXISTING_WINDOW", "windowId": matching[0], "model": "gpt-5.6-terra"}
-        return {"status": "CONFLICT_MULTIPLE_REUSABLE_WINDOWS", "windowIds": matching, "model": "gpt-5.6-terra"}
+        if len(current_matching) == 1:
+            return {"status": "REUSE_EXISTING_WINDOW", "windowId": current_matching[0], "model": "gpt-5.6-terra", "assignmentNumber": 1, "maxAssignments": MAX_TASKS_PER_WINDOW, "reuseType": "CURRENT_ASSIGNMENT"}
+        if len(current_matching) > 1:
+            return {"status": "CONFLICT_DUPLICATE_ACTIVE_WINDOWS", "windowIds": current_matching, "model": "gpt-5.6-terra"}
+        if reusable and compatibility == "UNKNOWN":
+            return {"status": "WAITING_FOR_WINDOW_CONTEXT_COMPATIBILITY", "windowIds": reusable, "model": "gpt-5.6-terra"}
+        if len(reusable) == 1 and compatibility == "COMPATIBLE":
+            previous_task_id = ledger["windows"][reusable[0]].get("taskId")
+            return {"status": "REUSE_EXISTING_WINDOW", "windowId": reusable[0], "model": "gpt-5.6-terra", "assignmentNumber": 2, "maxAssignments": MAX_TASKS_PER_WINDOW, "reuseType": "SECOND_AND_FINAL_ASSIGNMENT", "previousTaskId": previous_task_id, "reuseReservationId": f"window-slot:{review['reviewId']}"}
+        if len(reusable) > 1 and compatibility == "COMPATIBLE":
+            return {"status": "WAITING_FOR_CENTRAL_WINDOW_SELECTION", "windowIds": reusable, "model": "gpt-5.6-terra"}
+        return {"status": "OPEN_NEW_WINDOW", "windowId": None, "model": "gpt-5.6-terra", "assignmentNumber": 1, "maxAssignments": MAX_TASKS_PER_WINDOW}
     if requested_mode == "NEW":
-        if not matching:
-            return {"status": "OPEN_NEW_WINDOW", "windowId": None, "model": "gpt-5.6-terra"}
-        if len(matching) == 1 and review["windowReview"]["mode"] == "AUTO":
-            return {"status": "REUSE_EXISTING_WINDOW", "windowId": matching[0], "model": "gpt-5.6-terra"}
-        return {"status": "CONFLICT_DUPLICATE_WINDOW", "windowIds": matching, "model": "gpt-5.6-terra"}
+        if current_matching:
+            return {"status": "CONFLICT_DUPLICATE_ACTIVE_WINDOW", "windowIds": current_matching, "model": "gpt-5.6-terra"}
+        return {"status": "OPEN_NEW_WINDOW", "windowId": None, "model": "gpt-5.6-terra", "assignmentNumber": 1, "maxAssignments": MAX_TASKS_PER_WINDOW}
     if candidate is None:
-        if len(matching) == 1:
-            candidate = matching[0]
-        elif not matching:
-            return {"status": "WAITING_FOR_REUSABLE_WINDOW", "windowId": None, "model": "gpt-5.6-terra"}
-        else:
-            return {"status": "CONFLICT_MULTIPLE_REUSABLE_WINDOWS", "windowIds": matching, "model": "gpt-5.6-terra"}
+        return {"status": "WAITING_FOR_REUSABLE_WINDOW", "windowId": None, "model": "gpt-5.6-terra"}
     window = ledger["windows"].get(candidate)
-    if not isinstance(window, dict) or window.get("taskId") != task_id or window.get("status") != "REGISTERED":
+    if not isinstance(window, dict):
         return {"status": "WAITING_FOR_REUSABLE_WINDOW", "windowId": candidate, "model": "gpt-5.6-terra"}
-    return {"status": "REUSE_EXISTING_WINDOW", "windowId": candidate, "model": "gpt-5.6-terra"}
+    if candidate in current_matching:
+        return {"status": "REUSE_EXISTING_WINDOW", "windowId": candidate, "model": "gpt-5.6-terra", "assignmentNumber": 1, "maxAssignments": MAX_TASKS_PER_WINDOW, "reuseType": "CURRENT_ASSIGNMENT"}
+    if window_assignment_count(window) >= MAX_TASKS_PER_WINDOW or window.get("status") == "RETIRED":
+        return {"status": "WAITING_WINDOW_REUSE_CAP_REACHED", "windowId": candidate, "model": "gpt-5.6-terra", "assignmentCount": window_assignment_count(window), "maxAssignments": MAX_TASKS_PER_WINDOW}
+    if candidate not in reusable:
+        return {"status": "WAITING_FOR_REUSABLE_WINDOW", "windowId": candidate, "model": "gpt-5.6-terra"}
+    return {"status": "REUSE_EXISTING_WINDOW", "windowId": candidate, "model": "gpt-5.6-terra", "assignmentNumber": 2, "maxAssignments": MAX_TASKS_PER_WINDOW, "reuseType": "SECOND_AND_FINAL_ASSIGNMENT", "previousTaskId": window.get("taskId"), "reuseReservationId": f"window-slot:{review['reviewId']}"}
 
 
 def claim_conflicts(candidate: Dict[str, Any], object_key: str, claim: Dict[str, Any]) -> bool:
@@ -378,6 +428,11 @@ def public_result(review: Dict[str, Any], analysis: Dict[str, Any], write_perfor
         "windowDecision": analysis["windowDecision"],
         "conflictCount": len(analysis["conflicts"]),
         "occupancyReserved": bool(write_performed and eligible),
+        "windowReuseReserved": bool(
+            write_performed and eligible
+            and isinstance(analysis.get("windowDecision"), dict)
+            and analysis["windowDecision"].get("assignmentNumber") == 2
+        ),
         "dispatchEligibility": "ELIGIBLE" if write_performed and eligible else "NOT_GRANTED",
         "dispatchExecuted": False,
         "taskWindowCreated": False,
@@ -506,6 +561,16 @@ def verify_decision_data(data_root: Path, project_id: str, review_id: str) -> Di
     expected_task_status = "READY" if decision.get("status") == "ELIGIBLE_FOR_DISPATCH_APPROVAL" else "BLOCKED"
     expected_operation = "C05_RESERVE_TASK_OCCUPANCIES" if expected_task_status == "READY" else "C05_BLOCK_CONFLICTING_TASK"
     linked_snapshot = ledger_receipt.get("afterLedger", {})
+    window_decision = decision.get("windowDecision") or {}
+    reuse_reservation_valid = True
+    if expected_task_status == "READY" and window_decision.get("assignmentNumber") == 2:
+        linked_window = linked_snapshot.get("windows", {}).get(window_decision.get("windowId"), {})
+        reuse_reservation_valid = (
+            linked_window.get("status") == "RESERVED_FOR_REUSE"
+            and linked_window.get("reservedForTaskId") == decision.get("taskId")
+            and linked_window.get("reuseReservationId") == window_decision.get("reuseReservationId")
+            and window_assignment_count(linked_window) == 1
+        )
     if (
         receipt.get("recordType") != "C05_IMMUTABLE_OCCUPANCY_DECISION_RECEIPT"
         or receipt.get("receiptId") != INITIAL_RECEIPT_ID
@@ -521,6 +586,7 @@ def verify_decision_data(data_root: Path, project_id: str, review_id: str) -> Di
         or not isinstance(linked_snapshot, dict)
         or canonical_digest(linked_snapshot) != ledger_mutation.get("afterLedgerDigest")
         or linked_snapshot.get("tasks", {}).get(decision.get("taskId"), {}).get("status") != expected_task_status
+        or not reuse_reservation_valid
         or ledger_mutation.get("taskStatusAfter") != expected_task_status
         or any(boundary.get(key) is not False for key in (
             "dispatchExecuted", "taskWindowCreated", "subAgentCreated", "testCreationAllowed", "businessWriteAllowed"
@@ -625,6 +691,20 @@ def evaluate(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
                         request["objectKey"], {"objectKey": request["objectKey"], "status": "CLAIMED", "claims": []}
                     )
                     occupancy["claims"].append(claim)
+                window_decision = analysis.get("windowDecision") or {}
+                if window_decision.get("assignmentNumber") == 2:
+                    window = after["windows"].get(window_decision.get("windowId"))
+                    if not isinstance(window, dict):
+                        raise OccupancyError("C05_REUSABLE_WINDOW_DISAPPEARED")
+                    explicit_available = window.get("status") == "AVAILABLE_FOR_REUSE" and window_current_task_id(window) is None
+                    legacy_available = "assignmentHistory" not in window and window.get("status") == "REGISTERED" and after["tasks"].get(window.get("taskId"), {}).get("status") == "DONE"
+                    if window_assignment_count(window) != 1 or not (explicit_available or legacy_available):
+                        raise OccupancyError("C05_WINDOW_REUSE_SLOT_NO_LONGER_AVAILABLE")
+                    window["status"] = "RESERVED_FOR_REUSE"
+                    window["currentTaskId"] = None
+                    window["reservedForTaskId"] = review["taskId"]
+                    window["reuseReservationId"] = window_decision["reuseReservationId"]
+                    window["reuseReservedAt"] = utc_now()
                 task["status"] = "READY"
                 task["history"].append({
                     "at": utc_now(), "event": "C05_OCCUPANCY_RESERVED", "reviewId": review["reviewId"],

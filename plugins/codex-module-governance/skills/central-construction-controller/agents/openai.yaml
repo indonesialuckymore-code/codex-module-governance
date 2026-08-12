@@ -1,4 +1,4 @@
 interface:
   display_name: "中央处理器"
-  short_description: "一次理清全部任务、集中拍板并按依赖批量派发"
-  default_prompt: "使用 $central-construction-controller 读取完整冻结大纲和最新总账，一次性给我全部任务、需要我拍板的事项、并行波次和前置关系；不要逐项反复批准。"
+  short_description: "集中拍板、自动续派并控制每窗口最多两项任务"
+  default_prompt: "使用 $central-construction-controller 读取完整冻结大纲和最新总账，一次性给我全部任务、拍板事项、并行波次和前置；批准后自动续派合格任务，并执行单窗口最多两项串行任务。"

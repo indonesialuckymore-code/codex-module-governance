@@ -15,7 +15,17 @@
     "bossReview": { "type": "object" },
     "dependencyGate": { "type": "object" },
     "crossModuleGate": { "type": "object" },
-    "windowReview": { "type": "object" },
+    "windowReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "candidateWindowId", "contextCompatibility", "compatibilityEvidenceRefs"],
+      "properties": {
+        "mode": { "enum": ["AUTO", "NEW", "REUSE"] },
+        "candidateWindowId": { "type": ["string", "null"] },
+        "contextCompatibility": { "enum": ["COMPATIBLE", "INCOMPATIBLE", "UNKNOWN", "NOT_ASSESSED"] },
+        "compatibilityEvidenceRefs": { "type": "array", "maxItems": 40, "uniqueItems": true, "items": { "type": "string" } }
+      }
+    },
     "occupancyRequests": { "type": "array", "minItems": 1, "maxItems": 80, "items": { "type": "object" } }
   }
 }

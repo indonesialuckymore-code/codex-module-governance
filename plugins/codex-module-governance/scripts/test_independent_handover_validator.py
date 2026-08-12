@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Regression tests for C06 using only temporary fictional data."""
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -15,6 +16,8 @@ C03 = SCRIPTS / "ledger_manager.py"
 C04 = SCRIPTS / "task_package_generator.py"
 C05 = SCRIPTS / "occupancy_conflict_checker.py"
 C06 = SCRIPTS / "independent_handover_validator.py"
+C09 = SCRIPTS / "central_construction_controller.py"
+C10 = SCRIPTS / "task_window_dispatch_controller.py"
 PROJECT = "c06-demo-project"
 TASK = "C-06"
 PACKAGE = "c06-package-001"
@@ -186,9 +189,222 @@ class IndependentHandoverValidatorTests(unittest.TestCase):
             self.assertEqual(code, 0, final)
             self.assertEqual(final["status"], "DONE")
             self.assertTrue(final["doneRecorded"])
+            self.assertTrue(final["nextDispatchRequired"])
+            self.assertFalse(final["bossRepromptRequired"])
+            self.assertEqual(final["completedWindowStatus"], "AVAILABLE_FOR_REUSE")
             ledger = json.loads((root / "module-ledgers" / PROJECT / "ledger.json").read_text())
             self.assertEqual(ledger["tasks"][TASK]["status"], "DONE")
+            self.assertEqual(ledger["windows"][WINDOW]["assignmentCount"], 1)
+            self.assertIsNone(ledger["windows"][WINDOW]["currentTaskId"])
             self.assertIn("file:fictional-c06", ledger["objectOccupancies"])
+
+    def test_second_task_reuses_window_then_retires_it_and_emits_successor_trigger(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "private-data"
+            setup_ready_for_validation(root)
+            handback, review = create_handback(root), create_review(root)
+            self.assertEqual(self.assess(root, handback, review, "--apply", "codex-module-central")[0], 0)
+            first_finalize = [
+                "--data-root", str(root), "--project-id", PROJECT, "--writer-id", "codex-module-central",
+                "finalize", "--validation-id", VALIDATION, "--boss-decision", "APPROVED",
+                "--boss-decision-ref", "boss-final-approval-006",
+            ]
+            self.assertEqual(invoke(C06, first_finalize)[0], 0)
+
+            second_task, second_package, second_review = "C-07", "c07-package-001", "c05-review-007"
+            parallel_task, parallel_package, parallel_review = "C-08", "c08-package-001", "c05-review-008"
+            blocked_task, blocked_package, blocked_review = "C-09", "c09-package-001", "c05-review-009"
+            code, output = c03(root, "add-task", "--task-id", second_task, "--title", "Fictional second assignment", "--business-goal", "Prove the second and final window assignment.", "--plan-ref", "fable-plan-007")
+            self.assertEqual(code, 0, output)
+            code, output = c03(root, "add-task", "--task-id", parallel_task, "--title", "Fictional incompatible parallel task", "--business-goal", "Prove incompatible context opens a new Terra window.", "--plan-ref", "fable-plan-008")
+            self.assertEqual(code, 0, output)
+            code, output = c03(root, "add-task", "--task-id", blocked_task, "--title", "Fictional unresolved context task", "--business-goal", "Prove one blocked task does not stop independent successors.", "--plan-ref", "fable-plan-009")
+            self.assertEqual(code, 0, output)
+            brief = json.loads((root / "briefs" / f"{TASK}.json").read_text())
+            brief["taskId"] = second_task
+            brief["windowRecommendation"] = {"mode": "REUSE", "reason": "Reuse the completed fictional window once."}
+            brief_path = write_json(root / "briefs" / f"{second_task}.json", brief)
+            code, output = invoke(C04, [
+                "--data-root", str(root), "--project-id", PROJECT, "--writer-id", "codex-module-central",
+                "generate", "--package-id", second_package, "--task-id", second_task, "--brief", str(brief_path), "--apply",
+            ])
+            self.assertEqual(code, 0, output)
+            blocked_brief = {**brief, "taskId": blocked_task, "windowRecommendation": {"mode": "REUSE", "reason": "Wait until context compatibility is known."}}
+            blocked_brief_path = write_json(root / "briefs" / f"{blocked_task}.json", blocked_brief)
+            code, output = invoke(C04, [
+                "--data-root", str(root), "--project-id", PROJECT, "--writer-id", "codex-module-central",
+                "generate", "--package-id", blocked_package, "--task-id", blocked_task, "--brief", str(blocked_brief_path), "--apply",
+            ])
+            self.assertEqual(code, 0, output)
+            parallel_brief = {**brief, "taskId": parallel_task, "windowRecommendation": {"mode": "NEW", "reason": "The context is incompatible with the completed window."}}
+            parallel_brief_path = write_json(root / "briefs" / f"{parallel_task}.json", parallel_brief)
+            code, output = invoke(C04, [
+                "--data-root", str(root), "--project-id", PROJECT, "--writer-id", "codex-module-central",
+                "generate", "--package-id", parallel_package, "--task-id", parallel_task, "--brief", str(parallel_brief_path), "--apply",
+            ])
+            self.assertEqual(code, 0, output)
+            occupancy = {
+                "reviewSchemaVersion": "0.5.0", "recordType": "C05_OCCUPANCY_REVIEW_REQUEST",
+                "reviewId": second_review, "projectId": PROJECT, "packageId": second_package, "taskId": second_task,
+                "bossReview": {"status": "APPROVED", "reference": "boss-map-approval-007"},
+                "dependencyGate": {"status": "SATISFIED", "references": ["dependency-proof-007"]},
+                "crossModuleGate": {"status": "NOT_APPLICABLE", "reference": "fable-handoff-007"},
+                "windowReview": {"mode": "REUSE", "candidateWindowId": WINDOW, "contextCompatibility": "COMPATIBLE", "compatibilityEvidenceRefs": ["window-context-proof-007"]},
+                "occupancyRequests": [{"objectKey": "file:fictional-c07", "conflictKey": "file:fictional-c07", "resourceClass": "FILE", "intent": "WRITE", "exclusive": False}],
+            }
+            occupancy_path = write_json(root / "occupancy-inputs" / f"{second_review}.json", occupancy)
+            parallel_occupancy = {
+                **occupancy,
+                "reviewId": parallel_review,
+                "packageId": parallel_package,
+                "taskId": parallel_task,
+                "dependencyGate": {"status": "SATISFIED", "references": ["dependency-proof-008"]},
+                "crossModuleGate": {"status": "NOT_APPLICABLE", "reference": "fable-handoff-008"},
+                "windowReview": {"mode": "AUTO", "candidateWindowId": None, "contextCompatibility": "INCOMPATIBLE", "compatibilityEvidenceRefs": []},
+                "occupancyRequests": [{"objectKey": "file:fictional-c08", "conflictKey": "file:fictional-c08", "resourceClass": "FILE", "intent": "WRITE", "exclusive": False}],
+            }
+            parallel_occupancy_path = write_json(root / "occupancy-inputs" / f"{parallel_review}.json", parallel_occupancy)
+            blocked_occupancy = {
+                **occupancy,
+                "reviewId": blocked_review,
+                "packageId": blocked_package,
+                "taskId": blocked_task,
+                "dependencyGate": {"status": "SATISFIED", "references": ["dependency-proof-009"]},
+                "crossModuleGate": {"status": "UNKNOWN", "reference": "fable-handoff-009"},
+                "windowReview": {"mode": "AUTO", "candidateWindowId": None, "contextCompatibility": "UNKNOWN", "compatibilityEvidenceRefs": []},
+                "occupancyRequests": [{"objectKey": "file:fictional-c09", "conflictKey": "file:fictional-c09", "resourceClass": "FILE", "intent": "WRITE", "exclusive": False}],
+            }
+            blocked_occupancy_path = write_json(root / "occupancy-inputs" / f"{blocked_review}.json", blocked_occupancy)
+            dispatch_id = "dispatch-c10-007"
+            parallel_dispatch_id = "dispatch-c10-008"
+            blocked_dispatch_id = "dispatch-c10-009"
+            second_request_path = root / "c10-inputs" / "dispatch-007.json"
+            parallel_request_path = root / "c10-inputs" / "dispatch-008.json"
+            blocked_request_path = root / "c10-inputs" / "dispatch-009.json"
+            execution_plan = {
+                "tasks": [
+                    {"taskId": blocked_task, "dependencies": [TASK], "packageId": blocked_package, "c05ReviewId": blocked_review, "c05ReviewPath": str(blocked_occupancy_path), "c10RequestPath": str(blocked_request_path)},
+                    {"taskId": second_task, "dependencies": [TASK], "packageId": second_package, "c05ReviewId": second_review, "c05ReviewPath": str(occupancy_path), "c10RequestPath": str(second_request_path)},
+                    {"taskId": parallel_task, "dependencies": [TASK], "packageId": parallel_package, "c05ReviewId": parallel_review, "c05ReviewPath": str(parallel_occupancy_path), "c10RequestPath": str(parallel_request_path)},
+                ]
+            }
+            scope_digest = hashlib.sha256(json.dumps(execution_plan, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            authorization = {"status": "APPROVED", "reference": "boss-map-approval-007", "scope": {"type": "EXECUTION_MAP", "scopeId": "central-plan-007", "scopeDigest": scope_digest, "waveId": "wave-02", "taskIds": [blocked_task, second_task, parallel_task]}}
+            request_path = write_json(second_request_path, {
+                "dispatchSchemaVersion": "0.14.0", "recordType": "C10_DISPATCH_REQUEST", "dispatchId": dispatch_id,
+                "projectId": PROJECT, "packageId": second_package, "reviewId": second_review, "taskId": second_task,
+                "runtimeProject": {"codexProjectId": "codex-project-007", "projectPath": "/tmp/fictional-project", "isGitRepository": True, "environment": "WORKTREE"},
+                "bossDispatchAuthorization": authorization, "subAgents": [],
+            })
+            write_json(blocked_request_path, {
+                "dispatchSchemaVersion": "0.14.0", "recordType": "C10_DISPATCH_REQUEST", "dispatchId": blocked_dispatch_id,
+                "projectId": PROJECT, "packageId": blocked_package, "reviewId": blocked_review, "taskId": blocked_task,
+                "runtimeProject": {"codexProjectId": "codex-project-009", "projectPath": "/tmp/fictional-project", "isGitRepository": True, "environment": "WORKTREE"},
+                "bossDispatchAuthorization": authorization, "subAgents": [],
+            })
+            write_json(parallel_request_path, {
+                "dispatchSchemaVersion": "0.14.0", "recordType": "C10_DISPATCH_REQUEST", "dispatchId": parallel_dispatch_id,
+                "projectId": PROJECT, "packageId": parallel_package, "reviewId": parallel_review, "taskId": parallel_task,
+                "runtimeProject": {"codexProjectId": "codex-project-008", "projectPath": "/tmp/fictional-project", "isGitRepository": True, "environment": "WORKTREE"},
+                "bossDispatchAuthorization": authorization, "subAgents": [],
+            })
+            execution_map_path = write_json(root / "c09-inputs" / "approved-execution-map-007.json", {
+                "executionMapSchemaVersion": "0.16.0", "recordType": "C09_APPROVED_EXECUTION_MAP",
+                "planId": "central-plan-007", "projectId": PROJECT,
+                "authorization": {"scopeId": "central-plan-007", "scopeDigest": scope_digest, "bossApprovalRef": "boss-map-approval-007"},
+                "executionPlan": execution_plan,
+            })
+            code, batch = invoke(C09, [
+                "--data-root", str(root), "continue-successors", "--project-id", PROJECT,
+                "--validation-id", VALIDATION, "--execution-map", str(execution_map_path), "--writer-id", "codex-module-central",
+            ])
+            self.assertEqual(code, 0, batch)
+            self.assertEqual(batch["status"], "READY_FOR_BATCH_RUNTIME_DISPATCH")
+            self.assertEqual(batch["preparedCount"], 2)
+            self.assertEqual([item["taskId"] for item in batch["blockedTasks"]], [blocked_task])
+            self.assertEqual(batch["blockedTasks"][0]["stage"], "C05_PREVIEW")
+            prepared_by_task = {item["taskId"]: item for item in batch["preparedTasks"]}
+            prepared = prepared_by_task[second_task]
+            self.assertEqual(prepared["windowAction"]["action"], "SEND_TO_EXISTING_TASK")
+            self.assertEqual(prepared["windowAction"]["assignmentNumber"], 2)
+            self.assertEqual(prepared_by_task[parallel_task]["windowAction"]["action"], "CREATE_TASK")
+            self.assertEqual(prepared_by_task[parallel_task]["windowAction"]["assignmentNumber"], 1)
+            code, repeated = invoke(C09, [
+                "--data-root", str(root), "continue-successors", "--project-id", PROJECT,
+                "--validation-id", VALIDATION, "--execution-map", str(execution_map_path), "--writer-id", "codex-module-central",
+            ])
+            self.assertEqual(code, 0, repeated)
+            self.assertEqual(repeated["status"], "IDEMPOTENT_SUCCESSOR_BATCH")
+            self.assertTrue(repeated["recomputedFromLiveLedger"])
+            self.assertEqual({item["taskId"] for item in repeated["previouslyPreparedTasks"]}, {second_task, parallel_task})
+            blocked_occupancy["windowReview"] = {"mode": "AUTO", "candidateWindowId": None, "contextCompatibility": "INCOMPATIBLE", "compatibilityEvidenceRefs": []}
+            blocked_occupancy["crossModuleGate"] = {"status": "NOT_APPLICABLE", "reference": "fable-handoff-009"}
+            write_json(blocked_occupancy_path, blocked_occupancy)
+            code, resumed = invoke(C09, [
+                "--data-root", str(root), "continue-successors", "--project-id", PROJECT,
+                "--validation-id", VALIDATION, "--execution-map", str(execution_map_path), "--writer-id", "codex-module-central",
+            ])
+            self.assertEqual(code, 0, resumed)
+            self.assertEqual(resumed["status"], "READY_FOR_BATCH_RUNTIME_DISPATCH")
+            self.assertEqual(resumed["preparedCount"], 1)
+            self.assertEqual(resumed["preparedTasks"][0]["taskId"], blocked_task)
+            self.assertEqual(resumed["preparedTasks"][0]["windowAction"]["action"], "CREATE_TASK")
+            self.assertTrue(resumed["batchArtifact"].endswith("successor-batch-r0002.json"))
+            ledger = json.loads((root / "module-ledgers" / PROJECT / "ledger.json").read_text())
+            self.assertEqual(ledger["windows"][WINDOW]["status"], "RESERVED_FOR_REUSE")
+            self.assertEqual(ledger["windows"][WINDOW]["reservedForTaskId"], second_task)
+            confirmation = {
+                "confirmationSchemaVersion": "0.14.0", "recordType": "C10_RUNTIME_CONFIRMATION", "dispatchId": dispatch_id,
+                "taskWindow": {"status": "REUSED", "taskId": second_task, "runtimeTitle": "C-07｜Fictional second assignment｜G1", "generation": 1, "windowId": WINDOW, "runtimeThreadRef": "thread-c07-final", "runtimeProjectId": "codex-project-007", "runtimeCwd": "/tmp/.codex/worktrees/abcd/fictional-project", "environmentType": "WORKTREE", "associationMethod": "DIRECT", "associationHandoffRefs": []},
+                "subAgents": [],
+            }
+            confirmation_path = write_json(root / "c10-inputs" / "confirmation-007.json", confirmation)
+            code, confirmed = invoke(C10, [
+                "--data-root", str(root), "--project-id", PROJECT, "--writer-id", "codex-module-central",
+                "confirm", "--dispatch-id", dispatch_id, "--confirmation", str(confirmation_path),
+            ])
+            self.assertEqual(code, 0, confirmed)
+            self.assertEqual(confirmed["assignmentNumber"], 2)
+            code, output = c03(root, "record-completion-signal", "--task-id", second_task, "--signal-id", "completion-signal-007")
+            self.assertEqual(code, 0, output)
+
+            second_evidence = [f"evidence-007-{index}" for index in range(9)]
+            second_handback = {
+                "handbackSchemaVersion": "0.6.0", "recordType": "C06_TASK_WINDOW_HANDBACK", "handbackId": "handback-c06-007",
+                "projectId": PROJECT, "packageId": second_package, "c05ReviewId": second_review, "taskId": second_task, "windowId": WINDOW,
+                "completionSignalId": "completion-signal-007", "submittedBy": {"type": "task-window", "id": WINDOW},
+                "bossHandbackAuthorization": {"status": "APPROVED", "reference": "boss-handback-007"},
+                "executedScopeRefs": ["scope-executed-007"], "evidenceRefs": second_evidence,
+                "testAndObjectRefs": ["test-object-ids-007"], "unresolvedRefs": [], "residualRiskRefs": [],
+            }
+            second_handback_path = write_json(root / "handbacks" / "handback-c06-007.json", second_handback)
+            categories = ("beforeSnapshot", "afterSnapshot", "positiveCase", "negativeCase", "idempotency", "rollback", "logsAndHistory", "upstreamReadback", "downstreamReadback")
+            evidence_assessment = {category: {"reference": reference, "verdict": "PASS", "independentlyReadBack": True} for category, reference in zip(categories, second_evidence)}
+            evidence_assessment["testAndObjectIds"] = {"reference": "test-object-ids-007", "verdict": "PASS", "independentlyReadBack": True}
+            second_validation = "validation-c06-007"
+            second_validation_review = {
+                "reviewSchemaVersion": "0.6.0", "recordType": "C06_INDEPENDENT_VALIDATION_REVIEW", "validationId": second_validation,
+                "handbackId": "handback-c06-007", "taskId": second_task,
+                "centralReviewer": {"id": "codex-module-central", "independentReadbackPerformed": True},
+                "scopeAssessment": {"packageScopeMatch": True, "parallelMechanismFound": False, "unknownWriterFound": False, "permissionExpansionFound": False, "unexplainedErrorFound": False, "duplicateDataFound": False, "blockingResidualRiskFound": False, "rollbackExecutable": True},
+                "evidenceAssessment": evidence_assessment,
+            }
+            second_review_path = write_json(root / "validation-inputs" / "validation-c06-007.json", second_validation_review)
+            code, assessed = invoke(C06, [
+                "--data-root", str(root), "--project-id", PROJECT, "--writer-id", "codex-module-central",
+                "assess", "--package-id", second_package, "--handback", str(second_handback_path), "--review", str(second_review_path), "--apply",
+            ])
+            self.assertEqual(code, 0, assessed)
+            code, finalized = invoke(C06, [
+                "--data-root", str(root), "--project-id", PROJECT, "--writer-id", "codex-module-central",
+                "finalize", "--validation-id", second_validation, "--boss-decision", "APPROVED", "--boss-decision-ref", "boss-final-approval-007",
+            ])
+            self.assertEqual(code, 0, finalized)
+            self.assertEqual(finalized["completedWindowStatus"], "RETIRED")
+            ledger = json.loads((root / "module-ledgers" / PROJECT / "ledger.json").read_text())
+            self.assertEqual(ledger["windows"][WINDOW]["assignmentCount"], 2)
+            self.assertEqual(ledger["windows"][WINDOW]["status"], "RETIRED")
+            self.assertIsNone(ledger["windows"][WINDOW]["currentTaskId"])
 
     def test_missing_evidence_cannot_finish(self):
         with tempfile.TemporaryDirectory() as temporary:

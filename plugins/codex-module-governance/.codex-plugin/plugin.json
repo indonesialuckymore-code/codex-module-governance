@@ -1,7 +1,7 @@
 {
   "name": "codex-module-governance",
-  "version": "0.15.0",
-  "description": "Private Codex governance with stable task identity, role continuity, dedicated adjudication, and project-bound dispatch.",
+  "version": "0.16.0",
+  "description": "Private Codex governance with automatic successor dispatch and a hard two-task sequential window lifecycle.",
   "author": {
     "name": "QIANYI"
   },
@@ -11,10 +11,10 @@
   "interface": {
     "displayName": "Codex 模块治理",
     "shortDescription": "私有多任务施工治理、建档与工程总账。",
-    "longDescription": "先由唯一总设计师形成全项目施工大纲，再由 Codex 唯一中央一次理清任务、依赖和并行波次；任务身份全链一致，中央与裁定窗口可换代不断线，详细状态仍只归工程总账。",
+    "longDescription": "先由唯一总设计师形成全项目施工大纲，再由 Codex 唯一中央一次理清任务、依赖和并行波次；合法 DONE 后自动续派，每个任务窗口最多承接两项串行任务。",
     "developerName": "QIANYI",
     "category": "Productivity",
-    "capabilities": ["Reusable construction-outline planning", "One-pass central execution map", "Stable task identity", "Logical central and adjudication roles", "Durable task event inbox", "Planned role handover", "Scoped batch approval", "Dependency-wave dispatch", "Saved-project task binding", "Boss natural-language governance gateway", "Single central governance router", "Two-phase task-window dispatch", "First-level sub-agent control", "External Skill registry and adapters", "Verified module ledger", "Atomic occupancy review", "Independent validation", "Boss-controlled adjudication", "Disconnection recovery control"],
-    "defaultPrompt": "读取完整冻结大纲和最新总账，一次输出全部任务、Boss 决策、依赖与并行波次；取得中央启动图批准后按波次派发到同一保存项目。"
+    "capabilities": ["Reusable construction-outline planning", "One-pass central execution map", "Automatic successor dispatch", "Two-task sequential window lifecycle", "Stable task identity", "Logical central and adjudication roles", "Durable task event inbox", "Planned role handover", "Scoped batch approval", "Dependency-wave dispatch", "Saved-project task binding", "Boss natural-language governance gateway", "Single central governance router", "Two-phase task-window dispatch", "First-level sub-agent control", "External Skill registry and adapters", "Verified module ledger", "Atomic occupancy review", "Independent validation", "Boss-controlled adjudication", "Disconnection recovery control"],
+    "defaultPrompt": "读取完整冻结大纲和最新总账，一次输出全部任务、Boss 决策、依赖与并行波次；批准后持续自动放行合格任务，并执行单窗口最多两项串行任务规则。"
   }
 }

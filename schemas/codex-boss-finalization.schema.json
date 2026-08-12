@@ -4,7 +4,7 @@
   "title": "C06 Boss finalization",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "recordType", "validationId", "projectId", "taskId", "createdAt", "writerId", "validationDecisionDigest", "bossDecision", "bossDecisionRef", "ledgerMutation", "executionBoundary"],
+  "required": ["schemaVersion", "recordType", "validationId", "projectId", "taskId", "createdAt", "writerId", "validationDecisionDigest", "bossDecision", "bossDecisionRef", "ledgerMutation", "windowMutation", "successorDispatch", "executionBoundary"],
   "properties": {
     "schemaVersion": { "const": "0.6.0" },
     "recordType": { "const": "C06_BOSS_FINALIZATION" },
@@ -17,6 +17,36 @@
     "bossDecision": { "enum": ["APPROVED", "REJECTED"] },
     "bossDecisionRef": { "type": "string" },
     "ledgerMutation": { "type": "object" },
+    "windowMutation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["windowId", "assignmentCount", "maxAssignments", "currentTaskIdAfter", "windowStatusAfter", "canReceiveOneMoreTask"],
+      "properties": {
+        "windowId": { "type": "string" },
+        "assignmentCount": { "type": "integer", "minimum": 1, "maximum": 2 },
+        "maxAssignments": { "const": 2 },
+        "currentTaskIdAfter": { "type": ["string", "null"] },
+        "windowStatusAfter": { "enum": ["REGISTERED", "AVAILABLE_FOR_REUSE", "RETIRED"] },
+        "canReceiveOneMoreTask": { "type": "boolean" }
+      }
+    },
+    "successorDispatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "action", "completedTaskId", "completedWindowId", "authorizationSource", "dispatchOnlyIfScopeVerified", "bossRepromptRequired", "centralChoosesWindow", "windowMaxAssignments", "scopeChangeRequiresBoss"],
+      "properties": {
+        "required": { "type": "boolean" },
+        "action": { "enum": ["RECALCULATE_AND_DISPATCH_ALL_NEXT_ELIGIBLE_TASKS", "NONE"] },
+        "completedTaskId": { "type": "string" },
+        "completedWindowId": { "type": "string" },
+        "authorizationSource": { "const": "VERIFY_EXISTING_APPROVED_EXECUTION_MAP" },
+        "dispatchOnlyIfScopeVerified": { "const": true },
+        "bossRepromptRequired": { "const": false },
+        "centralChoosesWindow": { "const": true },
+        "windowMaxAssignments": { "const": 2 },
+        "scopeChangeRequiresBoss": { "const": true }
+      }
+    },
     "executionBoundary": {
       "type": "object",
       "additionalProperties": false,

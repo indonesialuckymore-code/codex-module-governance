@@ -10,11 +10,26 @@
 
 1. 确认请求来自 Boss，并识别项目与意图。
 2. 验证能力登记表中只有一个 `PLANNER`、一个 `CENTRAL`；C00 只能产出 `NOT_REGISTERED` 候选，C12 必须是无状态 `INTERFACE`。
-3. 新项目走 C02；已有项目必须先读 C03 的已验证总账。
-4. 若项目处于失联冻结，任何普通动作都先转 C08。
-5. 首次运营一次列出全部任务、集中决策和波次；日常单项请求仍选择 C03–C11 中一个主能力。
-6. Boss 对启动图的明确批准可覆盖图中列明的 C03 登记、C04 任务包、C05 占用检查和 C10 波次派发；下游机械门禁仍不得跳过。
-7. 后续波次只有在前置任务经 C06 + Boss 确认为 `DONE` 且 C05 重新检查合格后才放行；范围或风险变化会使受影响批准失效。
+3. 状态读回必须显示 `automaticSuccessorDispatchAvailable=true` 和 `twoTaskWindowLifecycleEnforced=true`：前者表示合法 `DONE` 后中央按已批准启动图继续派发，后者表示同一窗口最多承接两项串行任务。
+4. 新项目走 C02；已有项目必须先读 C03 的已验证总账。
+5. 若项目处于失联冻结，任何普通动作都先转 C08。
+6. 首次运营一次列出全部任务、集中决策和波次；日常单项请求仍选择 C03–C11 中一个主能力。
+7. Boss 对启动图的明确批准可覆盖图中列明的 C03 登记、C04 任务包、C05 占用检查和 C10 波次派发；下游机械门禁仍不得跳过。
+8. 前置任务经 C06 + Boss 确认为 `DONE` 后，中央自动放行通过 C05 的后续任务，不再询问是否继续；范围或风险变化会使受影响批准失效。
+9. C09 必须实际消费 C06 的不可变续派触发，核对启动图摘要后逐项运行 C05 和 C10 准备；一项被阻塞只进入 `blockedTasks/failedTasks`，其他无关合格任务继续准备。
+
+自动续派命令：
+
+```bash
+python3 plugins/codex-module-governance/scripts/central_construction_controller.py \
+  --data-root <私有数据目录> continue-successors \
+  --project-id <项目ID> \
+  --validation-id <刚完成任务的验收ID> \
+  --execution-map <私有目录内的获批启动图JSON> \
+  --writer-id codex-module-central
+```
+
+返回 `READY_FOR_BATCH_RUNTIME_DISPATCH` 只表示本批 C05 门禁和 C10 派发单已经准备好。中央还必须据 `preparedTasks` 发起真实 Codex 运行，并将真实任务/窗口 ID 交 C10 确认；在此之前不得记为 `IN_PROGRESS`。`waitingTasks` 只放尚有前置的任务，已经 `DONE`、正在执行、已准备待运行、被门禁阻止和输入失败分别进入独立清单，避免把不同业务状态混成“等待”。每次重入都读实时总账；既有派发单保持幂等，曾阻塞的任务解除后会生成下一份不可覆盖的 `successor-batch-rNNNN.json`，不会被第一份批次回执永久挡住。
 
 ## 当前明确不能做的事
 
@@ -52,3 +67,4 @@
 - 范围化批准只能用于摘要和任务清单完全匹配的波次；
 - 路由前后工程总账摘要不变；
 - C01–C08 原有测试全部无回归。
+- 合法 C06 触发能实际生成并行后续任务的 C10 派发单；兼容任务复用旧窗口，不兼容任务新开 Terra 窗口；单项 C05 阻塞不连带阻断其他任务；重复消费同一触发幂等。
