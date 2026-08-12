@@ -61,6 +61,7 @@ def main():
         "independent-handover-validator": "C06",
         "adjudication-request-organizer": "C07",
         "disconnection-recovery-controller": "C08",
+        "central-construction-controller": "C09",
     }
     for skill_name, stage in skills.items():
         skill_root = plugin_root / "skills" / skill_name
@@ -74,7 +75,7 @@ def main():
         if not re.search(r"^description:\s*\S", frontmatter, re.MULTILINE):
             fail(f"{stage} Skill description is missing")
 
-    for skill_name, stage in {"engineering-ledger-manager": "C03", "task-package-generator": "C04", "occupancy-conflict-checker": "C05", "independent-handover-validator": "C06", "adjudication-request-organizer": "C07", "disconnection-recovery-controller": "C08"}.items():
+    for skill_name, stage in {"engineering-ledger-manager": "C03", "task-package-generator": "C04", "occupancy-conflict-checker": "C05", "independent-handover-validator": "C06", "adjudication-request-organizer": "C07", "disconnection-recovery-controller": "C08", "central-construction-controller": "C09"}.items():
         agent_manifest = plugin_root / "skills" / skill_name / "agents" / "openai.yaml"
         agent_contents = agent_manifest.read_text(encoding="utf-8")
         for required_line in ("interface:", "display_name:", "short_description:", "default_prompt:"):
@@ -84,7 +85,7 @@ def main():
     for path in plugin_root.rglob("*"):
         if path.is_file() and "[TODO:" in path.read_text(encoding="utf-8", errors="ignore"):
             fail(f"unresolved placeholder in {path.relative_to(plugin_root)}")
-    print("Plugin manifest and C02/C03/C04/C05/C06/C07/C08 Skill contract preflight passed.")
+    print("Plugin manifest and C02/C03/C04/C05/C06/C07/C08/C09 Skill contract preflight passed.")
 
 
 if __name__ == "__main__":

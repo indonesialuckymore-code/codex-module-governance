@@ -1,0 +1,75 @@
+{
+  "schemaVersion": "0.9.0",
+  "recordType": "C09_CORE_CAPABILITY_REGISTRY",
+  "canonicalCentralSkill": "central-construction-controller",
+  "capabilities": [
+    {
+      "stage": "C02",
+      "role": "EXECUTOR",
+      "skill": "new-project-initializer",
+      "script": "initialize_project.py",
+      "status": "READY"
+    },
+    {
+      "stage": "C03",
+      "role": "EXECUTOR",
+      "skill": "engineering-ledger-manager",
+      "script": "ledger_manager.py",
+      "status": "READY"
+    },
+    {
+      "stage": "C04",
+      "role": "EXECUTOR",
+      "skill": "task-package-generator",
+      "script": "task_package_generator.py",
+      "status": "READY"
+    },
+    {
+      "stage": "C05",
+      "role": "EXECUTOR",
+      "skill": "occupancy-conflict-checker",
+      "script": "occupancy_conflict_checker.py",
+      "status": "READY"
+    },
+    {
+      "stage": "C06",
+      "role": "EXECUTOR",
+      "skill": "independent-handover-validator",
+      "script": "independent_handover_validator.py",
+      "status": "READY"
+    },
+    {
+      "stage": "C07",
+      "role": "EXECUTOR",
+      "skill": "adjudication-request-organizer",
+      "script": "adjudication_request_organizer.py",
+      "status": "READY"
+    },
+    {
+      "stage": "C08",
+      "role": "EXECUTOR",
+      "skill": "disconnection-recovery-controller",
+      "script": "disconnection_recovery_controller.py",
+      "status": "READY"
+    },
+    {
+      "stage": "C09",
+      "role": "CENTRAL",
+      "skill": "central-construction-controller",
+      "script": "central_construction_controller.py",
+      "status": "READY"
+    }
+  ],
+  "pendingCapabilities": [
+    {
+      "stage": "C10",
+      "capability": "actual-task-window-and-sub-agent-dispatch",
+      "status": "NOT_IMPLEMENTED"
+    },
+    {
+      "stage": "C11",
+      "capability": "external-skill-slot-management",
+      "status": "NOT_IMPLEMENTED"
+    }
+  ]
+}

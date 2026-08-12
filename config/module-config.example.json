@@ -1,6 +1,6 @@
 {
   "$schema": "../schemas/module-config.schema.json",
-  "schemaVersion": "0.8.0",
+  "schemaVersion": "0.9.0",
   "module": {
     "id": "replace-with-module-id",
     "displayName": "Codex 模块"
@@ -57,6 +57,14 @@
     "takeoverResumesBusinessExecution": false,
     "requireC06ForDoneRelease": true,
     "requireSeparateBossReleaseAuthorization": true
+  },
+  "centralIntegration": {
+    "soleEntrySkill": "central-construction-controller",
+    "requireVerifiedLedgerBeforeRouting": true,
+    "recoveryOverridesNormalRouting": true,
+    "requireDownstreamGates": true,
+    "allowDirectBusinessExecution": false,
+    "actualDispatchAvailable": false
   },
   "publishing": {
     "mode": "private",

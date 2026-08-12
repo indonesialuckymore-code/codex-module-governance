@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-central-routing-request.schema.json",
+  "title": "C09 central routing request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["requestSchemaVersion", "recordType", "requestId", "submittedBy", "projectId", "intent", "executionMode", "bossAuthorization", "contextRefs"],
+  "properties": {
+    "requestSchemaVersion": { "const": "0.9.0" },
+    "recordType": { "const": "C09_CENTRAL_ROUTING_REQUEST" },
+    "requestId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$" },
+    "submittedBy": { "const": "boss" },
+    "projectId": { "type": ["string", "null"] },
+    "intent": {
+      "enum": [
+        "INITIALIZE_PROJECT", "READ_LEDGER", "REGISTER_GOVERNANCE_STATE",
+        "GENERATE_TASK_PACKAGE", "CHECK_OCCUPANCY", "VALIDATE_HANDBACK",
+        "FINALIZE_TASK", "REQUEST_ADVISORY", "RECORD_BOSS_ADJUDICATION",
+        "FREEZE_DISCONNECTION", "TAKEOVER_CONTROL", "RECORD_RECOVERY_DECISION",
+        "RELEASE_OCCUPANCY", "DISPATCH_TASK_WINDOW", "DISPATCH_SUB_AGENT",
+        "RESUME_BUSINESS_EXECUTION"
+      ]
+    },
+    "executionMode": { "enum": ["READ_ONLY", "PREPARE", "APPLY"] },
+    "bossAuthorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reference"],
+      "properties": {
+        "status": { "enum": ["NOT_REQUIRED", "PENDING", "APPROVED"] },
+        "reference": { "type": ["string", "null"] }
+      }
+    },
+    "contextRefs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["taskId", "packageId", "validationId", "recoveryCaseId", "windowId"],
+      "properties": {
+        "taskId": { "type": ["string", "null"] },
+        "packageId": { "type": ["string", "null"] },
+        "validationId": { "type": ["string", "null"] },
+        "recoveryCaseId": { "type": ["string", "null"] },
+        "windowId": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-central-routing-decision.schema.json",
+  "title": "C09 central routing decision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "recordType", "requestId", "projectId", "intent", "routeStatus", "targetStage", "targetSkill", "requiredAction", "models", "subAgentPolicy", "boundaries", "registryDigest"],
+  "properties": {
+    "schemaVersion": { "const": "0.9.0" },
+    "recordType": { "const": "C09_CENTRAL_ROUTING_DECISION" },
+    "requestId": { "type": "string" },
+    "projectId": { "type": ["string", "null"] },
+    "intent": { "type": "string" },
+    "routeStatus": { "type": "string" },
+    "targetStage": { "type": ["string", "null"] },
+    "targetSkill": { "type": ["string", "null"] },
+    "requiredAction": { "type": "string" },
+    "recoveryState": { "type": "string" },
+    "recoveryCaseId": { "type": ["string", "null"] },
+    "models": { "type": "object" },
+    "subAgentPolicy": { "type": "object" },
+    "boundaries": { "type": "object" },
+    "registryDigest": { "type": "string" }
+  }
+}
