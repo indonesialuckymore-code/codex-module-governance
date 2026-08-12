@@ -1,6 +1,6 @@
 {
   "$schema": "../schemas/module-config.schema.json",
-  "schemaVersion": "0.3.0",
+  "schemaVersion": "0.4.0",
   "module": {
     "id": "replace-with-module-id",
     "displayName": "Codex 模块"

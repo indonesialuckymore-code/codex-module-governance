@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-draft-task-package.schema.json",
+  "title": "C04 Codex draft task package",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "recordType", "packageId", "projectId", "taskId", "generatedAt", "writerId", "status", "sourceLedger", "inputBriefDigest", "task", "windowRecommendation", "dependencies", "requiredReading", "realTimeChecks", "allowedActions", "forbiddenActions", "preflightSnapshot", "executionSequence", "acceptance", "hardStops", "rollbackPlan", "deliverables", "handbackRule", "approvalAndDispatchBoundary", "receiptIds", "latestReceiptId"],
+  "properties": {
+    "schemaVersion": { "const": "0.4.0" },
+    "recordType": { "const": "C04_DRAFT_TASK_PACKAGE" },
+    "packageId": { "type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$" },
+    "projectId": { "type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$" },
+    "taskId": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9._-]{2,127}$" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "writerId": { "const": "codex-module-central" },
+    "status": { "const": "DRAFT_REQUIRES_BOSS_REVIEW" },
+    "sourceLedger": { "type": "object" },
+    "inputBriefDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "task": { "type": "object" },
+    "windowRecommendation": { "type": "object" },
+    "dependencies": { "type": "array", "items": { "type": "string" } },
+    "requiredReading": { "type": "array", "items": { "type": "object" } },
+    "realTimeChecks": { "type": "array", "items": { "type": "object" } },
+    "allowedActions": { "type": "array", "items": { "type": "string" } },
+    "forbiddenActions": { "type": "array", "items": { "type": "string" } },
+    "preflightSnapshot": { "type": "array", "items": { "type": "string" } },
+    "executionSequence": { "type": "array", "items": { "type": "string" } },
+    "acceptance": { "type": "object" },
+    "hardStops": { "type": "array", "items": { "type": "string" } },
+    "rollbackPlan": { "type": "array", "items": { "type": "string" } },
+    "deliverables": { "type": "array", "items": { "type": "string" } },
+    "handbackRule": { "type": "string" },
+    "approvalAndDispatchBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bossApprovalStatus", "c05OccupancyCheckStatus", "dispatchAllowed", "taskWindowCreated", "subAgentCreated", "objectClaimCreated", "testCreationAllowed", "businessWriteAllowed"],
+      "properties": {
+        "bossApprovalStatus": { "const": "REQUIRED" },
+        "c05OccupancyCheckStatus": { "const": "REQUIRED_BEFORE_DISPATCH" },
+        "dispatchAllowed": { "const": false },
+        "taskWindowCreated": { "const": false },
+        "subAgentCreated": { "const": false },
+        "objectClaimCreated": { "const": false },
+        "testCreationAllowed": { "const": false },
+        "businessWriteAllowed": { "const": false }
+      }
+    },
+    "receiptIds": { "const": ["receipt-000000-generate"] },
+    "latestReceiptId": { "const": "receipt-000000-generate" }
+  }
+}

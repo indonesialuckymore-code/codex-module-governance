@@ -1,0 +1,4 @@
+interface:
+  display_name: "施工任务包生成器"
+  short_description: "将规划任务生成可审阅、不可派发的标准施工任务包"
+  default_prompt: "使用 $task-package-generator 把已批准的 Codex 任务生成施工任务包，先不要派发。"

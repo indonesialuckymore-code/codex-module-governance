@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-task-package-brief.schema.json",
+  "title": "C04 task-package brief",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["briefSchemaVersion", "recordType", "taskId", "windowRecommendation", "dependencies", "requiredReading", "realTimeChecks", "allowedActions", "forbiddenActions", "preflightSnapshot", "executionSequence", "acceptance", "hardStops", "rollbackPlan", "deliverables", "handbackRule"],
+  "properties": {
+    "briefSchemaVersion": { "const": "0.4.0" },
+    "recordType": { "const": "C04_TASK_PACKAGE_BRIEF" },
+    "taskId": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9._-]{2,127}$" },
+    "windowRecommendation": { "type": "object", "additionalProperties": false, "required": ["mode", "reason"], "properties": {"mode": {"enum": ["NEW", "REUSE"]}, "reason": {"type": "string", "minLength": 1}}},
+    "dependencies": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "requiredReading": { "type": "array", "minItems": 1, "items": { "type": "object", "additionalProperties": false, "required": ["reference", "purpose"], "properties": {"reference": {"type": "string"}, "purpose": {"type": "string"}}}},
+    "realTimeChecks": { "type": "array", "minItems": 1, "items": { "type": "object", "additionalProperties": false, "required": ["reference", "purpose", "objectType"], "properties": {"reference": {"type": "string"}, "purpose": {"type": "string"}, "objectType": {"type": "string"}}}},
+    "allowedActions": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "forbiddenActions": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "preflightSnapshot": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "executionSequence": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "acceptance": { "type": "object", "additionalProperties": false, "required": ["positiveCases", "negativeCases", "idempotencyChecks", "rollbackChecks", "logAndHistoryChecks", "readbackChecks"], "properties": {"positiveCases": {"type": "array", "minItems": 1}, "negativeCases": {"type": "array", "minItems": 1}, "idempotencyChecks": {"type": "array", "minItems": 1}, "rollbackChecks": {"type": "array", "minItems": 1}, "logAndHistoryChecks": {"type": "array", "minItems": 1}, "readbackChecks": {"type": "array", "minItems": 1}}},
+    "hardStops": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "rollbackPlan": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "deliverables": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "handbackRule": { "type": "string", "minLength": 1 }
+  }
+}

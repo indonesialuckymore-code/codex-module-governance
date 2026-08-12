@@ -1,7 +1,7 @@
 {
   "name": "codex-module-governance",
-  "version": "0.3.0",
-  "description": "Private Codex module governance with safe project registration and a verified module ledger.",
+  "version": "0.4.0",
+  "description": "Private Codex module governance with safe project registration, a verified module ledger, and draft-only task packages.",
   "author": {
     "name": "QIANYI"
   },
@@ -10,10 +10,10 @@
   "interface": {
     "displayName": "Codex 模块治理",
     "shortDescription": "私有多任务施工治理、建档与工程总账。",
-    "longDescription": "为 Codex 模块提供仓库外私有建档、唯一详细工程总账与不可覆盖回执，以及后续任务、证据、冲突控制和恢复能力。",
+    "longDescription": "为 Codex 模块提供仓库外私有建档、唯一详细工程总账、不可覆盖回执和待 Boss 审阅的施工任务包；不直接派发或施工。",
     "developerName": "QIANYI",
     "category": "Productivity",
-    "capabilities": ["Private project registration", "Verified module ledger", "Duplicate detection"],
-    "defaultPrompt": "读取 Codex 模块工程总账，先检查权限、回执完整性和硬停项，不要施工。"
+    "capabilities": ["Private project registration", "Verified module ledger", "Draft task packages", "Duplicate detection"],
+    "defaultPrompt": "读取 Codex 模块工程总账，或把已规划任务生成待 Boss 审阅的任务包；不要派发或施工。"
   }
 }
