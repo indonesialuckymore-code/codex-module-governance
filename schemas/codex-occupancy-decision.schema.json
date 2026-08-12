@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-occupancy-decision.schema.json",
+  "title": "C05 occupancy decision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "recordType", "reviewId", "projectId", "packageId", "taskId", "createdAt", "writerId", "status", "source", "bossApprovalRef", "dependencyRefs", "crossModuleGate", "windowDecision", "requestedOccupancies", "conflicts", "reservedClaimIds", "ledgerMutation", "executionBoundary", "receiptIds", "latestReceiptId"],
+  "properties": {
+    "schemaVersion": { "const": "0.5.0" },
+    "recordType": { "const": "C05_OCCUPANCY_DECISION" },
+    "reviewId": { "type": "string" },
+    "projectId": { "type": "string" },
+    "packageId": { "type": "string" },
+    "taskId": { "type": "string" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "writerId": { "const": "codex-module-central" },
+    "status": { "enum": ["ELIGIBLE_FOR_DISPATCH_APPROVAL", "CONFLICT_HARD_STOP"] },
+    "source": { "type": "object" },
+    "bossApprovalRef": { "type": "string" },
+    "dependencyRefs": { "type": "array", "items": { "type": "string" } },
+    "crossModuleGate": { "type": "object" },
+    "windowDecision": { "type": ["object", "null"] },
+    "requestedOccupancies": { "type": "array", "items": { "type": "object" } },
+    "conflicts": { "type": "array", "items": { "type": "object" } },
+    "reservedClaimIds": { "type": "array", "items": { "type": "string" } },
+    "ledgerMutation": { "type": "object" },
+    "executionBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["occupancyReserved", "dispatchEligibility", "dispatchExecuted", "taskWindowCreated", "subAgentCreated", "testCreationAllowed", "businessWriteAllowed"],
+      "properties": {
+        "occupancyReserved": { "type": "boolean" },
+        "dispatchEligibility": { "enum": ["ELIGIBLE", "NOT_GRANTED"] },
+        "dispatchExecuted": { "const": false },
+        "taskWindowCreated": { "const": false },
+        "subAgentCreated": { "const": false },
+        "testCreationAllowed": { "const": false },
+        "businessWriteAllowed": { "const": false }
+      }
+    },
+    "receiptIds": { "const": ["receipt-000000-review"] },
+    "latestReceiptId": { "const": "receipt-000000-review" }
+  }
+}

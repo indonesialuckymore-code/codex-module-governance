@@ -4,9 +4,9 @@
   "title": "Codex Module Governance configuration",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "module", "models", "subAgentPolicy", "storage", "projectInitialization", "ledger", "publishing"],
+  "required": ["schemaVersion", "module", "models", "subAgentPolicy", "storage", "projectInitialization", "ledger", "occupancy", "publishing"],
   "properties": {
-    "schemaVersion": { "const": "0.4.0" },
+    "schemaVersion": { "const": "0.5.0" },
     "module": {
       "type": "object",
       "additionalProperties": false,
@@ -61,6 +61,18 @@
         "allowCrossModuleDetailedWrites": { "const": false },
         "allowTaskWindowDirectWrites": { "const": false },
         "allowSubAgentDirectWrites": { "const": false }
+      }
+    },
+    "occupancy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["soleWriter", "requireBossReview", "atomicReservation", "allowParallelSharedRead", "dispatchOnEligible"],
+      "properties": {
+        "soleWriter": { "const": "codex-module-central" },
+        "requireBossReview": { "const": true },
+        "atomicReservation": { "const": true },
+        "allowParallelSharedRead": { "const": true },
+        "dispatchOnEligible": { "const": false }
       }
     },
     "publishing": {

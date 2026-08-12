@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-occupancy-review.schema.json",
+  "title": "C05 occupancy review request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["reviewSchemaVersion", "recordType", "reviewId", "projectId", "packageId", "taskId", "bossReview", "dependencyGate", "crossModuleGate", "windowReview", "occupancyRequests"],
+  "properties": {
+    "reviewSchemaVersion": { "const": "0.5.0" },
+    "recordType": { "const": "C05_OCCUPANCY_REVIEW_REQUEST" },
+    "reviewId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$" },
+    "projectId": { "type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$" },
+    "packageId": { "type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$" },
+    "taskId": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9._-]{2,127}$" },
+    "bossReview": { "type": "object" },
+    "dependencyGate": { "type": "object" },
+    "crossModuleGate": { "type": "object" },
+    "windowReview": { "type": "object" },
+    "occupancyRequests": { "type": "array", "minItems": 1, "maxItems": 80, "items": { "type": "object" } }
+  }
+}

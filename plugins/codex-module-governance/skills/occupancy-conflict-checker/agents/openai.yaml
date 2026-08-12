@@ -1,0 +1,4 @@
+interface:
+  display_name: "占用与冲突检查器"
+  short_description: "检查任务对象占用、并行风险以及新旧窗口选择建议"
+  default_prompt: "Use $occupancy-conflict-checker to review a Boss-approved task package for occupancy conflicts without dispatching it."
