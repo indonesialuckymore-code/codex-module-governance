@@ -15,7 +15,7 @@ from initialize_project import C02Error, PROJECT_ID_PATTERN, load_data_root
 from ledger_manager import LedgerError, load_ledger
 
 
-SCHEMA_VERSION = "0.10.0"
+SCHEMA_VERSION = "0.11.0"
 CENTRAL_SKILL = "central-construction-controller"
 CENTRAL_MODEL = "gpt-5.6-sol"
 TASK_MODEL = "gpt-5.6-terra"
@@ -35,6 +35,7 @@ EXPECTED = {
     "C08": ("EXECUTOR", "disconnection-recovery-controller", "disconnection_recovery_controller.py"),
     "C09": ("CENTRAL", CENTRAL_SKILL, "central_construction_controller.py"),
     "C10": ("EXECUTOR", "task-window-dispatch-controller", "task_window_dispatch_controller.py"),
+    "C11": ("EXECUTOR", "external-skill-adapter-controller", "external_skill_adapter_controller.py"),
 }
 
 ROUTES = {
@@ -51,6 +52,8 @@ ROUTES = {
     "TAKEOVER_CONTROL": ("C08", "disconnection-recovery-controller", "VERIFY_BOSS_AUTHORIZED_TAKEOVER"),
     "RECORD_RECOVERY_DECISION": ("C08", "disconnection-recovery-controller", "RECORD_RECOVERY_DECISION"),
     "RELEASE_OCCUPANCY": ("C08", "disconnection-recovery-controller", "VERIFY_CONTROLLED_OCCUPANCY_RELEASE"),
+    "REGISTER_EXTERNAL_SKILL": ("C11", "external-skill-adapter-controller", "ASSESS_OR_ACTIVATE_EXTERNAL_SKILL_SLOT"),
+    "RESOLVE_EXTERNAL_SKILL": ("C11", "external-skill-adapter-controller", "RESOLVE_ACTIVE_SKILL_OR_SAFE_FALLBACK"),
 }
 DISPATCH_INTENTS = {"DISPATCH_TASK_WINDOW", "DISPATCH_SUB_AGENT"}
 PENDING_INTENTS = {"RESUME_BUSINESS_EXECUTION"}
@@ -116,7 +119,7 @@ def validate_registry(registry: Dict[str, Any], check_files: bool = True) -> Dic
         if check_files and (not (PLUGIN_SKILLS / skill / "SKILL.md").is_file() or not (PLUGIN_SCRIPTS / script).is_file()):
             raise CentralRoutingError(f"C09_{stage}_CAPABILITY_FILE_MISSING")
     pending = {entry.get("stage"): entry.get("status") for entry in registry.get("pendingCapabilities", []) if isinstance(entry, dict)}
-    if pending != {"C11": "NOT_IMPLEMENTED"}:
+    if pending:
         raise CentralRoutingError("C09_PENDING_CAPABILITY_BOUNDARY_INVALID")
     return registry
 
@@ -246,7 +249,7 @@ def status(registry: Dict[str, Any]) -> Dict[str, Any]:
         "canonicalCentralSkill": CENTRAL_SKILL,
         "centralEntryCount": 1,
         "readyStages": list(EXPECTED),
-        "pendingStages": ["C11"],
+        "pendingStages": [],
         "models": {"central": CENTRAL_MODEL, "taskWindow": TASK_MODEL, "subAgent": TASK_MODEL},
         "subAgentPolicy": {"maxConcurrentFirstLevel": 3, "allowGrandchildren": False},
         "boundaries": {"twoPhaseDispatchAvailable": True, "runtimeConfirmationRequired": True, "businessExecutionAvailable": False},

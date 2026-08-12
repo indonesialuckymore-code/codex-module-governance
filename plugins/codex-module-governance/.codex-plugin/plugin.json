@@ -1,7 +1,7 @@
 {
   "name": "codex-module-governance",
-  "version": "0.10.0",
-  "description": "Private Codex governance with one central entry, two-phase task dispatch, verified ledgers, validation, adjudication, and recovery controls.",
+  "version": "0.11.0",
+  "description": "Private Codex governance with one central entry, two-phase task dispatch, and controlled external Skill adaptation.",
   "author": {
     "name": "QIANYI"
   },
@@ -10,10 +10,10 @@
   "interface": {
     "displayName": "Codex 模块治理",
     "shortDescription": "私有多任务施工治理、建档与工程总账。",
-    "longDescription": "以唯一中央入口统筹 Codex 模块的私有建档、唯一工程总账、原子占用、两段式任务调度、独立验收、Boss 裁定和失联恢复；不直接修改业务系统。",
+    "longDescription": "以唯一中央入口统筹私有建档、总账、占用、调度、验收、裁定、恢复与外部 Skill 适配；不直接修改业务系统。",
     "developerName": "QIANYI",
     "category": "Productivity",
-    "capabilities": ["Single central governance entry", "Deterministic C02-C10 routing", "Two-phase task-window dispatch", "First-level sub-agent control", "Verified module ledger", "Atomic occupancy review", "Independent validation", "Boss-controlled adjudication", "Disconnection recovery control"],
-    "defaultPrompt": "作为唯一 Codex 模块中央，先读取工程总账和恢复状态，再把 Boss 的要求路由到 C02-C10；派发必须经过 Boss 批准、C05 占用和真实运行确认。"
+    "capabilities": ["Single central governance entry", "Deterministic C02-C11 routing", "Two-phase task-window dispatch", "First-level sub-agent control", "External Skill registry and adapters", "Verified module ledger", "Atomic occupancy review", "Independent validation", "Boss-controlled adjudication", "Disconnection recovery control"],
+    "defaultPrompt": "作为唯一 Codex 模块中央，先读取工程总账和恢复状态，再把 Boss 的要求路由到 C02-C11；外部 Skill 必须固定版本、审查许可证且不得改变中央协议。"
   }
 }

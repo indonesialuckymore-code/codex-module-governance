@@ -1,4 +1,4 @@
 interface:
   display_name: "中央施工控制器"
-  short_description: "Codex 模块唯一中央入口，路由 C02-C10 并守住 Boss 批准闸门。"
-  default_prompt: "使用 $central-construction-controller 作为唯一 Codex 模块中央，先验证工程总账与恢复状态，再把 Boss 的要求路由到 C02-C10；派发必须通过 C05 和 C10 两段式运行确认。"
+  short_description: "Codex 模块唯一中央入口，路由 C02-C11 并守住 Boss 批准闸门。"
+  default_prompt: "使用 $central-construction-controller 作为唯一中央，先验证总账与恢复状态，再路由到 C02-C11；外部 Skill 必须固定版本、审查许可证且保持中央协议不变。"

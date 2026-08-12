@@ -1,6 +1,6 @@
 {
   "$schema": "../schemas/module-config.schema.json",
-  "schemaVersion": "0.10.0",
+  "schemaVersion": "0.11.0",
   "module": {
     "id": "replace-with-module-id",
     "displayName": "Codex 模块"
@@ -73,6 +73,15 @@
     "redConflictHardStop": true,
     "subAgentsReturnToParentWindowOnly": true,
     "allowSubAgentDoneDeclaration": false
+  },
+  "externalSkills": {
+    "protocol": "codex-governance-protocol-v1",
+    "requireVersionPin": true,
+    "requireLicenseReview": true,
+    "requireBossActivationApproval": true,
+    "allowAutomaticInstall": false,
+    "allowProtocolMutation": false,
+    "optionalMissingDisablesOnlyFeature": true
   },
   "publishing": {
     "mode": "private",

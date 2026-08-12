@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-external-skill-registry.schema.json",
+  "title": "C11 private external Skill registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "recordType", "projectId", "revision", "protocol", "slots", "receiptIds", "latestReceiptId"],
+  "properties": {
+    "schemaVersion": { "const": "0.11.0" },
+    "recordType": { "const": "C11_EXTERNAL_SKILL_REGISTRY" },
+    "projectId": { "type": "string" },
+    "revision": { "type": "integer", "minimum": 0 },
+    "protocol": { "const": "codex-governance-protocol-v1" },
+    "slots": { "type": "object" },
+    "receiptIds": { "type": "array", "items": { "type": "string" } },
+    "latestReceiptId": { "type": ["string", "null"] }
+  }
+}

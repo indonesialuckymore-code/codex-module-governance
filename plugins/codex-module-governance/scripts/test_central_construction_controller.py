@@ -56,7 +56,7 @@ def request(intent, mode="READ_ONLY", project=PROJECT, approved=False, **refs):
     context = {"taskId": None, "packageId": None, "validationId": None, "recoveryCaseId": None, "windowId": None}
     context.update(refs)
     return {
-        "requestSchemaVersion": "0.10.0",
+        "requestSchemaVersion": "0.11.0",
         "recordType": "C09_CENTRAL_ROUTING_REQUEST",
         "requestId": f"request-{intent.lower().replace('_', '-')}",
         "submittedBy": "boss",
@@ -166,6 +166,14 @@ class C09Tests(unittest.TestCase):
             code, output = route(root, request("RESUME_BUSINESS_EXECUTION", mode="APPLY", approved=True))
             self.assertEqual(code, 0, output)
             self.assertEqual(output["routeStatus"], "BLOCKED_CAPABILITY_NOT_IMPLEMENTED")
+
+    def test_external_skill_intents_route_to_c11(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "private-data"; setup_project(root)
+            for intent in ("REGISTER_EXTERNAL_SKILL", "RESOLVE_EXTERNAL_SKILL"):
+                with self.subTest(intent=intent):
+                    code, output = route(root, request(intent), f"{intent}.json")
+                    self.assertEqual(code, 0, output); self.assertEqual(output["targetStage"], "C11")
 
     def test_recovery_freeze_overrides_normal_routing(self):
         with tempfile.TemporaryDirectory() as temporary:

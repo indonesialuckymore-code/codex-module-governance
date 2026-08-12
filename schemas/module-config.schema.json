@@ -4,9 +4,9 @@
   "title": "Codex Module Governance configuration",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "module", "models", "subAgentPolicy", "storage", "projectInitialization", "ledger", "occupancy", "validation", "adjudication", "recovery", "centralIntegration", "dispatch", "publishing"],
+  "required": ["schemaVersion", "module", "models", "subAgentPolicy", "storage", "projectInitialization", "ledger", "occupancy", "validation", "adjudication", "recovery", "centralIntegration", "dispatch", "externalSkills", "publishing"],
   "properties": {
-    "schemaVersion": { "const": "0.10.0" },
+    "schemaVersion": { "const": "0.11.0" },
     "module": {
       "type": "object",
       "additionalProperties": false,
@@ -138,6 +138,20 @@
         "redConflictHardStop": { "const": true },
         "subAgentsReturnToParentWindowOnly": { "const": true },
         "allowSubAgentDoneDeclaration": { "const": false }
+      }
+    },
+    "externalSkills": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "requireVersionPin", "requireLicenseReview", "requireBossActivationApproval", "allowAutomaticInstall", "allowProtocolMutation", "optionalMissingDisablesOnlyFeature"],
+      "properties": {
+        "protocol": { "const": "codex-governance-protocol-v1" },
+        "requireVersionPin": { "const": true },
+        "requireLicenseReview": { "const": true },
+        "requireBossActivationApproval": { "const": true },
+        "allowAutomaticInstall": { "const": false },
+        "allowProtocolMutation": { "const": false },
+        "optionalMissingDisablesOnlyFeature": { "const": true }
       }
     },
     "publishing": {

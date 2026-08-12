@@ -1,6 +1,6 @@
 ---
 name: central-construction-controller
-description: 作为 Codex 模块唯一中央施工入口，接收 Boss 的自然语言要求，先读取工程总账与恢复状态，再把治理动作确定性路由到 C02-C10；管理任务、窗口、占用、派发、验收、裁定与失联恢复，但不亲自施工、不代替 Boss 裁定。Use when Boss 要开始或继续项目、查看下一任务、生成或批准任务包、派发任务窗口或一级子 Agent、处理回传、请求中央后台建议、判断窗口复用、处理失联，或询问当前工程状态。
+description: 作为 Codex 模块唯一中央施工入口，接收 Boss 的自然语言要求，先读取工程总账与恢复状态，再把治理动作确定性路由到 C02-C11；管理任务、窗口、占用、派发、验收、裁定、恢复与外部 Skill 适配，但不亲自施工、不代替 Boss 裁定。Use when Boss 要开始或继续项目、查看下一任务、生成或批准任务包、派发任务窗口或一级子 Agent、固定或替换外部 Skill、处理回传、裁定或失联。
 ---
 
 # Codex 模块中央施工控制器
@@ -38,6 +38,7 @@ description: 作为 Codex 模块唯一中央施工入口，接收 Boss 的自然
 | 请求中央后台意见 | C07 `adjudication-request-organizer` | 建议只回 Boss，Boss 决定后再回任务窗口 |
 | 任务窗口或中央失联 | C08 `disconnection-recovery-controller` | 冻结、接管、恢复决定和受控释放 |
 | 真实派发窗口或子 Agent | C10 `task-window-dispatch-controller` | 两段式派发与真实运行确认 |
+| 固定、替换或处理缺失外部 Skill | C11 `external-skill-adapter-controller` | 来源、版本、许可证、权限、替代和降级 |
 
 ## 窗口与子 Agent 合同
 
@@ -129,6 +130,15 @@ C04 生成的任务包必须覆盖：窗口身份、业务目标、依赖、必�
 - 新任务和一级子 Agent默认使用 `gpt-5.6-terra`，最多 3 个，禁止下派孙级 Agent。
 - 任何部分创建失败都不能把任务推进为 `IN_PROGRESS`；孤立运行对象须关闭或转 C08 冻结。
 - 子 Agent 只能回传父任务窗口，由父窗口统一汇总；子 Agent 不得宣布整项 `DONE`。
+
+### C11 外部 Skill
+
+- 先固定能力槽、输入输出和降级方案，再审查候选 Skill。
+- 必须记录来源、固定版本或 commit、许可证证据、权限和替代关系。
+- 核心能力缺失时阻断依赖施工；可选能力缺失只关闭对应功能。
+- 同一能力槽只有一个默认 `ACTIVE` Skill；替换必须明确指向旧 Skill。
+- 外部 Skill 统一适配到 `codex-governance-protocol-v1`，不得改变中央任务、状态、证据或 Boss 授权。
+- C11 不自动安装或调用外部 Skill；安装与干净环境验证留给 C13。
 
 ### 永久硬边界
 

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "0.10.0",
+  "schemaVersion": "0.11.0",
   "recordType": "C09_CORE_CAPABILITY_REGISTRY",
   "canonicalCentralSkill": "central-construction-controller",
   "capabilities": [
@@ -65,13 +65,14 @@
       "skill": "task-window-dispatch-controller",
       "script": "task_window_dispatch_controller.py",
       "status": "READY"
-    }
-  ],
-  "pendingCapabilities": [
+    },
     {
       "stage": "C11",
-      "capability": "external-skill-slot-management",
-      "status": "NOT_IMPLEMENTED"
+      "role": "EXECUTOR",
+      "skill": "external-skill-adapter-controller",
+      "script": "external_skill_adapter_controller.py",
+      "status": "READY"
     }
-  ]
+  ],
+  "pendingCapabilities": []
 }

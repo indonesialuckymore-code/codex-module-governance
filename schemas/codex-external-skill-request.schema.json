@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-external-skill-request.schema.json",
+  "title": "C11 external Skill request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["requestSchemaVersion", "recordType", "requestId", "projectId", "slotId", "requirement", "candidate", "availability", "bossAuthorization"],
+  "properties": {
+    "requestSchemaVersion": { "const": "0.11.0" },
+    "recordType": { "const": "C11_EXTERNAL_SKILL_REQUEST" },
+    "requestId": { "type": "string" },
+    "projectId": { "type": "string" },
+    "slotId": { "type": "string" },
+    "requirement": { "type": "object" },
+    "candidate": { "type": "object" },
+    "availability": { "type": "object" },
+    "bossAuthorization": { "type": "object" }
+  }
+}
