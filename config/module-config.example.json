@@ -1,6 +1,6 @@
 {
   "$schema": "../schemas/module-config.schema.json",
-  "schemaVersion": "0.11.0",
+  "schemaVersion": "0.12.0",
   "module": {
     "id": "replace-with-module-id",
     "displayName": "Codex 模块"
@@ -82,6 +82,16 @@
     "allowAutomaticInstall": false,
     "allowProtocolMutation": false,
     "optionalMissingDisablesOnlyFeature": true
+  },
+  "naturalLanguageGateway": {
+    "entrySkill": "codex-governance-gateway",
+    "centralSkill": "central-construction-controller",
+    "storeRawUtterance": false,
+    "storeGatewayState": false,
+    "requireSingleIntent": true,
+    "requireTargetedApproval": true,
+    "allowContextInferenceWhenUnique": true,
+    "allowDirectDownstreamExecution": false
   },
   "publishing": {
     "mode": "private",

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex 治理自然语言入口"
+  short_description: "用业务语言调用中央治理，区分只看、准备和批准执行"
+  default_prompt: "使用 $codex-governance-gateway 根据我的自然语言要求安全调用 Codex 模块治理。"

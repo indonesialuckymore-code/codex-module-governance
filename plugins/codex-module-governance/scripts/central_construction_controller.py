@@ -15,7 +15,7 @@ from initialize_project import C02Error, PROJECT_ID_PATTERN, load_data_root
 from ledger_manager import LedgerError, load_ledger
 
 
-SCHEMA_VERSION = "0.11.0"
+SCHEMA_VERSION = "0.12.0"
 CENTRAL_SKILL = "central-construction-controller"
 CENTRAL_MODEL = "gpt-5.6-sol"
 TASK_MODEL = "gpt-5.6-terra"
@@ -36,12 +36,15 @@ EXPECTED = {
     "C09": ("CENTRAL", CENTRAL_SKILL, "central_construction_controller.py"),
     "C10": ("EXECUTOR", "task-window-dispatch-controller", "task_window_dispatch_controller.py"),
     "C11": ("EXECUTOR", "external-skill-adapter-controller", "external_skill_adapter_controller.py"),
+    "C12": ("INTERFACE", "codex-governance-gateway", "natural_language_gateway.py"),
 }
 
 ROUTES = {
     "INITIALIZE_PROJECT": ("C02", "new-project-initializer", "CHECK_AND_PREPARE_PROJECT_INITIALIZATION"),
     "READ_LEDGER": ("C03", "engineering-ledger-manager", "READ_VERIFIED_ENGINEERING_LEDGER"),
+    "INITIALIZE_LEDGER": ("C03", "engineering-ledger-manager", "PREPARE_OR_INITIALIZE_VERIFIED_ENGINEERING_LEDGER"),
     "REGISTER_GOVERNANCE_STATE": ("C03", "engineering-ledger-manager", "APPLY_AUTHORIZED_LEDGER_MUTATION"),
+    "REQUEST_TASK_CANCELLATION": ("C03", "engineering-ledger-manager", "RECORD_AUTHORIZED_CANCELLATION_REQUEST_AND_RETAIN_OCCUPANCY"),
     "GENERATE_TASK_PACKAGE": ("C04", "task-package-generator", "PREPARE_DRAFT_TASK_PACKAGE"),
     "CHECK_OCCUPANCY": ("C05", "occupancy-conflict-checker", "RUN_OCCUPANCY_AND_WINDOW_REVIEW"),
     "VALIDATE_HANDBACK": ("C06", "independent-handover-validator", "RUN_INDEPENDENT_HANDBACK_VALIDATION"),
@@ -62,6 +65,7 @@ RECOVERY_INTENTS = {
 }
 CONTEXT_REQUIREMENTS = {
     "GENERATE_TASK_PACKAGE": "taskId",
+    "REQUEST_TASK_CANCELLATION": "taskId",
     "CHECK_OCCUPANCY": "packageId",
     "VALIDATE_HANDBACK": "packageId",
     "FINALIZE_TASK": "validationId",
@@ -198,6 +202,14 @@ def route(data_root: Path, request: Dict[str, Any], registry: Dict[str, Any]) ->
     if intent == "INITIALIZE_PROJECT":
         output.update(routeStatus="ROUTED_PREPARE" if request["executionMode"] != "APPLY" else "ROUTED_APPLY_REQUIRES_DOWNSTREAM_GATE", targetStage="C02", targetSkill="new-project-initializer", requiredAction="CHECK_AND_PREPARE_PROJECT_INITIALIZATION")
         return output
+    if intent == "INITIALIZE_LEDGER":
+        mode_status = {
+            "READ_ONLY": "ROUTED_READ_ONLY",
+            "PREPARE": "ROUTED_PREPARE",
+            "APPLY": "ROUTED_APPLY_REQUIRES_DOWNSTREAM_GATE",
+        }[request["executionMode"]]
+        output.update(routeStatus=mode_status, targetStage="C03", targetSkill="engineering-ledger-manager", requiredAction="PREPARE_OR_INITIALIZE_VERIFIED_ENGINEERING_LEDGER")
+        return output
 
     try:
         ledger = load_ledger(data_root, request["projectId"])
@@ -212,7 +224,7 @@ def route(data_root: Path, request: Dict[str, Any], registry: Dict[str, Any]) ->
             targetSkill="disconnection-recovery-controller",
             requiredAction="VERIFY_OR_CONTINUE_FROZEN_RECOVERY_BEFORE_NORMAL_ROUTING",
             recoveryState=recovery_state,
-            recoveryCaseId=recovery.get("caseId"),
+            recoveryCaseId=recovery.get("activeCaseId"),
         )
         return output
     if intent in DISPATCH_INTENTS:
@@ -252,7 +264,7 @@ def status(registry: Dict[str, Any]) -> Dict[str, Any]:
         "pendingStages": [],
         "models": {"central": CENTRAL_MODEL, "taskWindow": TASK_MODEL, "subAgent": TASK_MODEL},
         "subAgentPolicy": {"maxConcurrentFirstLevel": 3, "allowGrandchildren": False},
-        "boundaries": {"twoPhaseDispatchAvailable": True, "runtimeConfirmationRequired": True, "businessExecutionAvailable": False},
+        "boundaries": {"naturalLanguageGatewayAvailable": True, "twoPhaseDispatchAvailable": True, "runtimeConfirmationRequired": True, "businessExecutionAvailable": False},
         "registryDigest": canonical_digest(registry),
     }
 

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-natural-language-gateway-decision.schema.json",
+  "title": "C12 natural-language gateway decision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "recordType", "utteranceDigest", "status", "reason", "intent", "questions", "routingRequest", "routingDecision", "boundaries"],
+  "properties": {
+    "schemaVersion": { "const": "0.12.0" },
+    "recordType": { "const": "C12_NATURAL_LANGUAGE_GATEWAY_DECISION" },
+    "utteranceDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "status": { "enum": ["NEEDS_BOSS_INPUT", "ROUTED_TO_SOLE_CENTRAL", "REFUSED"] },
+    "reason": { "type": ["string", "null"] },
+    "intent": { "type": ["string", "null"] },
+    "executionMode": { "enum": ["READ_ONLY", "PREPARE", "APPLY"] },
+    "projectId": { "type": "string" },
+    "questions": { "type": "array", "maxItems": 1, "items": { "type": "string" } },
+    "inferredContextRefs": { "type": "array", "items": { "enum": ["taskId", "packageId", "validationId", "recoveryCaseId", "windowId"] } },
+    "routingRequest": { "type": ["object", "null"] },
+    "routingDecision": { "type": ["object", "null"] },
+    "boundaries": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rawUtteranceStored", "gatewayStateStored", "ledgerWritePerformed", "downstreamExecutionPerformed", "businessWritePerformed", "dispatchPerformed", "c09RemainsSoleCentral"],
+      "properties": {
+        "rawUtteranceStored": { "const": false },
+        "gatewayStateStored": { "const": false },
+        "ledgerWritePerformed": { "const": false },
+        "downstreamExecutionPerformed": { "const": false },
+        "businessWritePerformed": { "const": false },
+        "dispatchPerformed": { "const": false },
+        "c09RemainsSoleCentral": { "const": true }
+      }
+    }
+  }
+}

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "0.11.0",
+  "schemaVersion": "0.12.0",
   "recordType": "C09_CORE_CAPABILITY_REGISTRY",
   "canonicalCentralSkill": "central-construction-controller",
   "capabilities": [
@@ -71,6 +71,13 @@
       "role": "EXECUTOR",
       "skill": "external-skill-adapter-controller",
       "script": "external_skill_adapter_controller.py",
+      "status": "READY"
+    },
+    {
+      "stage": "C12",
+      "role": "INTERFACE",
+      "skill": "codex-governance-gateway",
+      "script": "natural_language_gateway.py",
       "status": "READY"
     }
   ],

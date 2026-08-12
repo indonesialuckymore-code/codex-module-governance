@@ -4,9 +4,9 @@
   "title": "Codex Module Governance configuration",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "module", "models", "subAgentPolicy", "storage", "projectInitialization", "ledger", "occupancy", "validation", "adjudication", "recovery", "centralIntegration", "dispatch", "externalSkills", "publishing"],
+  "required": ["schemaVersion", "module", "models", "subAgentPolicy", "storage", "projectInitialization", "ledger", "occupancy", "validation", "adjudication", "recovery", "centralIntegration", "dispatch", "externalSkills", "naturalLanguageGateway", "publishing"],
   "properties": {
-    "schemaVersion": { "const": "0.11.0" },
+    "schemaVersion": { "const": "0.12.0" },
     "module": {
       "type": "object",
       "additionalProperties": false,
@@ -152,6 +152,21 @@
         "allowAutomaticInstall": { "const": false },
         "allowProtocolMutation": { "const": false },
         "optionalMissingDisablesOnlyFeature": { "const": true }
+      }
+    },
+    "naturalLanguageGateway": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entrySkill", "centralSkill", "storeRawUtterance", "storeGatewayState", "requireSingleIntent", "requireTargetedApproval", "allowContextInferenceWhenUnique", "allowDirectDownstreamExecution"],
+      "properties": {
+        "entrySkill": { "const": "codex-governance-gateway" },
+        "centralSkill": { "const": "central-construction-controller" },
+        "storeRawUtterance": { "const": false },
+        "storeGatewayState": { "const": false },
+        "requireSingleIntent": { "const": true },
+        "requireTargetedApproval": { "const": true },
+        "allowContextInferenceWhenUnique": { "const": true },
+        "allowDirectDownstreamExecution": { "const": false }
       }
     },
     "publishing": {

@@ -52,11 +52,20 @@ def setup_project(root):
         raise AssertionError(output)
 
 
+def setup_project_card_only(root, project=PROJECT):
+    code, output = invoke(C02, [
+        "--data-root", str(root), "--project-id", project, "--display-name", "C09 Ledger Initialization",
+        "--scope-summary", "Isolated ledger initialization routing only.", "--apply",
+    ])
+    if code != 0:
+        raise AssertionError(output)
+
+
 def request(intent, mode="READ_ONLY", project=PROJECT, approved=False, **refs):
     context = {"taskId": None, "packageId": None, "validationId": None, "recoveryCaseId": None, "windowId": None}
     context.update(refs)
     return {
-        "requestSchemaVersion": "0.11.0",
+        "requestSchemaVersion": "0.12.0",
         "recordType": "C09_CENTRAL_ROUTING_REQUEST",
         "requestId": f"request-{intent.lower().replace('_', '-')}",
         "submittedBy": "boss",
@@ -98,10 +107,20 @@ class C09Tests(unittest.TestCase):
             self.assertEqual((output["targetStage"], output["routeStatus"]), ("C02", "ROUTED_PREPARE"))
             self.assertFalse((root / "project-registry").exists())
 
+    def test_ledger_initialization_routes_to_c03_before_ledger_exists(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "private-data"; setup_project_card_only(root)
+            code, output = route(root, request("INITIALIZE_LEDGER", mode="PREPARE"))
+            self.assertEqual(code, 0, output)
+            self.assertEqual((output["targetStage"], output["routeStatus"]), ("C03", "ROUTED_PREPARE"))
+            self.assertFalse((root / "module-ledgers").exists())
+
     def test_normal_routes_cover_c03_through_c08(self):
         cases = [
             ("READ_LEDGER", {}, "C03"),
+            ("INITIALIZE_LEDGER", {}, "C03"),
             ("REGISTER_GOVERNANCE_STATE", {}, "C03"),
+            ("REQUEST_TASK_CANCELLATION", {"taskId": "task-c09-001"}, "C03"),
             ("GENERATE_TASK_PACKAGE", {"taskId": "task-c09-001"}, "C04"),
             ("CHECK_OCCUPANCY", {"packageId": "package-c09-001"}, "C05"),
             ("VALIDATE_HANDBACK", {"packageId": "package-c09-001"}, "C06"),
@@ -186,6 +205,7 @@ class C09Tests(unittest.TestCase):
             self.assertEqual(code, 0, output)
             self.assertEqual(output["routeStatus"], "RECOVERY_OVERRIDE")
             self.assertEqual(output["targetStage"], "C08")
+            self.assertEqual(output["recoveryCaseId"], c08_fixture.CASE)
 
     def test_route_is_read_only_and_deterministic(self):
         with tempfile.TemporaryDirectory() as temporary:
