@@ -4,7 +4,7 @@
   "title": "C07 Boss adjudication decision input",
   "type": "object",
   "additionalProperties": false,
-  "required": ["decisionSchemaVersion", "recordType", "requestId", "status", "selectedOptionId", "rationale", "decisionRef", "instructionToOriginalWindow"],
+  "required": ["decisionSchemaVersion", "recordType", "requestId", "status", "selectedOptionId", "rationale", "decisionRef", "instructionToOriginalWindow", "taskEffect", "dependencyEffect", "conditions", "invalidWhen"],
   "properties": {
     "decisionSchemaVersion": { "const": "0.7.0" },
     "recordType": { "const": "C07_BOSS_DECISION_INPUT" },
@@ -13,6 +13,10 @@
     "selectedOptionId": { "type": ["string", "null"] },
     "rationale": { "type": "string" },
     "decisionRef": { "type": "string" },
-    "instructionToOriginalWindow": { "type": "string" }
+    "instructionToOriginalWindow": { "type": "string" },
+    "taskEffect": { "enum": ["CONTINUE_ORIGINAL_WINDOW", "KEEP_BLOCKED", "REPLAN_REQUIRED", "CANCEL_RECOMMENDED"] },
+    "dependencyEffect": { "enum": ["NO_CHANGE", "RECALCULATE_AFFECTED_TASKS"] },
+    "conditions": { "type": "array", "items": { "type": "string" } },
+    "invalidWhen": { "type": "array", "items": { "type": "string" } }
   }
 }

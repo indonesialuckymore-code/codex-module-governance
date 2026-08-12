@@ -16,6 +16,7 @@ from typing import Any
 
 PLUGIN = "codex-module-governance"
 MARKETPLACE = "qianyi-codex-governance"
+CURRENT_VERSION = "0.15.0"
 REQUIRED_SKILLS = {
     "construction-outline-planner",
     "new-project-initializer",
@@ -72,7 +73,7 @@ def assert_repo(repo: Path) -> None:
     if source != {"source": "local", "path": f"./plugins/{PLUGIN}"}:
         raise C13Error("C13_MARKETPLACE_SOURCE_INVALID")
     metadata = manifest(repo)
-    if metadata.get("name") != PLUGIN or metadata.get("version") != "0.13.0":
+    if metadata.get("name") != PLUGIN or metadata.get("version") != CURRENT_VERSION:
         raise C13Error("C13_PLUGIN_VERSION_MISMATCH")
     if metadata.get("repository") != "https://github.com/indonesialuckymore-code/codex-module-governance":
         raise C13Error("C13_REPOSITORY_METADATA_MISMATCH")
@@ -144,7 +145,7 @@ def upgrade(installed_plugin: Path, source_repo: Path, backup_root: Path, simula
             (staged / ".codex-plugin" / "plugin.json").write_text("{}\n", encoding="utf-8")
         try:
             staged_manifest = load_json(staged / ".codex-plugin" / "plugin.json")
-            if staged_manifest.get("name") != PLUGIN or staged_manifest.get("version") != "0.13.0":
+            if staged_manifest.get("name") != PLUGIN or staged_manifest.get("version") != CURRENT_VERSION:
                 raise C13Error("C13_STAGED_UPGRADE_INVALID")
             displaced = parent / f".{PLUGIN}.previous"
             if displaced.exists():
@@ -160,7 +161,7 @@ def upgrade(installed_plugin: Path, source_repo: Path, backup_root: Path, simula
             if not installed_plugin.exists() and backup.exists():
                 copy_tree(backup, installed_plugin)
             raise C13Error(f"C13_UPGRADE_ABORTED_PREVIOUS_VERSION_PRESERVED:{error}")
-    return {"status": "UPGRADE_VERIFIED", "fromVersion": before_manifest.get("version"), "toVersion": "0.13.0", "backupPath": str(backup), "pluginPath": str(installed_plugin), "digest": tree_digest(installed_plugin)}
+    return {"status": "UPGRADE_VERIFIED", "fromVersion": before_manifest.get("version"), "toVersion": CURRENT_VERSION, "backupPath": str(backup), "pluginPath": str(installed_plugin), "digest": tree_digest(installed_plugin)}
 
 
 def rollback(installed_plugin: Path, backup: Path) -> dict[str, Any]:

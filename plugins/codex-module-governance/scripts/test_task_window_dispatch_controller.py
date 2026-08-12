@@ -57,8 +57,8 @@ def prepare(root, payload):
     return invoke(C10, ["--data-root", str(root), "--project-id", fixture.PROJECT_ID, "--writer-id", "codex-module-central", "prepare", "--package-id", fixture.PACKAGE_ID, "--review-id", fixture.REVIEW_ID, "--request", str(path)])
 
 
-def confirmation(window_id="window-c10-001", reused=False, agents=None, project_id="codex-project-001", cwd="/tmp/.codex/worktrees/abcd/fictional-project", environment="WORKTREE", association_method="DIRECT", handoff_refs=None, runtime_ref="thread-c10-001"):
-    return {"confirmationSchemaVersion": "0.14.0", "recordType": "C10_RUNTIME_CONFIRMATION", "dispatchId": "dispatch-c10-001", "taskWindow": {"status": "REUSED" if reused else "CREATED", "windowId": window_id, "runtimeThreadRef": runtime_ref, "runtimeProjectId": project_id, "runtimeCwd": cwd, "environmentType": environment, "associationMethod": association_method, "associationHandoffRefs": handoff_refs or []}, "subAgents": agents or []}
+def confirmation(window_id="window-c10-001", reused=False, agents=None, project_id="codex-project-001", cwd="/tmp/.codex/worktrees/abcd/fictional-project", environment="WORKTREE", association_method="DIRECT", handoff_refs=None, runtime_ref="thread-c10-001", runtime_title="C-05｜Fictional C-05｜G1", generation=1):
+    return {"confirmationSchemaVersion": "0.14.0", "recordType": "C10_RUNTIME_CONFIRMATION", "dispatchId": "dispatch-c10-001", "taskWindow": {"status": "REUSED" if reused else "CREATED", "taskId": fixture.TASK_ID, "runtimeTitle": runtime_title, "generation": generation, "windowId": window_id, "runtimeThreadRef": runtime_ref, "runtimeProjectId": project_id, "runtimeCwd": cwd, "environmentType": environment, "associationMethod": association_method, "associationHandoffRefs": handoff_refs or []}, "subAgents": agents or []}
 
 
 def confirm(root, value):
@@ -83,6 +83,7 @@ class C10Tests(unittest.TestCase):
             self.assertEqual(output["runtimeTarget"], {"type": "project", "projectId": "codex-project-001", "environment": {"type": "worktree"}})
             self.assertEqual(output["projectAssociationProtocol"]["onMissingProjectId"], "HANDOFF_TO_PROJECT_LOCAL_THEN_RETURN")
             self.assertEqual(output["authorizationScope"]["type"], "EXECUTION_MAP")
+            self.assertEqual(output["taskIdentity"]["runtimeTitle"], "C-05｜Fictional C-05｜G1")
 
     def test_yellow_isolated_write_plan(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -140,6 +141,14 @@ class C10Tests(unittest.TestCase):
             ledger = json.loads((root / "module-ledgers" / fixture.PROJECT_ID / "ledger.json").read_text())
             self.assertEqual(ledger["windows"]["window-c10-001"]["model"], "gpt-5.6-terra"); self.assertEqual(ledger["subAgents"]["agent-c10-001"]["level"], 1)
             self.assertEqual(ledger["windows"]["window-c10-001"]["runtimeProjectId"], "codex-project-001")
+            self.assertEqual(ledger["windows"]["window-c10-001"]["runtimeTitle"], "C-05｜Fictional C-05｜G1")
+
+    def test_runtime_title_mismatch_is_needs_review_and_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "private"; setup_ready(root); self.assertEqual(prepare(root, dispatch_request())[0], 0)
+            ledger_path = root / "module-ledgers" / fixture.PROJECT_ID / "ledger.json"; before = ledger_path.read_bytes()
+            code, output = confirm(root, confirmation(runtime_title="Wrong title"))
+            self.assertEqual(code, 2); self.assertEqual(output["status"], "NEEDS_REVIEW"); self.assertEqual(output["reason"], "C10_TASK_IDENTITY_MISMATCH"); self.assertEqual(before, ledger_path.read_bytes())
 
     def test_wrong_codex_project_is_not_registered(self):
         with tempfile.TemporaryDirectory() as temp:

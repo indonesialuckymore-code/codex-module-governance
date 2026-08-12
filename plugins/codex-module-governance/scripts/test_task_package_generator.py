@@ -117,6 +117,9 @@ class TaskPackageGeneratorTests(unittest.TestCase):
             ledger = json.loads((data_root / "module-ledgers" / PROJECT_ID / "ledger.json").read_text(encoding="utf-8"))
             package = json.loads((data_root / "task-packages" / PROJECT_ID / "drafts" / PACKAGE_ID / "task-package.json").read_text(encoding="utf-8"))
             self.assertEqual(ledger["tasks"][TASK_ID]["status"], "PLANNED")
+            self.assertEqual(package["taskIdentity"]["taskId"], TASK_ID)
+            self.assertEqual(package["taskIdentity"]["canonicalTitle"], "C-04｜Fictional package task")
+            self.assertEqual(package["displayName"], "C-04｜Fictional package task｜任务包")
             self.assertEqual(package["approvalAndDispatchBoundary"]["c05OccupancyCheckStatus"], "REQUIRED_BEFORE_DISPATCH")
 
     def test_only_module_central_can_generate_a_draft(self):

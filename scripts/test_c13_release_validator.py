@@ -24,7 +24,7 @@ def fictional_old(repo: Path) -> None:
     (repo / ".agents" / "plugins").mkdir(parents=True)
     shutil.copy2(REPO / ".agents" / "plugins" / "marketplace.json", repo / ".agents" / "plugins" / "marketplace.json")
     manifest_path = repo / "plugins" / module.PLUGIN / ".codex-plugin" / "plugin.json"
-    value = json.loads(manifest_path.read_text(encoding="utf-8")); value["version"] = "0.12.0"
+    value = json.loads(manifest_path.read_text(encoding="utf-8")); value["version"] = "0.13.0"
     manifest_path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
@@ -41,9 +41,9 @@ class C13Tests(unittest.TestCase):
             root = Path(temp); old = root / "old"; fictional_old(old)
             installed = root / "installed" / module.PLUGIN; installed.parent.mkdir(); shutil.copytree(module.plugin_root(old), installed)
             upgraded = module.upgrade(installed, REPO, root / "backups", False)
-            self.assertEqual(upgraded["fromVersion"], "0.12.0"); self.assertEqual(upgraded["toVersion"], "0.13.0")
+            self.assertEqual(upgraded["fromVersion"], "0.13.0"); self.assertEqual(upgraded["toVersion"], module.CURRENT_VERSION)
             rolled = module.rollback(installed, Path(upgraded["backupPath"]))
-            self.assertEqual(rolled["toVersion"], "0.12.0")
+            self.assertEqual(rolled["toVersion"], "0.13.0")
 
     def test_failed_upgrade_keeps_old_program(self):
         with tempfile.TemporaryDirectory() as temp:

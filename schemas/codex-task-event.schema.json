@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-task-event.schema.json",
+  "title": "C08 durable task event input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["eventSchemaVersion", "recordType", "eventId", "projectId", "taskIdentity", "eventType", "sourceWindow", "targetRole", "routeRevisionSeen", "decisionRef", "evidenceRefs", "summary"],
+  "properties": {
+    "eventSchemaVersion": { "const": "0.15.0" },
+    "recordType": { "const": "C08_TASK_EVENT_INPUT" },
+    "eventId": { "type": "string" },
+    "projectId": { "type": "string" },
+    "taskIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["taskId", "canonicalTitle"],
+      "properties": { "taskId": { "type": "string" }, "canonicalTitle": { "type": "string" } }
+    },
+    "eventType": { "enum": ["IN_PROGRESS", "BLOCKED_FOR_DECISION", "DECISION_APPLIED", "READY_FOR_VALIDATION"] },
+    "sourceWindow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["windowId", "runtimeThreadRef", "generation"],
+      "properties": { "windowId": { "type": "string" }, "runtimeThreadRef": { "type": "string" }, "generation": { "type": "integer", "minimum": 1 } }
+    },
+    "targetRole": { "const": "CURRENT_CENTRAL" },
+    "routeRevisionSeen": { "type": "integer", "minimum": 1 },
+    "decisionRef": { "type": ["string", "null"] },
+    "evidenceRefs": { "type": "array", "maxItems": 80, "uniqueItems": true, "items": { "type": "string" } },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 500 }
+  }
+}

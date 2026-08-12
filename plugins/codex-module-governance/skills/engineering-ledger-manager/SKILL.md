@@ -17,6 +17,7 @@ description: 维护 Codex 模块唯一详细工程总账：登记任务、窗口
 ## 可登记的事实
 
 - Boss + Fable 5 已规划的 Codex 任务。
+- 每项任务只认一个不可变身份：`任务ID｜业务名称`。任务窗口在其后增加代际 `｜G1`、`｜G2`；业务名称不能脱离任务 ID 单独传播。
 - 任务窗口与最多 3 个一级子 Agent 的登记信息。
 - 对象占用声明；发生重叠时保留两份声明，标记 `CONFLICT` 和硬停。
 - 证据、裁定和 Skill 的不透明引用与状态，不保存真实文件、日志或密钥。
@@ -58,3 +59,4 @@ python3 plugins/codex-module-governance/scripts/ledger_manager.py \
 - 不接受真实业务数据、客户资料、文件绝对路径、Cookie、账号、密钥或实际证据文件。
 - 不覆盖既有回执；每一次账本变更都生成一份不可覆盖的私有回执。
 - 发现索引不一致、回执校验失败、并发账本锁或对象冲突时，停止推进并报告 `CONFLICT` / `REFUSED`。
+- 运行时任务标题、任务包身份或回传任务 ID 与总账不一致时，报告 `TASK_IDENTITY_MISMATCH / NEEDS_REVIEW`，不得把任务推进为 `IN_PROGRESS`。

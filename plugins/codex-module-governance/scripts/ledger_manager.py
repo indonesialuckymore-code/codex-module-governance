@@ -76,6 +76,18 @@ def require_text(value: str, error: str, maximum: int = 1000) -> str:
     return candidate
 
 
+def task_titles(task_id: str, raw_title: str) -> Tuple[str, str]:
+    """Return the business title and the immutable cross-system title."""
+    title = raw_title.strip()
+    prefix = f"{task_id}｜"
+    if title.startswith(prefix):
+        title = title[len(prefix):].strip()
+    title = re.sub(r"｜G[1-9][0-9]*$", "", title).strip()
+    if not title:
+        raise LedgerError("TASK_TITLE_INVALID")
+    return title, f"{task_id}｜{title}"
+
+
 def require_object_key(value: str) -> str:
     candidate = value.strip()
     if (
@@ -366,7 +378,7 @@ def mutate_ledger(args: argparse.Namespace, operation: str, change_summary: Dict
 
 def add_task(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     task_id = require_pattern(args.task_id, TASK_ID_PATTERN, "TASK_ID_INVALID")
-    title = require_text(args.title, "TASK_TITLE_INVALID", 160)
+    title, canonical_title = task_titles(task_id, require_text(args.title, "TASK_TITLE_INVALID", 160))
     business_goal = require_text(args.business_goal, "TASK_BUSINESS_GOAL_INVALID", 1200)
     plan_ref = require_opaque_reference(args.plan_ref, "PLAN_REFERENCE_INVALID")
 
@@ -376,6 +388,7 @@ def add_task(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         ledger["tasks"][task_id] = {
             "taskId": task_id,
             "title": title,
+            "canonicalTitle": canonical_title,
             "businessGoal": business_goal,
             "planRef": plan_ref,
             "status": "PLANNED",
@@ -450,9 +463,20 @@ def register_window(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         task = ensure_task(ledger, task_id)
         if task["status"] in {"CANCELLED", "DONE"}:
             raise LedgerError("WINDOW_CANNOT_ATTACH_TO_TERMINAL_TASK")
+        existing_generations = [
+            item.get("generation", 1)
+            for item in ledger["windows"].values()
+            if item.get("taskId") == task_id and isinstance(item.get("generation", 1), int)
+        ]
+        generation = max(existing_generations, default=0) + 1
+        canonical_title = task.get("canonicalTitle", f"{task_id}｜{task['title']}")
         ledger["windows"][window_id] = {
             "windowId": window_id,
             "taskId": task_id,
+            "canonicalTitle": canonical_title,
+            "generation": generation,
+            "runtimeTitle": f"{canonical_title}｜G{generation}",
+            "runtimeThreadRef": window_id,
             "model": "gpt-5.6-terra",
             "contextMode": context_mode,
             "status": "REGISTERED",

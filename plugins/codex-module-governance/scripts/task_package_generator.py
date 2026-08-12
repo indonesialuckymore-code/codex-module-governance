@@ -224,12 +224,20 @@ def package_lock(data_root: Path, project_id: str) -> Iterator[None]:
 
 def package_from(ledger: Dict[str, Any], task: Dict[str, Any], project_id: str, package_id: str, brief: Dict[str, Any], brief_digest: str, writer_id: str) -> Dict[str, Any]:
     timestamp = utc_now()
+    canonical_title = task.get("canonicalTitle", f"{task['taskId']}｜{task['title']}")
+    package_display_name = f"{canonical_title}｜任务包"
     package = {
         "schemaVersion": SCHEMA_VERSION,
         "recordType": "C04_DRAFT_TASK_PACKAGE",
         "packageId": package_id,
         "projectId": project_id,
         "taskId": task["taskId"],
+        "displayName": package_display_name,
+        "taskIdentity": {
+            "taskId": task["taskId"],
+            "canonicalTitle": canonical_title,
+            "packageDisplayName": package_display_name,
+        },
         "generatedAt": timestamp,
         "writerId": writer_id,
         "status": "DRAFT_REQUIRES_BOSS_REVIEW",
@@ -265,6 +273,7 @@ def draft_result(package: Dict[str, Any], write_performed: bool) -> Dict[str, An
         "action": "GENERATE_DRAFT_TASK_PACKAGE",
         "packageId": package["packageId"],
         "taskId": package["taskId"],
+        "displayName": package["displayName"],
         "sourceLedgerRevision": package["sourceLedger"]["revision"],
         "windowRecommendation": package["windowRecommendation"],
         "dispatchAllowed": False,
@@ -329,7 +338,7 @@ def load_package(data_root: Path, project_id: str, package_id: str) -> Dict[str,
         raise TaskPackageError("DRAFT_TASK_PACKAGE_INVALID_JSON")
     required = {
         "schemaVersion", "recordType", "packageId", "projectId", "taskId", "generatedAt", "writerId", "status",
-        "sourceLedger", "inputBriefDigest", "task", "windowRecommendation", "dependencies", "requiredReading",
+        "sourceLedger", "inputBriefDigest", "displayName", "taskIdentity", "task", "windowRecommendation", "dependencies", "requiredReading",
         "realTimeChecks", "allowedActions", "forbiddenActions", "preflightSnapshot", "executionSequence", "acceptance",
         "hardStops", "rollbackPlan", "deliverables", "handbackRule", "approvalAndDispatchBoundary", "receiptIds", "latestReceiptId",
     }
@@ -340,6 +349,9 @@ def load_package(data_root: Path, project_id: str, package_id: str) -> Dict[str,
         or package.get("recordType") != "C04_DRAFT_TASK_PACKAGE"
         or package.get("packageId") != package_id
         or package.get("projectId") != project_id
+        or package.get("taskId") != package.get("taskIdentity", {}).get("taskId")
+        or package.get("displayName") != package.get("taskIdentity", {}).get("packageDisplayName")
+        or package.get("displayName") != f"{package.get('taskIdentity', {}).get('canonicalTitle')}｜任务包"
         or package.get("status") != "DRAFT_REQUIRES_BOSS_REVIEW"
         or package.get("writerId") != CENTRAL_WRITER
         or package.get("receiptIds") != [INITIAL_RECEIPT_ID]

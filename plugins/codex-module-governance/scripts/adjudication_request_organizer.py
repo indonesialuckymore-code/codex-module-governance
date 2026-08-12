@@ -34,6 +34,7 @@ REQUEST_FILE = "request.json"
 ADVICE_FILE = "advice.json"
 DECISION_FILE = "boss-decision.json"
 HANDOFF_FILE = "task-window-handoff.json"
+CENTRAL_IMPACT_FILE = "central-impact-receipt.json"
 RECEIPTS_DIRECTORY = "receipts"
 SENSITIVE_VALUE_PATTERN = re.compile(
     r"(?:-----BEGIN [A-Z ]+PRIVATE KEY-----|\b(?:sk|ghp|github_pat)_[A-Za-z0-9_-]{12,}|"
@@ -303,6 +304,7 @@ def public_result(status: str, request_id: str, task_id: str, write_performed: b
         "adviceSentToBossOnly": status in {"ADVICE_RECORDED_FOR_BOSS", "IDEMPOTENT_ADVICE"},
         "bossDecisionRequired": status not in {"BOSS_DECISION_RECORDED", "IDEMPOTENT_BOSS_DECISION"},
         "taskWindowHandoffCreated": status in {"BOSS_DECISION_RECORDED", "IDEMPOTENT_BOSS_DECISION"},
+        "centralImpactReceiptCreated": status in {"BOSS_DECISION_RECORDED", "IDEMPOTENT_BOSS_DECISION"},
         "taskStatusChanged": False, "automaticExecutionAllowed": False, "businessWriteAllowed": False,
         "occupancyChanged": False, "writePerformed": write_performed,
         "message": "C07 只整理裁定材料；未修改任务状态、对象占用或业务系统。",
@@ -350,7 +352,9 @@ def prepare(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             "sourceInputDigest": input_digest,
             "sourceLedger": {"beforeRevision": ledger["revision"], "beforeDigest": canonical_digest(ledger), **mutation},
             "routingBoundary": {
-                "advisor": ADVISOR_ID, "adviceReturnsToBossOnly": True, "bossDecisionRequired": True,
+                "advisor": ADVISOR_ID, "targetRole": "CURRENT_ADJUDICATION",
+                "requiresCurrentRoleResolution": True, "incrementalContextOnly": True,
+                "adviceReturnsToBossOnly": True, "bossDecisionRequired": True,
                 "taskWindowMayUseAdviceDirectly": False, "taskStateChanged": False,
                 "businessWriteAllowed": False, "occupancyChanged": False,
             },
@@ -493,7 +497,7 @@ def load_verified_advice(data_root: Path, project_id: str, request_id: str, requ
 
 
 def validate_boss_decision(payload: Dict[str, Any], request: Dict[str, Any]) -> Dict[str, Any]:
-    required = {"decisionSchemaVersion", "recordType", "requestId", "status", "selectedOptionId", "rationale", "decisionRef", "instructionToOriginalWindow"}
+    required = {"decisionSchemaVersion", "recordType", "requestId", "status", "selectedOptionId", "rationale", "decisionRef", "instructionToOriginalWindow", "taskEffect", "dependencyEffect", "conditions", "invalidWhen"}
     decision = require_exact_object(payload, required, "C07_BOSS_DECISION_SCHEMA_UNSUPPORTED")
     if decision["decisionSchemaVersion"] != SCHEMA_VERSION or decision["recordType"] != "C07_BOSS_DECISION_INPUT":
         raise AdjudicationError("C07_BOSS_DECISION_SCHEMA_UNSUPPORTED")
@@ -509,11 +513,20 @@ def validate_boss_decision(payload: Dict[str, Any], request: Dict[str, Any]) -> 
             raise AdjudicationError("C07_BOSS_SELECTED_OPTION_OUTSIDE_REQUEST")
     elif selected is not None:
         raise AdjudicationError("C07_BOSS_SELECTED_OPTION_MUST_BE_NULL")
+    task_effect = require_safe_text(decision["taskEffect"], "C07_TASK_EFFECT_INVALID", 60).upper()
+    if task_effect not in {"CONTINUE_ORIGINAL_WINDOW", "KEEP_BLOCKED", "REPLAN_REQUIRED", "CANCEL_RECOMMENDED"}:
+        raise AdjudicationError("C07_TASK_EFFECT_INVALID")
+    dependency_effect = require_safe_text(decision["dependencyEffect"], "C07_DEPENDENCY_EFFECT_INVALID", 60).upper()
+    if dependency_effect not in {"NO_CHANGE", "RECALCULATE_AFFECTED_TASKS"}:
+        raise AdjudicationError("C07_DEPENDENCY_EFFECT_INVALID")
     return {
         "requestId": request["requestId"], "status": status, "selectedOptionId": selected,
         "rationale": require_safe_text(decision["rationale"], "C07_BOSS_DECISION_RATIONALE_INVALID"),
         "decisionRef": require_reference(decision["decisionRef"], "C07_BOSS_DECISION_REFERENCE_INVALID"),
         "instructionToOriginalWindow": require_safe_text(decision["instructionToOriginalWindow"], "C07_BOSS_INSTRUCTION_INVALID"),
+        "taskEffect": task_effect, "dependencyEffect": dependency_effect,
+        "conditions": require_text_list(decision["conditions"], "C07_DECISION_CONDITIONS_INVALID", allow_empty=True),
+        "invalidWhen": require_text_list(decision["invalidWhen"], "C07_DECISION_INVALID_WHEN_INVALID", allow_empty=True),
     }
 
 
@@ -573,12 +586,33 @@ def record_boss_decision(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]
                 "taskStateChanged": False, "businessWritePerformed": False,
             },
         }
+        task = ledger["tasks"][request["taskId"]]
+        canonical_title = task.get("canonicalTitle", f"{request['taskId']}｜{task['title']}")
+        central_impact = {
+            "schemaVersion": SCHEMA_VERSION, "recordType": "C07_COMPACT_CENTRAL_DECISION_IMPACT",
+            "createdAt": utc_now(), "projectId": project_id, "requestId": request_id,
+            "taskIdentity": {"taskId": request["taskId"], "canonicalTitle": canonical_title},
+            "bossDecisionStatus": decision["status"], "selectedOptionId": decision["selectedOptionId"],
+            "decisionRef": decision["decisionRef"], "taskEffect": decision["taskEffect"],
+            "dependencyEffect": decision["dependencyEffect"], "conditions": decision["conditions"],
+            "invalidWhen": decision["invalidWhen"], "originalWindowId": request["windowId"],
+            "bossDecisionDigest": canonical_digest(artifact),
+            "boundary": {
+                "targetRole": "CURRENT_CENTRAL", "fullDiscussionExcluded": True,
+                "adviceTextExcluded": True, "rationaleExcluded": True,
+                "ledgerUpdatedByReceipt": False, "automaticExecutionAllowed": False,
+                "businessWritePerformed": False,
+            },
+        }
         decision_receipt = c07_receipt("C07_IMMUTABLE_BOSS_DECISION_RECEIPT", "receipt-000002-boss-decision", "RECORD_BOSS_DECISION", project_id, request_id, artifact)
         handoff_receipt = c07_receipt("C07_IMMUTABLE_HANDOFF_RECEIPT", "receipt-000003-window-handoff", "CREATE_ORIGINAL_WINDOW_HANDOFF", project_id, request_id, handoff)
+        impact_receipt = c07_receipt("C07_IMMUTABLE_CENTRAL_IMPACT_RECEIPT", "receipt-000004-central-impact", "CREATE_COMPACT_CENTRAL_IMPACT", project_id, request_id, central_impact)
         write_json_exclusive(receipt_directory(data_root, project_id, request_id) / "receipt-000002-boss-decision.json", decision_receipt)
         write_json_exclusive(receipt_directory(data_root, project_id, request_id) / "receipt-000003-window-handoff.json", handoff_receipt)
+        write_json_exclusive(receipt_directory(data_root, project_id, request_id) / "receipt-000004-central-impact.json", impact_receipt)
         write_json_exclusive(target, artifact)
         write_json_exclusive(artifact_path(data_root, project_id, request_id, HANDOFF_FILE), handoff)
+        write_json_exclusive(artifact_path(data_root, project_id, request_id, CENTRAL_IMPACT_FILE), central_impact)
     return public_result("BOSS_DECISION_RECORDED", request_id, request["taskId"], True, decisionStatus=decision["status"], selectedOptionId=decision["selectedOptionId"], originalWindowId=request["windowId"], ledgerReceiptId=mutation["receiptId"]), 0
 
 
@@ -600,6 +634,8 @@ def verify_command(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         handoff = read_json(artifact_path(data_root, project_id, request_id, HANDOFF_FILE), "C07_HANDOFF_INVALID")
         decision_receipt = read_json(receipt_directory(data_root, project_id, request_id) / "receipt-000002-boss-decision.json", "C07_BOSS_DECISION_RECEIPT_MISSING")
         handoff_receipt = read_json(receipt_directory(data_root, project_id, request_id) / "receipt-000003-window-handoff.json", "C07_HANDOFF_RECEIPT_MISSING")
+        central_impact = read_json(artifact_path(data_root, project_id, request_id, CENTRAL_IMPACT_FILE), "C07_CENTRAL_IMPACT_MISSING")
+        impact_receipt = read_json(receipt_directory(data_root, project_id, request_id) / "receipt-000004-central-impact.json", "C07_CENTRAL_IMPACT_RECEIPT_MISSING")
         if (
             decision.get("requestDigest") != canonical_digest(request) or decision.get("adviceDigest") != canonical_digest(advice)
             or decision.get("recordType") != "C07_BOSS_ADJUDICATION_DECISION" or decision.get("projectId") != project_id
@@ -612,6 +648,13 @@ def verify_command(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             or handoff_receipt.get("artifactDigest") != canonical_digest(handoff)
             or handoff_receipt.get("recordType") != "C07_IMMUTABLE_HANDOFF_RECEIPT"
             or handoff_receipt.get("operation") != "CREATE_ORIGINAL_WINDOW_HANDOFF"
+            or central_impact.get("bossDecisionDigest") != canonical_digest(decision)
+            or central_impact.get("boundary", {}).get("fullDiscussionExcluded") is not True
+            or "rationale" in central_impact or "advice" in central_impact
+            or impact_receipt.get("artifact") != central_impact
+            or impact_receipt.get("artifactDigest") != canonical_digest(central_impact)
+            or impact_receipt.get("recordType") != "C07_IMMUTABLE_CENTRAL_IMPACT_RECEIPT"
+            or impact_receipt.get("operation") != "CREATE_COMPACT_CENTRAL_IMPACT"
         ):
             raise AdjudicationError("C07_BOSS_DECISION_OR_HANDOFF_INTEGRITY_INVALID")
         linked_ledger_receipt(data_root, project_id, decision["ledgerMutation"], "C07_RECORD_BOSS_ADJUDICATION_DECISION")

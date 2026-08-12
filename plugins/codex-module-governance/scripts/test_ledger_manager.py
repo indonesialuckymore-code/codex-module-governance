@@ -147,6 +147,23 @@ class LedgerManagerTests(unittest.TestCase):
             self.assertEqual(fourth_code, 2)
             self.assertEqual(fourth_output["reason"], "FIRST_LEVEL_SUB_AGENT_LIMIT_REACHED")
 
+    def test_task_id_is_embedded_in_every_task_and_window_title(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary) / "private-data"
+            self.initialize(data_root)
+            add_code, add_output = self.command(
+                data_root, "add-task", "--task-id", "C-003", "--title", "C-003｜业务名称｜G9",
+                "--business-goal", "Validate immutable identity.", "--plan-ref", "plan-ref-003",
+            )
+            first_code, first_output = self.command(data_root, "register-window", "--window-id", "window-003-a", "--task-id", "C-003", "--context-mode", "NEW")
+            second_code, second_output = self.command(data_root, "register-window", "--window-id", "window-003-b", "--task-id", "C-003", "--context-mode", "NEW")
+            self.assertEqual((add_code, first_code, second_code), (0, 0, 0), (add_output, first_output, second_output))
+            ledger = json.loads((data_root / "module-ledgers" / PROJECT_ID / "ledger.json").read_text(encoding="utf-8"))
+            self.assertEqual(ledger["tasks"]["C-003"]["title"], "业务名称")
+            self.assertEqual(ledger["tasks"]["C-003"]["canonicalTitle"], "C-003｜业务名称")
+            self.assertEqual(ledger["windows"]["window-003-a"]["runtimeTitle"], "C-003｜业务名称｜G1")
+            self.assertEqual(ledger["windows"]["window-003-b"]["runtimeTitle"], "C-003｜业务名称｜G2")
+
     def test_receipt_tampering_is_detected(self):
         with tempfile.TemporaryDirectory() as temporary:
             data_root = Path(temporary) / "private-data"

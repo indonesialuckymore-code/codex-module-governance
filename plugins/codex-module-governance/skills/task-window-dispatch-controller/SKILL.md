@@ -14,10 +14,11 @@ description: 在 Boss 对单项任务或中央启动图作出范围化批准且 
 ## 两段式派发
 
 1. `prepare` 验证 C04、C05、C03、Boss 批准和恢复状态，只生成不可覆盖派发单。
-2. Codex 运行时按派发单创建新任务、发送到旧任务或创建一级子 Agent。
-3. 只有所有要求的运行时对象都成功并返回真实 ID 后，`confirm` 才登记窗口和子 Agent，并把任务从 `READY` 推进为 `IN_PROGRESS`。
-4. 部分创建或确认失败不得更新总账；运行时应关闭本轮孤立对象或交 C08 冻结处理。
-5. 如果当前 Codex 表面不能自动创建或复用任务，`export-fallback` 只生成可复制任务包交 Boss 手工建窗；真实 ID 回传前不得确认派发成功。
+2. 派发单固定任务身份：总账/任务包使用 `任务ID｜业务名称`，Codex 窗口使用 `任务ID｜业务名称｜G代际`。
+3. Codex 运行时按派发单的完整标题创建新任务、发送到旧任务或创建一级子 Agent。
+4. 只有所有要求的运行时对象都成功、标题/任务 ID/代际完全匹配并返回真实 ID 后，`confirm` 才登记窗口和子 Agent，并把任务从 `READY` 推进为 `IN_PROGRESS`。
+5. 部分创建、标题不符或确认失败不得更新总账；报告 `TASK_IDENTITY_MISMATCH / NEEDS_REVIEW`，运行时应关闭本轮孤立对象或交 C08 冻结处理。
+6. 如果当前 Codex 表面不能自动创建或复用任务，`export-fallback` 只生成可复制任务包交 Boss 手工建窗；真实 ID 回传前不得确认派发成功。
 
 ## 中央启动图批量授权
 
@@ -44,6 +45,12 @@ description: 在 Boss 对单项任务或中央启动图作出范围化批准且 
 - 子 Agent 只执行父窗口分配的独立子范围。
 - 子 Agent 回传只能是 `NEEDS_REVIEW`、`PARTIAL` 或 `BLOCKED`，不得声明 `DONE`。
 - 所有子 Agent 回传齐全后，只允许父窗口开始统一汇总；整项完成仍需 C06 和 Boss 最终批准。
+
+## 向中央回传
+
+- 任务窗口始终把事件目标写成 `CURRENT_CENTRAL`，不得保存某一代中央聊天 ID 作为永久收件人。
+- 先将 `IN_PROGRESS`、`BLOCKED_FOR_DECISION`、`DECISION_APPLIED` 或 `READY_FOR_VALIDATION` 写入 C08 私有事件箱，再发送聊天提醒。
+- 聊天提醒失败不代表事件丢失；当前中央按事件箱读取并确认，旧中央无权确认。
 
 ## 永久边界
 

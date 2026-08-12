@@ -12,9 +12,12 @@
     "taskWindow": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["status", "windowId", "runtimeThreadRef", "runtimeProjectId", "runtimeCwd", "environmentType", "associationMethod", "associationHandoffRefs"],
+      "required": ["status", "taskId", "runtimeTitle", "generation", "windowId", "runtimeThreadRef", "runtimeProjectId", "runtimeCwd", "environmentType", "associationMethod", "associationHandoffRefs"],
       "properties": {
         "status": { "enum": ["CREATED", "REUSED"] },
+        "taskId": { "type": "string" },
+        "runtimeTitle": { "type": "string" },
+        "generation": { "type": "integer", "minimum": 1 },
         "windowId": { "type": "string" },
         "runtimeThreadRef": { "type": "string" },
         "runtimeProjectId": { "type": "string" },

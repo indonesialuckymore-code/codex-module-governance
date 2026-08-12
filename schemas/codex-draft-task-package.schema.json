@@ -4,13 +4,24 @@
   "title": "C04 Codex draft task package",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "recordType", "packageId", "projectId", "taskId", "generatedAt", "writerId", "status", "sourceLedger", "inputBriefDigest", "task", "windowRecommendation", "dependencies", "requiredReading", "realTimeChecks", "allowedActions", "forbiddenActions", "preflightSnapshot", "executionSequence", "acceptance", "hardStops", "rollbackPlan", "deliverables", "handbackRule", "approvalAndDispatchBoundary", "receiptIds", "latestReceiptId"],
+  "required": ["schemaVersion", "recordType", "packageId", "projectId", "taskId", "displayName", "taskIdentity", "generatedAt", "writerId", "status", "sourceLedger", "inputBriefDigest", "task", "windowRecommendation", "dependencies", "requiredReading", "realTimeChecks", "allowedActions", "forbiddenActions", "preflightSnapshot", "executionSequence", "acceptance", "hardStops", "rollbackPlan", "deliverables", "handbackRule", "approvalAndDispatchBoundary", "receiptIds", "latestReceiptId"],
   "properties": {
     "schemaVersion": { "const": "0.4.0" },
     "recordType": { "const": "C04_DRAFT_TASK_PACKAGE" },
     "packageId": { "type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$" },
     "projectId": { "type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$" },
     "taskId": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9._-]{2,127}$" },
+    "displayName": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9._-]{2,127}｜.+｜任务包$" },
+    "taskIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["taskId", "canonicalTitle", "packageDisplayName"],
+      "properties": {
+        "taskId": { "type": "string" },
+        "canonicalTitle": { "type": "string" },
+        "packageDisplayName": { "type": "string" }
+      }
+    },
     "generatedAt": { "type": "string", "format": "date-time" },
     "writerId": { "const": "codex-module-central" },
     "status": { "const": "DRAFT_REQUIRES_BOSS_REVIEW" },

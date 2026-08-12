@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-role-successor-activation.schema.json",
+  "title": "C08 logical-role successor activation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["activationSchemaVersion", "recordType", "handoverId", "projectId", "role", "successorThreadRef", "runtimeProjectId", "model", "handoverPackageDigest"],
+  "properties": {
+    "activationSchemaVersion": { "const": "0.15.0" },
+    "recordType": { "const": "C08_ROLE_SUCCESSOR_ACTIVATION" },
+    "handoverId": { "type": "string" },
+    "projectId": { "type": "string" },
+    "role": { "enum": ["CURRENT_CENTRAL", "CURRENT_ADJUDICATION"] },
+    "successorThreadRef": { "type": "string" },
+    "runtimeProjectId": { "type": "string" },
+    "model": { "const": "gpt-5.6-sol" },
+    "handoverPackageDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}

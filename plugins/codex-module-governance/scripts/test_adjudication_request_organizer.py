@@ -96,6 +96,8 @@ def decision_payload(status="SELECT_OPTION", selected="option-c07-a", mutation=N
         "decisionSchemaVersion": "0.7.0", "recordType": "C07_BOSS_DECISION_INPUT", "requestId": REQUEST,
         "status": status, "selectedOptionId": selected, "rationale": "Use the reversible fictional path.",
         "decisionRef": "boss-decision-c07-001", "instructionToOriginalWindow": "Continue only with option A inside the existing scope.",
+        "taskEffect": "CONTINUE_ORIGINAL_WINDOW", "dependencyEffect": "NO_CHANGE",
+        "conditions": ["Retain the fictional snapshot."], "invalidWhen": ["Rollback evidence becomes unavailable."],
     }
     if mutation:
         mutation(payload)
@@ -173,6 +175,12 @@ class C07Tests(unittest.TestCase):
             handoff = json.loads((root / "adjudication-requests" / PROJECT / REQUEST / "task-window-handoff.json").read_text())
             self.assertEqual(handoff["windowId"], WINDOW)
             self.assertTrue(handoff["boundary"]["recipientMustBeOriginalWindow"])
+            impact = json.loads((root / "adjudication-requests" / PROJECT / REQUEST / "central-impact-receipt.json").read_text())
+            self.assertEqual(impact["taskIdentity"]["canonicalTitle"], "C-07｜Fictional blocked task")
+            self.assertEqual(impact["taskEffect"], "CONTINUE_ORIGINAL_WINDOW")
+            self.assertTrue(impact["boundary"]["fullDiscussionExcluded"])
+            self.assertNotIn("rationale", impact)
+            self.assertNotIn("advice", impact)
 
     def test_advice_cannot_choose_an_option_outside_request(self):
         with tempfile.TemporaryDirectory() as temporary:
