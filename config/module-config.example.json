@@ -1,6 +1,6 @@
 {
   "$schema": "../schemas/module-config.schema.json",
-  "schemaVersion": "0.6.0",
+  "schemaVersion": "0.7.0",
   "module": {
     "id": "replace-with-module-id",
     "displayName": "Codex 模块"
@@ -40,6 +40,14 @@
     "requireIndependentReadback": true,
     "requireBossFinalApprovalForDone": true,
     "releaseOccupancyOnDone": false
+  },
+  "adjudication": {
+    "soleWriter": "codex-module-central",
+    "advisor": "central-background-advisor",
+    "adviceReturnsToBossOnly": true,
+    "requireBossDecisionBeforeWindowHandoff": true,
+    "allowAdviceToChangeTaskState": false,
+    "allowAutomaticExecution": false
   },
   "publishing": {
     "mode": "private",

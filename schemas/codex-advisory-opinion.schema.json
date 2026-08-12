@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-advisory-opinion.schema.json",
+  "title": "C07 central background advisory opinion",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["adviceSchemaVersion", "recordType", "requestId", "advisor", "factAssessment", "recommendation", "unknowns", "evidenceGaps", "bossQuestions"],
+  "properties": {
+    "adviceSchemaVersion": { "const": "0.7.0" },
+    "recordType": { "const": "C07_ADVISORY_OPINION" },
+    "requestId": { "type": "string" },
+    "advisor": { "type": "object" },
+    "factAssessment": { "type": "array", "minItems": 1, "maxItems": 20 },
+    "recommendation": { "type": "object" },
+    "unknowns": { "type": "array", "maxItems": 20 },
+    "evidenceGaps": { "type": "array", "maxItems": 20 },
+    "bossQuestions": { "type": "array", "maxItems": 3 }
+  }
+}

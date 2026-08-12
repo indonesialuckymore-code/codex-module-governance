@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-adjudication-window-handoff.schema.json",
+  "title": "C07 Boss decision handoff to the original task window",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "recordType", "createdAt", "projectId", "requestId", "taskId", "windowId", "bossDecisionStatus", "selectedOptionId", "decisionRef", "instruction", "requestDigest", "adviceDigest", "bossDecisionDigest", "boundary"],
+  "properties": {
+    "schemaVersion": { "const": "0.7.0" },
+    "recordType": { "const": "C07_TASK_WINDOW_ADJUDICATION_HANDOFF" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "projectId": { "type": "string" },
+    "requestId": { "type": "string" },
+    "taskId": { "type": "string" },
+    "windowId": { "type": "string" },
+    "bossDecisionStatus": { "type": "string" },
+    "selectedOptionId": { "type": ["string", "null"] },
+    "decisionRef": { "type": "string" },
+    "instruction": { "type": "string" },
+    "requestDigest": { "type": "string" },
+    "adviceDigest": { "type": "string" },
+    "bossDecisionDigest": { "type": "string" },
+    "boundary": { "type": "object" }
+  }
+}

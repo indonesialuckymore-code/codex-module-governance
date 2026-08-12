@@ -4,9 +4,9 @@
   "title": "Codex Module Governance configuration",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "module", "models", "subAgentPolicy", "storage", "projectInitialization", "ledger", "occupancy", "validation", "publishing"],
+  "required": ["schemaVersion", "module", "models", "subAgentPolicy", "storage", "projectInitialization", "ledger", "occupancy", "validation", "adjudication", "publishing"],
   "properties": {
-    "schemaVersion": { "const": "0.6.0" },
+    "schemaVersion": { "const": "0.7.0" },
     "module": {
       "type": "object",
       "additionalProperties": false,
@@ -85,6 +85,19 @@
         "requireIndependentReadback": { "const": true },
         "requireBossFinalApprovalForDone": { "const": true },
         "releaseOccupancyOnDone": { "const": false }
+      }
+    },
+    "adjudication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["soleWriter", "advisor", "adviceReturnsToBossOnly", "requireBossDecisionBeforeWindowHandoff", "allowAdviceToChangeTaskState", "allowAutomaticExecution"],
+      "properties": {
+        "soleWriter": { "const": "codex-module-central" },
+        "advisor": { "const": "central-background-advisor" },
+        "adviceReturnsToBossOnly": { "const": true },
+        "requireBossDecisionBeforeWindowHandoff": { "const": true },
+        "allowAdviceToChangeTaskState": { "const": false },
+        "allowAutomaticExecution": { "const": false }
       }
     },
     "publishing": {

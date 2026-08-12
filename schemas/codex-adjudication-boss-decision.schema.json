@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-adjudication-boss-decision.schema.json",
+  "title": "C07 Boss adjudication decision input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decisionSchemaVersion", "recordType", "requestId", "status", "selectedOptionId", "rationale", "decisionRef", "instructionToOriginalWindow"],
+  "properties": {
+    "decisionSchemaVersion": { "const": "0.7.0" },
+    "recordType": { "const": "C07_BOSS_DECISION_INPUT" },
+    "requestId": { "type": "string" },
+    "status": { "enum": ["SELECT_OPTION", "REQUEST_MORE_EVIDENCE", "PAUSE", "REJECT_ALL"] },
+    "selectedOptionId": { "type": ["string", "null"] },
+    "rationale": { "type": "string" },
+    "decisionRef": { "type": "string" },
+    "instructionToOriginalWindow": { "type": "string" }
+  }
+}

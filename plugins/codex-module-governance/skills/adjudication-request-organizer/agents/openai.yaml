@@ -1,0 +1,4 @@
+interface:
+  display_name: "裁定请求整理器"
+  short_description: "整理阻塞事实、顾问建议及 Boss 最终裁定回传边界"
+  default_prompt: "Use $adjudication-request-organizer to prepare a blocked task for advisory review without replacing the Boss decision."
