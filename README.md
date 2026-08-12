@@ -4,7 +4,7 @@
 
 ## 当前阶段
 
-Git 标签稳定安装基线仍是 `0.13.0`；当前本地施工版为 `0.16.0`，在中央启动图、稳定任务身份和角色连续性之上，新增 `DONE` 后自动续派与“每窗口最多两项串行任务”的硬门禁。
+当前 Git 稳定安装标签和本机版本均为 `0.16.0`；它在中央启动图、稳定任务身份和角色连续性之上，新增 `DONE` 后自动续派与“每窗口最多两项串行任务”的硬门禁。
 
 - Codex 插件清单与本仓库 marketplace；
 - C00 从当前任务已有内容续接、逐项向 Boss 澄清、冻结大纲并生成中央交接摘要；
@@ -73,4 +73,4 @@ Git 标签稳定安装基线仍是 `0.13.0`；当前本地施工版为 `0.16.0`�
 
 ## 安装入口
 
-先按 [安装说明](docs/INSTALLATION.md) 从固定标签 `v0.13.0` 注册本人 GitHub Marketplace，再安装 `codex-module-governance@qianyi-codex-governance`。私有仓库用户必须先获得 GitHub 访问权限；安装或升级后需要新开 Codex 任务加载新版能力。
+先按 [安装说明](docs/INSTALLATION.md) 从固定标签 `v0.16.0` 注册本人 GitHub Marketplace，再安装 `codex-module-governance@qianyi-codex-governance`。私有仓库用户必须先获得 GitHub 访问权限；安装或升级后需要新开 Codex 任务加载新版能力。

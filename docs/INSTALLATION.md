@@ -5,7 +5,7 @@
 前提：电脑已安装 Codex CLI，GitHub 账号已获准访问私有仓库 `indonesialuckymore-code/codex-module-governance`。
 
 ```bash
-codex plugin marketplace add indonesialuckymore-code/codex-module-governance --ref v0.13.0
+codex plugin marketplace add indonesialuckymore-code/codex-module-governance --ref v0.16.0
 codex plugin add codex-module-governance@qianyi-codex-governance
 ```
 
@@ -15,9 +15,9 @@ codex plugin add codex-module-governance@qianyi-codex-governance
 
 也可以显式调用 `$codex-governance-gateway`。插件先让用户选择仓库外私有数据目录；不会把工程总账或业务资料写进 GitHub 仓库。
 
-## 本人本地试用当前施工版
+## 本人本地试用后续开发版
 
-当前分支尚未发布新标签时，可以直接从本地产品仓库安装，不需要先上传 GitHub：
+试用尚未发布正式标签的后续开发版时，可以直接从本地产品仓库安装，不需要先上传 GitHub：
 
 ```bash
 codex plugin marketplace add <本地仓库路径>
@@ -41,7 +41,7 @@ codex plugin add codex-module-governance@qianyi-codex-governance
 
 ## 回退
 
-推荐按升级步骤把 Marketplace 固定回 `v0.13.0` 或其他已知可用 tag 后重新安装。若使用 C13 隔离验证器留下的备份，则运行：
+推荐按升级步骤把 Marketplace 固定回 `v0.16.0` 或其他已知可用 tag 后重新安装。若使用 C13 隔离验证器留下的备份，则运行：
 
 ```bash
 python3 scripts/c13-release-validator.py rollback \
