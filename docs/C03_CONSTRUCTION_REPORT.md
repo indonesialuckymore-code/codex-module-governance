@@ -2,7 +2,7 @@
 
 ## 结果
 
-状态：`NEEDS_REVIEW`。C03 已实现为 `engineering-ledger-manager`，只维护 Codex 模块的详细账本，等待 Boss 验收；不代表 C04–C13 或业务施工已放行。
+状态：`DONE`（2026-08-12，已完成独立隔离验收）。C03 已实现为 `engineering-ledger-manager`，只维护 Codex 模块的详细账本；不代表 C04–C13 或业务施工已放行。
 
 ## 本次新增
 
@@ -24,6 +24,20 @@
 | 同一对象双写声明 | 通过；保留两份声明并写入硬停。 |
 | 一级子 Agent 上限 | 通过；第 4 个被拒绝。 |
 | 回执被篡改 | 通过；完整性校验失败。 |
+
+## 独立隔离验收记录（2026-08-12）
+
+验收在仓库外的虚构私有项目 `c03-acceptance-demo-20260812` 中完成；没有创建 TEST、业务对象或真实业务数据。
+
+| 验收点 | 实测结论 |
+|---|---|
+| C02 前置门槛 | 未建立项目启动卡时，C03 初始化被拒绝。 |
+| 唯一写入 | `fable-5-system-router` 尝试写入被拒绝，原因 `LEDGER_WRITER_NOT_AUTHORIZED`。 |
+| `DONE` 门槛 | 直接标记 `DONE` 被拒绝，原因 `DONE_REQUIRES_C06_INDEPENDENT_VALIDATION`。 |
+| 完成信号幂等 | 同一信号第二次到达返回 `IDEMPOTENT_DUPLICATE_SIGNAL`，不写入也不推进状态。 |
+| 对象冲突 | 两个虚构任务声明同一虚构对象后，保留两份声明并登记 `OBJECT_OCCUPANCY_CONFLICT` 硬停。 |
+| 一级子 Agent 上限 | 前 3 个登记成功，第 4 个被拒绝，原因 `FIRST_LEVEL_SUB_AGENT_LIMIT_REACHED`。 |
+| 回执完整性 | 临时篡改演练回执后校验拒绝，原因 `IMMUTABLE_RECEIPT_CHAIN_INVALID`；恢复原回执后校验再次通过。 |
 
 ## 业务影响
 
