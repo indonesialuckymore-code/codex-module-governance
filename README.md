@@ -60,4 +60,4 @@
 
 ## 安装入口
 
-先按 [安装说明](docs/INSTALLATION.md) 注册本人 GitHub Marketplace，再安装 `codex-module-governance@qianyi-codex-governance`。私有仓库用户必须先获得 GitHub 访问权限；安装或升级后需要新开 Codex 任务加载新版能力。
+先按 [安装说明](docs/INSTALLATION.md) 从固定标签 `v0.13.0` 注册本人 GitHub Marketplace，再安装 `codex-module-governance@qianyi-codex-governance`。私有仓库用户必须先获得 GitHub 访问权限；安装或升级后需要新开 Codex 任务加载新版能力。
