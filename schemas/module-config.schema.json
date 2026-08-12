@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schemaVersion", "module", "models", "subAgentPolicy", "storage", "projectInitialization", "ledger", "occupancy", "validation", "adjudication", "recovery", "centralIntegration", "dispatch", "externalSkills", "naturalLanguageGateway", "publishing"],
   "properties": {
-    "schemaVersion": { "const": "0.12.0" },
+    "schemaVersion": { "const": "0.14.0" },
     "module": {
       "type": "object",
       "additionalProperties": false,
@@ -130,9 +130,13 @@
     "dispatch": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["requireTwoPhaseRuntimeConfirmation", "greenSharedReadParallel", "yellowIsolatedWriteAllowed", "redConflictHardStop", "subAgentsReturnToParentWindowOnly", "allowSubAgentDoneDeclaration"],
+      "required": ["requireTwoPhaseRuntimeConfirmation", "allowPlanScopedBatchApproval", "releaseApprovedWavesWhenDependenciesDone", "requireSavedCodexProjectTarget", "maxThreadsPerMonitoringBatch", "greenSharedReadParallel", "yellowIsolatedWriteAllowed", "redConflictHardStop", "subAgentsReturnToParentWindowOnly", "allowSubAgentDoneDeclaration"],
       "properties": {
         "requireTwoPhaseRuntimeConfirmation": { "const": true },
+        "allowPlanScopedBatchApproval": { "const": true },
+        "releaseApprovedWavesWhenDependenciesDone": { "const": true },
+        "requireSavedCodexProjectTarget": { "const": true },
+        "maxThreadsPerMonitoringBatch": { "const": 8 },
         "greenSharedReadParallel": { "const": true },
         "yellowIsolatedWriteAllowed": { "const": true },
         "redConflictHardStop": { "const": true },

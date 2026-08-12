@@ -92,6 +92,9 @@ class C09Tests(unittest.TestCase):
             self.assertIn("C00", output["readyStages"])
             self.assertEqual(output["models"], {"central": "gpt-5.6-sol", "taskWindow": "gpt-5.6-terra", "subAgent": "gpt-5.6-terra"})
             self.assertEqual(output["subAgentPolicy"], {"maxConcurrentFirstLevel": 3, "allowGrandchildren": False})
+            self.assertTrue(output["boundaries"]["onePassExecutionMapAvailable"])
+            self.assertTrue(output["boundaries"]["scopedBatchApprovalAvailable"])
+            self.assertTrue(output["boundaries"]["projectBoundDispatchRequired"])
 
     def test_duplicate_central_registry_is_refused(self):
         registry = json.loads(central.REGISTRY_PATH.read_text(encoding="utf-8"))
@@ -120,6 +123,16 @@ class C09Tests(unittest.TestCase):
         self.assertIn("只接管 Codex 施工范围", skill)
         self.assertIn("centralRegistrationScope", template)
         self.assertIn("policy: CODEX_ONLY", template)
+
+    def test_central_requires_one_pass_execution_map_and_saved_project_dispatch(self):
+        central_root = central.PLUGIN_SKILLS / "central-construction-controller"
+        skill = (central_root / "SKILL.md").read_text(encoding="utf-8")
+        execution_map = (central_root / "references" / "project-execution-map.md").read_text(encoding="utf-8")
+        self.assertIn("所有 Boss 决策集中成一个编号清单", skill)
+        self.assertIn("第一波合格任务立即批量派发", skill)
+        self.assertIn("project + worktree", skill)
+        self.assertIn("authorizationScope", execution_map)
+        self.assertIn("不允许 `projectless`", execution_map)
 
     def test_new_project_routes_to_c02_without_creating_project(self):
         with tempfile.TemporaryDirectory() as temporary:

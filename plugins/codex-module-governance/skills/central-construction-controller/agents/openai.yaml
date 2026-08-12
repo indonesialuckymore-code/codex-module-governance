@@ -1,4 +1,4 @@
 interface:
   display_name: "中央处理器"
-  short_description: "Codex 模块唯一中央路由器，接收 C12 标准请求并守住批准闸门"
-  default_prompt: "使用 $central-construction-controller 作为唯一中央路由器，先验证已批准大纲、总账与恢复状态，再路由到 C02-C11。"
+  short_description: "一次理清全部任务、集中拍板并按依赖批量派发"
+  default_prompt: "使用 $central-construction-controller 读取完整冻结大纲和最新总账，一次性给我全部任务、需要我拍板的事项、并行波次和前置关系；不要逐项反复批准。"

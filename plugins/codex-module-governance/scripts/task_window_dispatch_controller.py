@@ -18,10 +18,11 @@ from occupancy_conflict_checker import OccupancyError, verify_decision_data
 from task_package_generator import TaskPackageError, load_package, verify_package
 
 
-SCHEMA_VERSION = "0.10.0"
+SCHEMA_VERSION = "0.14.0"
 ROOT = Path("dispatches")
 REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
 WINDOW_ID = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{2,127}$")
+DIGEST = re.compile(r"^[a-f0-9]{64}$")
 
 
 class DispatchError(Exception):
@@ -107,13 +108,65 @@ def dispatch_lock(root: Path, project_id: str) -> Iterator[None]:
         lock.unlink(missing_ok=True)
 
 
-def validate_request(raw: Dict[str, Any], project_id: str, package_id: str, review_id: str) -> Dict[str, Any]:
-    value = exact(raw, {"dispatchSchemaVersion", "recordType", "dispatchId", "projectId", "packageId", "reviewId", "taskId", "bossDispatchAuthorization", "subAgents"}, "C10_DISPATCH_REQUEST_SCHEMA_UNSUPPORTED")
-    if value["dispatchSchemaVersion"] != SCHEMA_VERSION or value["recordType"] != "C10_DISPATCH_REQUEST" or value["projectId"] != project_id or value["packageId"] != package_id or value["reviewId"] != review_id:
-        raise DispatchError("C10_DISPATCH_REQUEST_SCHEMA_UNSUPPORTED")
-    auth = exact(value["bossDispatchAuthorization"], {"status", "reference"}, "C10_BOSS_AUTHORIZATION_INVALID")
+def validate_runtime_project(raw: Any) -> Dict[str, Any]:
+    value = exact(raw, {"codexProjectId", "projectPath", "isGitRepository", "environment"}, "C10_RUNTIME_PROJECT_SCHEMA_INVALID")
+    codex_project_id = require_ref(value["codexProjectId"], "C10_CODEX_PROJECT_ID_INVALID")
+    if not isinstance(value["projectPath"], str):
+        raise DispatchError("C10_CODEX_PROJECT_PATH_INVALID")
+    project_path = Path(value["projectPath"]).expanduser()
+    if not project_path.is_absolute() or ".." in project_path.parts:
+        raise DispatchError("C10_CODEX_PROJECT_PATH_INVALID")
+    if not isinstance(value["isGitRepository"], bool):
+        raise DispatchError("C10_CODEX_PROJECT_GIT_FLAG_INVALID")
+    environment = str(value["environment"]).strip().upper()
+    if environment not in {"LOCAL", "WORKTREE"}:
+        raise DispatchError("C10_RUNTIME_ENVIRONMENT_INVALID")
+    if environment == "WORKTREE" and not value["isGitRepository"]:
+        raise DispatchError("C10_NON_GIT_PROJECT_CANNOT_USE_WORKTREE")
+    return {
+        "codexProjectId": codex_project_id,
+        "projectPath": str(project_path),
+        "projectName": project_path.name,
+        "isGitRepository": value["isGitRepository"],
+        "environment": environment,
+    }
+
+
+def validate_authorization(raw: Any, task_id: str) -> Dict[str, Any]:
+    auth = exact(raw, {"status", "reference", "scope"}, "C10_BOSS_AUTHORIZATION_INVALID")
     if auth["status"] != "APPROVED":
         raise DispatchError("C10_EXPLICIT_BOSS_DISPATCH_APPROVAL_REQUIRED")
+    scope = exact(auth["scope"], {"type", "scopeId", "scopeDigest", "waveId", "taskIds"}, "C10_BOSS_AUTHORIZATION_SCOPE_INVALID")
+    scope_type = str(scope["type"]).strip().upper()
+    if scope_type not in {"SINGLE_TASK", "EXECUTION_MAP"}:
+        raise DispatchError("C10_BOSS_AUTHORIZATION_SCOPE_INVALID")
+    task_ids = scope["taskIds"]
+    if not isinstance(task_ids, list) or not task_ids or len(task_ids) > 100:
+        raise DispatchError("C10_BOSS_AUTHORIZATION_TASKS_INVALID")
+    normalized_task_ids = [require_ref(item, "C10_BOSS_AUTHORIZATION_TASKS_INVALID", WINDOW_ID) for item in task_ids]
+    if len(normalized_task_ids) != len(set(normalized_task_ids)) or task_id not in normalized_task_ids:
+        raise DispatchError("C10_TASK_OUTSIDE_BOSS_AUTHORIZATION_SCOPE")
+    if scope_type == "SINGLE_TASK" and normalized_task_ids != [task_id]:
+        raise DispatchError("C10_SINGLE_TASK_AUTHORIZATION_SCOPE_INVALID")
+    return {
+        "reference": require_ref(auth["reference"], "C10_BOSS_APPROVAL_REFERENCE_INVALID"),
+        "scope": {
+            "type": scope_type,
+            "scopeId": require_ref(scope["scopeId"], "C10_BOSS_AUTHORIZATION_SCOPE_ID_INVALID"),
+            "scopeDigest": require_ref(scope["scopeDigest"], "C10_BOSS_AUTHORIZATION_SCOPE_DIGEST_INVALID", DIGEST),
+            "waveId": require_ref(scope["waveId"], "C10_BOSS_AUTHORIZATION_WAVE_ID_INVALID"),
+            "taskIds": normalized_task_ids,
+        },
+    }
+
+
+def validate_request(raw: Dict[str, Any], project_id: str, package_id: str, review_id: str) -> Dict[str, Any]:
+    value = exact(raw, {"dispatchSchemaVersion", "recordType", "dispatchId", "projectId", "packageId", "reviewId", "taskId", "runtimeProject", "bossDispatchAuthorization", "subAgents"}, "C10_DISPATCH_REQUEST_SCHEMA_UNSUPPORTED")
+    if value["dispatchSchemaVersion"] != SCHEMA_VERSION or value["recordType"] != "C10_DISPATCH_REQUEST" or value["projectId"] != project_id or value["packageId"] != package_id or value["reviewId"] != review_id:
+        raise DispatchError("C10_DISPATCH_REQUEST_SCHEMA_UNSUPPORTED")
+    task_id = require_ref(value["taskId"], "C10_TASK_ID_INVALID", WINDOW_ID)
+    authorization = validate_authorization(value["bossDispatchAuthorization"], task_id)
+    runtime_project = validate_runtime_project(value["runtimeProject"])
     agents = value["subAgents"]
     if not isinstance(agents, list) or len(agents) > 3:
         raise DispatchError("C10_FIRST_LEVEL_SUB_AGENT_LIMIT_EXCEEDED")
@@ -133,8 +186,10 @@ def validate_request(raw: Dict[str, Any], project_id: str, package_id: str, revi
         "projectId": project_id,
         "packageId": package_id,
         "reviewId": review_id,
-        "taskId": require_ref(value["taskId"], "C10_TASK_ID_INVALID", WINDOW_ID),
-        "bossApprovalRef": require_ref(auth["reference"], "C10_BOSS_APPROVAL_REFERENCE_INVALID"),
+        "taskId": task_id,
+        "bossApprovalRef": authorization["reference"],
+        "authorizationScope": authorization["scope"],
+        "runtimeProject": runtime_project,
         "subAgents": normalized,
     }
 
@@ -187,12 +242,16 @@ def prepare(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     if window.get("status") not in {"OPEN_NEW_WINDOW", "REUSE_EXISTING_WINDOW"}:
         raise DispatchError("C10_WINDOW_DECISION_NOT_ACTIONABLE")
     light = classify(decision)
+    environment_type = request["runtimeProject"]["environment"].lower()
     plan = {
         "schemaVersion": SCHEMA_VERSION, "recordType": "C10_DISPATCH_PLAN", "dispatchId": request["dispatchId"],
         "createdAt": utc_now(), "projectId": project_id, "packageId": package_id, "reviewId": review_id,
         "taskId": request["taskId"], "status": "PENDING_RUNTIME_CONFIRMATION", "trafficLight": light,
         "source": {"requestDigest": request_digest, "packageDigest": canonical_digest(package), "c05DecisionDigest": canonical_digest(decision), "ledgerRevision": ledger["revision"], "ledgerDigest": canonical_digest(ledger)},
         "bossApprovalRef": request["bossApprovalRef"],
+        "authorizationScope": request["authorizationScope"],
+        "runtimeProject": request["runtimeProject"],
+        "runtimeTarget": {"type": "project", "projectId": request["runtimeProject"]["codexProjectId"], "environment": {"type": environment_type}},
         "windowAction": {"action": "CREATE_TASK" if window["status"] == "OPEN_NEW_WINDOW" else "SEND_TO_EXISTING_TASK", "windowId": window.get("windowId"), "model": "gpt-5.6-terra", "contextMode": "NEW" if window["status"] == "OPEN_NEW_WINDOW" else "REUSED"},
         "subAgents": [{**item, "model": "gpt-5.6-terra", "parent": "TASK_WINDOW"} for item in request["subAgents"]],
         "taskPackage": {key: package[key] for key in ("task", "requiredReading", "realTimeChecks", "allowedActions", "forbiddenActions", "preflightSnapshot", "executionSequence", "acceptance", "hardStops", "rollbackPlan", "deliverables", "handbackRule")},
@@ -201,19 +260,38 @@ def prepare(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     with dispatch_lock(root, project_id):
         if target.exists(): raise DispatchError("C10_DISPATCH_PLAN_RACE_DETECTED")
         write_exclusive(target, plan)
-    return {"status": "READY_FOR_RUNTIME_DISPATCH", "dispatchId": request["dispatchId"], "trafficLight": light, "windowAction": plan["windowAction"], "subAgentCount": len(plan["subAgents"]), "writePerformed": True, "dispatchPerformed": False, "businessWritePerformed": False}, 0
+    return {"status": "READY_FOR_RUNTIME_DISPATCH", "dispatchId": request["dispatchId"], "trafficLight": light, "windowAction": plan["windowAction"], "runtimeTarget": plan["runtimeTarget"], "authorizationScope": plan["authorizationScope"], "subAgentCount": len(plan["subAgents"]), "writePerformed": True, "dispatchPerformed": False, "businessWritePerformed": False}, 0
 
 
 def validate_confirmation(raw: Dict[str, Any], dispatch_id: str, plan: Dict[str, Any]) -> Dict[str, Any]:
     value = exact(raw, {"confirmationSchemaVersion", "recordType", "dispatchId", "taskWindow", "subAgents"}, "C10_CONFIRMATION_SCHEMA_UNSUPPORTED")
     if value["confirmationSchemaVersion"] != SCHEMA_VERSION or value["recordType"] != "C10_RUNTIME_CONFIRMATION" or value["dispatchId"] != dispatch_id:
         raise DispatchError("C10_CONFIRMATION_SCHEMA_UNSUPPORTED")
-    window = exact(value["taskWindow"], {"status", "windowId", "runtimeThreadRef"}, "C10_WINDOW_CONFIRMATION_INVALID")
+    window = exact(value["taskWindow"], {"status", "windowId", "runtimeThreadRef", "runtimeProjectId", "runtimeCwd", "environmentType"}, "C10_WINDOW_CONFIRMATION_INVALID")
     expected = "CREATED" if plan["windowAction"]["action"] == "CREATE_TASK" else "REUSED"
     if window["status"] != expected: raise DispatchError("C10_WINDOW_RUNTIME_NOT_CONFIRMED")
     window_id = require_ref(window["windowId"], "C10_WINDOW_ID_INVALID", WINDOW_ID)
     if expected == "REUSED" and window_id != plan["windowAction"]["windowId"]: raise DispatchError("C10_REUSED_WINDOW_MISMATCH")
     runtime_ref = require_ref(window["runtimeThreadRef"], "C10_RUNTIME_THREAD_REF_INVALID")
+    runtime_project = plan.get("runtimeProject", {})
+    if require_ref(window["runtimeProjectId"], "C10_RUNTIME_PROJECT_ID_INVALID") != runtime_project.get("codexProjectId"):
+        raise DispatchError("C10_RUNTIME_PROJECT_ASSOCIATION_MISMATCH")
+    environment_type = str(window["environmentType"]).strip().upper()
+    if environment_type != runtime_project.get("environment"):
+        raise DispatchError("C10_RUNTIME_ENVIRONMENT_MISMATCH")
+    if not isinstance(window["runtimeCwd"], str):
+        raise DispatchError("C10_RUNTIME_CWD_INVALID")
+    runtime_cwd = Path(window["runtimeCwd"]).expanduser()
+    if not runtime_cwd.is_absolute() or ".." in runtime_cwd.parts:
+        raise DispatchError("C10_RUNTIME_CWD_INVALID")
+    project_path = Path(runtime_project["projectPath"])
+    if environment_type == "LOCAL":
+        if runtime_cwd != project_path:
+            raise DispatchError("C10_LOCAL_TASK_OUTSIDE_SAVED_PROJECT")
+    else:
+        parts = runtime_cwd.parts
+        if runtime_cwd == project_path or ".codex" not in parts or "worktrees" not in parts or runtime_cwd.name != runtime_project["projectName"]:
+            raise DispatchError("C10_NONSTANDARD_WORKTREE_TASK_LOCATION")
     agents = value["subAgents"]
     if not isinstance(agents, list) or len(agents) != len(plan["subAgents"]): raise DispatchError("C10_SUB_AGENT_CONFIRMATION_COUNT_MISMATCH")
     expected_agents = {x["subAgentId"]: x for x in plan["subAgents"]}; normalized = []
@@ -223,7 +301,7 @@ def validate_confirmation(raw: Dict[str, Any], dispatch_id: str, plan: Dict[str,
         if agent_id not in expected_agents or agent["status"] != "CREATED": raise DispatchError("C10_SUB_AGENT_RUNTIME_NOT_CONFIRMED")
         normalized.append({"subAgentId": agent_id, "runtimeAgentRef": require_ref(agent["runtimeAgentRef"], "C10_RUNTIME_AGENT_REF_INVALID")})
     if len({x["subAgentId"] for x in normalized}) != len(normalized): raise DispatchError("C10_DUPLICATE_SUB_AGENT_CONFIRMATION")
-    return {"windowId": window_id, "runtimeThreadRef": runtime_ref, "agents": normalized}
+    return {"windowId": window_id, "runtimeThreadRef": runtime_ref, "runtimeProjectId": runtime_project["codexProjectId"], "runtimeCwd": str(runtime_cwd), "environmentType": environment_type, "agents": normalized}
 
 
 def confirm(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
@@ -251,9 +329,11 @@ def confirm(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         plan_agents = {x["subAgentId"]: x for x in plan["subAgents"]}
         def mutate(after: Dict[str, Any]) -> None:
             if plan["windowAction"]["action"] == "CREATE_TASK":
-                after["windows"][confirmation["windowId"]] = {"windowId": confirmation["windowId"], "taskId": plan["taskId"], "model": "gpt-5.6-terra", "contextMode": "NEW", "status": "REGISTERED", "runtimeThreadRef": confirmation["runtimeThreadRef"], "dispatchId": dispatch_id, "registeredAt": utc_now()}
+                after["windows"][confirmation["windowId"]] = {"windowId": confirmation["windowId"], "taskId": plan["taskId"], "model": "gpt-5.6-terra", "contextMode": "NEW", "status": "REGISTERED", "runtimeThreadRef": confirmation["runtimeThreadRef"], "runtimeProjectId": confirmation["runtimeProjectId"], "environmentType": confirmation["environmentType"], "dispatchId": dispatch_id, "registeredAt": utc_now()}
             else:
                 after["windows"][confirmation["windowId"]]["runtimeThreadRef"] = confirmation["runtimeThreadRef"]
+                after["windows"][confirmation["windowId"]]["runtimeProjectId"] = confirmation["runtimeProjectId"]
+                after["windows"][confirmation["windowId"]]["environmentType"] = confirmation["environmentType"]
                 after["windows"][confirmation["windowId"]]["dispatchId"] = dispatch_id
             for agent_id, runtime_ref in agent_runtime.items():
                 if agent_id in after["subAgents"]: raise DispatchError("C10_SUB_AGENT_ID_ALREADY_REGISTERED")
@@ -262,7 +342,7 @@ def confirm(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             target_task = after["tasks"][plan["taskId"]]; target_task["status"] = "IN_PROGRESS"
             target_task["history"].append({"at": utc_now(), "event": "C10_RUNTIME_DISPATCH_CONFIRMED", "dispatchId": dispatch_id, "windowId": confirmation["windowId"], "from": "READY", "to": "IN_PROGRESS", "by": CENTRAL_WRITER})
         result = commit_mutation(root, project_id, before, CENTRAL_WRITER, "C10_CONFIRM_RUNTIME_DISPATCH", {"dispatchId": dispatch_id, "taskId": plan["taskId"], "windowId": confirmation["windowId"], "subAgentCount": len(confirmation["agents"])}, mutate)
-        artifact = {"schemaVersion": SCHEMA_VERSION, "recordType": "C10_DISPATCH_CONFIRMATION", "dispatchId": dispatch_id, "confirmedAt": utc_now(), "projectId": project_id, "taskId": plan["taskId"], "windowId": confirmation["windowId"], "runtimeThreadRef": confirmation["runtimeThreadRef"], "subAgents": confirmation["agents"], "sourceConfirmationDigest": confirmation_digest, "ledgerReceiptId": result["receiptId"], "boundary": {"runtimeConfirmed": True, "taskStatus": "IN_PROGRESS", "businessWritePerformed": False, "completionMustReturnToParentWindow": True}}
+        artifact = {"schemaVersion": SCHEMA_VERSION, "recordType": "C10_DISPATCH_CONFIRMATION", "dispatchId": dispatch_id, "confirmedAt": utc_now(), "projectId": project_id, "taskId": plan["taskId"], "windowId": confirmation["windowId"], "runtimeThreadRef": confirmation["runtimeThreadRef"], "runtimeProjectId": confirmation["runtimeProjectId"], "runtimeCwd": confirmation["runtimeCwd"], "environmentType": confirmation["environmentType"], "authorizationScope": plan["authorizationScope"], "subAgents": confirmation["agents"], "sourceConfirmationDigest": confirmation_digest, "ledgerReceiptId": result["receiptId"], "boundary": {"runtimeConfirmed": True, "projectAssociationVerified": True, "taskStatus": "IN_PROGRESS", "businessWritePerformed": False, "completionMustReturnToParentWindow": True}}
         write_exclusive(target, artifact)
     return {"status": "RUNTIME_DISPATCH_CONFIRMED", "dispatchId": dispatch_id, "windowId": confirmation["windowId"], "subAgentCount": len(confirmation["agents"]), "taskStatus": "IN_PROGRESS", "ledgerReceiptId": result["receiptId"], "writePerformed": True, "dispatchPerformed": True, "businessWritePerformed": False}, 0
 
@@ -299,11 +379,13 @@ def export_fallback(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         "taskId": plan["taskId"],
         "createdAt": utc_now(),
         "model": plan["windowAction"]["model"],
+        "runtimeTarget": plan["runtimeTarget"],
         "windowActionRequested": plan["windowAction"],
         "subAgents": plan["subAgents"],
         "taskPackage": plan["taskPackage"],
         "copyablePrompt": (
-            "请按以下已批准任务包执行。先复述目标、边界、写入占用和硬停条件；"
+            "请在派发单指定的 Codex 保存项目中按以下已批准任务包执行，不要另建自定义任务目录。"
+            "先复述目标、边界、写入占用和硬停条件；"
             "不得扩大范围，不得自行宣布 DONE。任务包：\n"
             + json.dumps(plan["taskPackage"], ensure_ascii=False, indent=2, sort_keys=True)
         ),

@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["returnSchemaVersion", "recordType", "dispatchId", "subAgentId", "returnId", "submittedToWindowId", "status", "evidenceRefs", "unresolvedRefs"],
   "properties": {
-    "returnSchemaVersion": { "const": "0.10.0" },
+    "returnSchemaVersion": { "const": "0.14.0" },
     "recordType": { "const": "C10_SUB_AGENT_RETURN" },
     "dispatchId": { "type": "string" },
     "subAgentId": { "type": "string" },

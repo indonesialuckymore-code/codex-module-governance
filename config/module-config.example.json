@@ -1,6 +1,6 @@
 {
   "$schema": "../schemas/module-config.schema.json",
-  "schemaVersion": "0.12.0",
+  "schemaVersion": "0.14.0",
   "module": {
     "id": "replace-with-module-id",
     "displayName": "Codex 模块"
@@ -68,6 +68,10 @@
   },
   "dispatch": {
     "requireTwoPhaseRuntimeConfirmation": true,
+    "allowPlanScopedBatchApproval": true,
+    "releaseApprovedWavesWhenDependenciesDone": true,
+    "requireSavedCodexProjectTarget": true,
+    "maxThreadsPerMonitoringBatch": 8,
     "greenSharedReadParallel": true,
     "yellowIsolatedWriteAllowed": true,
     "redConflictHardStop": true,

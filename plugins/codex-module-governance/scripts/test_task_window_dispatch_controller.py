@@ -40,9 +40,14 @@ def setup_ready(root, requests=None, window_mode="AUTO", window_id=None):
 
 def dispatch_request(agents=None, approved=True, dispatch_id="dispatch-c10-001"):
     return {
-        "dispatchSchemaVersion": "0.10.0", "recordType": "C10_DISPATCH_REQUEST", "dispatchId": dispatch_id,
+        "dispatchSchemaVersion": "0.14.0", "recordType": "C10_DISPATCH_REQUEST", "dispatchId": dispatch_id,
         "projectId": fixture.PROJECT_ID, "packageId": fixture.PACKAGE_ID, "reviewId": fixture.REVIEW_ID, "taskId": fixture.TASK_ID,
-        "bossDispatchAuthorization": {"status": "APPROVED" if approved else "PENDING", "reference": "boss-dispatch-c10"},
+        "runtimeProject": {"codexProjectId": "codex-project-001", "projectPath": "/tmp/fictional-project", "isGitRepository": True, "environment": "WORKTREE"},
+        "bossDispatchAuthorization": {
+            "status": "APPROVED" if approved else "PENDING",
+            "reference": "boss-dispatch-c10",
+            "scope": {"type": "EXECUTION_MAP", "scopeId": "central-plan-001", "scopeDigest": "a" * 64, "waveId": "wave-01", "taskIds": [fixture.TASK_ID]},
+        },
         "subAgents": agents or [],
     }
 
@@ -52,8 +57,8 @@ def prepare(root, payload):
     return invoke(C10, ["--data-root", str(root), "--project-id", fixture.PROJECT_ID, "--writer-id", "codex-module-central", "prepare", "--package-id", fixture.PACKAGE_ID, "--review-id", fixture.REVIEW_ID, "--request", str(path)])
 
 
-def confirmation(window_id="window-c10-001", reused=False, agents=None):
-    return {"confirmationSchemaVersion": "0.10.0", "recordType": "C10_RUNTIME_CONFIRMATION", "dispatchId": "dispatch-c10-001", "taskWindow": {"status": "REUSED" if reused else "CREATED", "windowId": window_id, "runtimeThreadRef": "thread-c10-001"}, "subAgents": agents or []}
+def confirmation(window_id="window-c10-001", reused=False, agents=None, project_id="codex-project-001", cwd="/tmp/.codex/worktrees/abcd/fictional-project", environment="WORKTREE"):
+    return {"confirmationSchemaVersion": "0.14.0", "recordType": "C10_RUNTIME_CONFIRMATION", "dispatchId": "dispatch-c10-001", "taskWindow": {"status": "REUSED" if reused else "CREATED", "windowId": window_id, "runtimeThreadRef": "thread-c10-001", "runtimeProjectId": project_id, "runtimeCwd": cwd, "environmentType": environment}, "subAgents": agents or []}
 
 
 def confirm(root, value):
@@ -66,7 +71,7 @@ def export_fallback(root):
 
 
 def return_payload(agent_id, status="NEEDS_REVIEW", return_id=None):
-    return {"returnSchemaVersion": "0.10.0", "recordType": "C10_SUB_AGENT_RETURN", "dispatchId": "dispatch-c10-001", "subAgentId": agent_id, "returnId": return_id or f"return-{agent_id}", "submittedToWindowId": "window-c10-001", "status": status, "evidenceRefs": [f"evidence-{agent_id}"], "unresolvedRefs": []}
+    return {"returnSchemaVersion": "0.14.0", "recordType": "C10_SUB_AGENT_RETURN", "dispatchId": "dispatch-c10-001", "subAgentId": agent_id, "returnId": return_id or f"return-{agent_id}", "submittedToWindowId": "window-c10-001", "status": status, "evidenceRefs": [f"evidence-{agent_id}"], "unresolvedRefs": []}
 
 
 class C10Tests(unittest.TestCase):
@@ -75,6 +80,8 @@ class C10Tests(unittest.TestCase):
             root = Path(temp) / "private"; setup_ready(root, [{"objectKey": "service:shared", "conflictKey": "service:shared", "resourceClass": "SERVICE", "intent": "READ", "exclusive": False}])
             code, output = prepare(root, dispatch_request())
             self.assertEqual(code, 0, output); self.assertEqual(output["trafficLight"], "GREEN"); self.assertFalse(output["dispatchPerformed"])
+            self.assertEqual(output["runtimeTarget"], {"type": "project", "projectId": "codex-project-001", "environment": {"type": "worktree"}})
+            self.assertEqual(output["authorizationScope"]["type"], "EXECUTION_MAP")
 
     def test_yellow_isolated_write_plan(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -97,6 +104,12 @@ class C10Tests(unittest.TestCase):
             root = Path(temp) / "private"; setup_ready(root)
             code, output = prepare(root, dispatch_request(approved=False))
             self.assertEqual(code, 2); self.assertEqual(output["reason"], "C10_EXPLICIT_BOSS_DISPATCH_APPROVAL_REQUIRED")
+
+    def test_task_must_be_inside_batch_authorization_scope(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "private"; setup_ready(root); payload = dispatch_request(); payload["bossDispatchAuthorization"]["scope"]["taskIds"] = ["C-OTHER"]
+            code, output = prepare(root, payload)
+            self.assertEqual(code, 2); self.assertEqual(output["reason"], "C10_TASK_OUTSIDE_BOSS_AUTHORIZATION_SCOPE")
 
     def test_max_three_first_level_agents(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -125,6 +138,21 @@ class C10Tests(unittest.TestCase):
             self.assertEqual(code, 0, output); self.assertEqual(output["taskStatus"], "IN_PROGRESS")
             ledger = json.loads((root / "module-ledgers" / fixture.PROJECT_ID / "ledger.json").read_text())
             self.assertEqual(ledger["windows"]["window-c10-001"]["model"], "gpt-5.6-terra"); self.assertEqual(ledger["subAgents"]["agent-c10-001"]["level"], 1)
+            self.assertEqual(ledger["windows"]["window-c10-001"]["runtimeProjectId"], "codex-project-001")
+
+    def test_wrong_codex_project_is_not_registered(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "private"; setup_ready(root); self.assertEqual(prepare(root, dispatch_request())[0], 0)
+            ledger_path = root / "module-ledgers" / fixture.PROJECT_ID / "ledger.json"; before = ledger_path.read_bytes()
+            code, output = confirm(root, confirmation(project_id="wrong-project"))
+            self.assertEqual(code, 2); self.assertEqual(output["reason"], "C10_RUNTIME_PROJECT_ASSOCIATION_MISMATCH"); self.assertEqual(before, ledger_path.read_bytes())
+
+    def test_custom_directory_is_not_accepted_as_project_worktree(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "private"; setup_ready(root); self.assertEqual(prepare(root, dispatch_request())[0], 0)
+            ledger_path = root / "module-ledgers" / fixture.PROJECT_ID / "ledger.json"; before = ledger_path.read_bytes()
+            code, output = confirm(root, confirmation(cwd="/tmp/custom/c001"))
+            self.assertEqual(code, 2); self.assertEqual(output["reason"], "C10_NONSTANDARD_WORKTREE_TASK_LOCATION"); self.assertEqual(before, ledger_path.read_bytes())
 
     def test_partial_runtime_confirmation_writes_nothing(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -178,7 +206,7 @@ class C10Tests(unittest.TestCase):
             code, output = export_fallback(root)
             self.assertEqual(code, 0, output); self.assertEqual(output["status"], "READY_FOR_MANUAL_COPY"); self.assertFalse(output["dispatchPerformed"]); self.assertEqual(before, ledger_path.read_bytes())
             artifact = json.loads(Path(output["artifact"]).read_text(encoding="utf-8"))
-            self.assertIn("请按以下已批准任务包执行", artifact["copyablePrompt"]); self.assertFalse(artifact["boundary"]["ledgerUpdated"])
+            self.assertIn("Codex 保存项目", artifact["copyablePrompt"]); self.assertEqual(artifact["runtimeTarget"]["type"], "project"); self.assertFalse(artifact["boundary"]["ledgerUpdated"])
             code, second = export_fallback(root); self.assertEqual(code, 0); self.assertEqual(second["status"], "IDEMPOTENT_MANUAL_FALLBACK_PACKAGE")
 
     def test_manual_fallback_refuses_after_runtime_confirmation(self):

@@ -6,10 +6,22 @@
   "additionalProperties": false,
   "required": ["confirmationSchemaVersion", "recordType", "dispatchId", "taskWindow", "subAgents"],
   "properties": {
-    "confirmationSchemaVersion": { "const": "0.10.0" },
+    "confirmationSchemaVersion": { "const": "0.14.0" },
     "recordType": { "const": "C10_RUNTIME_CONFIRMATION" },
     "dispatchId": { "type": "string" },
-    "taskWindow": { "type": "object" },
+    "taskWindow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "windowId", "runtimeThreadRef", "runtimeProjectId", "runtimeCwd", "environmentType"],
+      "properties": {
+        "status": { "enum": ["CREATED", "REUSED"] },
+        "windowId": { "type": "string" },
+        "runtimeThreadRef": { "type": "string" },
+        "runtimeProjectId": { "type": "string" },
+        "runtimeCwd": { "type": "string" },
+        "environmentType": { "enum": ["LOCAL", "WORKTREE"] }
+      }
+    },
     "subAgents": { "type": "array", "maxItems": 3 }
   }
 }

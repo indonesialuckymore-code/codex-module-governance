@@ -268,7 +268,7 @@ def status(registry: Dict[str, Any]) -> Dict[str, Any]:
         "pendingStages": [],
         "models": {"central": CENTRAL_MODEL, "taskWindow": TASK_MODEL, "subAgent": TASK_MODEL},
         "subAgentPolicy": {"maxConcurrentFirstLevel": 3, "allowGrandchildren": False},
-        "boundaries": {"naturalLanguageGatewayAvailable": True, "twoPhaseDispatchAvailable": True, "runtimeConfirmationRequired": True, "businessExecutionAvailable": False},
+        "boundaries": {"naturalLanguageGatewayAvailable": True, "onePassExecutionMapAvailable": True, "scopedBatchApprovalAvailable": True, "twoPhaseDispatchAvailable": True, "projectBoundDispatchRequired": True, "runtimeConfirmationRequired": True, "businessExecutionAvailable": False},
         "registryDigest": canonical_digest(registry),
     }
 
