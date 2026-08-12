@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-sub-agent-return.schema.json",
+  "title": "C10 first-level sub-agent return",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["returnSchemaVersion", "recordType", "dispatchId", "subAgentId", "returnId", "submittedToWindowId", "status", "evidenceRefs", "unresolvedRefs"],
+  "properties": {
+    "returnSchemaVersion": { "const": "0.10.0" },
+    "recordType": { "const": "C10_SUB_AGENT_RETURN" },
+    "dispatchId": { "type": "string" },
+    "subAgentId": { "type": "string" },
+    "returnId": { "type": "string" },
+    "submittedToWindowId": { "type": "string" },
+    "status": { "enum": ["NEEDS_REVIEW", "PARTIAL", "BLOCKED"] },
+    "evidenceRefs": { "type": "array", "items": { "type": "string" } },
+    "unresolvedRefs": { "type": "array", "items": { "type": "string" } }
+  }
+}

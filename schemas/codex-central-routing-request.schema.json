@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["requestSchemaVersion", "recordType", "requestId", "submittedBy", "projectId", "intent", "executionMode", "bossAuthorization", "contextRefs"],
   "properties": {
-    "requestSchemaVersion": { "const": "0.9.0" },
+    "requestSchemaVersion": { "const": "0.10.0" },
     "recordType": { "const": "C09_CENTRAL_ROUTING_REQUEST" },
     "requestId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$" },
     "submittedBy": { "const": "boss" },

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-runtime-dispatch-confirmation.schema.json",
+  "title": "C10 runtime dispatch confirmation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["confirmationSchemaVersion", "recordType", "dispatchId", "taskWindow", "subAgents"],
+  "properties": {
+    "confirmationSchemaVersion": { "const": "0.10.0" },
+    "recordType": { "const": "C10_RUNTIME_CONFIRMATION" },
+    "dispatchId": { "type": "string" },
+    "taskWindow": { "type": "object" },
+    "subAgents": { "type": "array", "maxItems": 3 }
+  }
+}

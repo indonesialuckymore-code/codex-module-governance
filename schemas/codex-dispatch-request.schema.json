@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-dispatch-request.schema.json",
+  "title": "C10 dispatch request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["dispatchSchemaVersion", "recordType", "dispatchId", "projectId", "packageId", "reviewId", "taskId", "bossDispatchAuthorization", "subAgents"],
+  "properties": {
+    "dispatchSchemaVersion": { "const": "0.10.0" },
+    "recordType": { "const": "C10_DISPATCH_REQUEST" },
+    "dispatchId": { "type": "string" },
+    "projectId": { "type": "string" },
+    "packageId": { "type": "string" },
+    "reviewId": { "type": "string" },
+    "taskId": { "type": "string" },
+    "bossDispatchAuthorization": { "type": "object" },
+    "subAgents": { "type": "array", "maxItems": 3 }
+  }
+}

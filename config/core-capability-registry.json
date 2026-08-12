@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "0.9.0",
+  "schemaVersion": "0.10.0",
   "recordType": "C09_CORE_CAPABILITY_REGISTRY",
   "canonicalCentralSkill": "central-construction-controller",
   "capabilities": [
@@ -58,14 +58,16 @@
       "skill": "central-construction-controller",
       "script": "central_construction_controller.py",
       "status": "READY"
+    },
+    {
+      "stage": "C10",
+      "role": "EXECUTOR",
+      "skill": "task-window-dispatch-controller",
+      "script": "task_window_dispatch_controller.py",
+      "status": "READY"
     }
   ],
   "pendingCapabilities": [
-    {
-      "stage": "C10",
-      "capability": "actual-task-window-and-sub-agent-dispatch",
-      "status": "NOT_IMPLEMENTED"
-    },
     {
       "stage": "C11",
       "capability": "external-skill-slot-management",

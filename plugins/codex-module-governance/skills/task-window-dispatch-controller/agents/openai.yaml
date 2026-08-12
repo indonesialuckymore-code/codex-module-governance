@@ -1,0 +1,4 @@
+interface:
+  display_name: "任务窗口调度控制器"
+  short_description: "按绿黄红门禁派发 Terra 任务窗口和最多三个一级子 Agent。"
+  default_prompt: "使用 $task-window-dispatch-controller 验证 Boss 批准、C04 任务包、C05 占用和恢复状态；先准备派发单，真实运行成功后再登记总账。"

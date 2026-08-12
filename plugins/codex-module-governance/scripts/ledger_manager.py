@@ -472,7 +472,7 @@ def register_sub_agent(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             raise LedgerError("SUB_AGENT_ID_ALREADY_EXISTS")
         if window_id not in ledger["windows"]:
             raise LedgerError("WINDOW_NOT_FOUND")
-        active = [agent for agent in ledger["subAgents"].values() if agent["windowId"] == window_id and agent["status"] == "REGISTERED"]
+        active = [agent for agent in ledger["subAgents"].values() if agent["windowId"] == window_id and agent["status"] in {"REGISTERED", "FROZEN", "DISCONNECTED"}]
         if len(active) >= 3:
             raise LedgerError("FIRST_LEVEL_SUB_AGENT_LIMIT_REACHED")
         ledger["subAgents"][sub_agent_id] = {

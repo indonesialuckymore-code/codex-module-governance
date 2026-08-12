@@ -56,7 +56,7 @@ def request(intent, mode="READ_ONLY", project=PROJECT, approved=False, **refs):
     context = {"taskId": None, "packageId": None, "validationId": None, "recoveryCaseId": None, "windowId": None}
     context.update(refs)
     return {
-        "requestSchemaVersion": "0.9.0",
+        "requestSchemaVersion": "0.10.0",
         "recordType": "C09_CENTRAL_ROUTING_REQUEST",
         "requestId": f"request-{intent.lower().replace('_', '-')}",
         "submittedBy": "boss",
@@ -144,23 +144,23 @@ class C09Tests(unittest.TestCase):
             self.assertEqual(output["routeStatus"], "ROUTED_APPLY_REQUIRES_DOWNSTREAM_GATE")
             self.assertTrue(output["boundaries"]["downstreamGatesStillRequired"])
 
-    def test_task_window_dispatch_is_blocked_until_c10(self):
+    def test_task_window_dispatch_routes_to_c10(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "private-data"; setup_project(root)
             code, output = route(root, request("DISPATCH_TASK_WINDOW", mode="APPLY", approved=True, packageId="package-c09-001"))
             self.assertEqual(code, 0, output)
-            self.assertEqual(output["routeStatus"], "BLOCKED_CAPABILITY_NOT_IMPLEMENTED")
+            self.assertEqual(output["routeStatus"], "ROUTED_APPLY_REQUIRES_C10_GATES")
             self.assertEqual(output["targetStage"], "C10")
             self.assertFalse(output["boundaries"]["dispatchPerformed"])
 
-    def test_sub_agent_dispatch_is_blocked_until_c10(self):
+    def test_sub_agent_dispatch_routes_to_c10(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "private-data"; setup_project(root)
             code, output = route(root, request("DISPATCH_SUB_AGENT", mode="APPLY", approved=True, windowId="window-c09-001"))
             self.assertEqual(code, 0, output)
-            self.assertEqual(output["routeStatus"], "BLOCKED_CAPABILITY_NOT_IMPLEMENTED")
+            self.assertEqual(output["routeStatus"], "ROUTED_APPLY_REQUIRES_C10_GATES")
 
-    def test_business_resume_is_blocked_until_c10(self):
+    def test_business_resume_still_requires_recovery_review(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "private-data"; setup_project(root)
             code, output = route(root, request("RESUME_BUSINESS_EXECUTION", mode="APPLY", approved=True))

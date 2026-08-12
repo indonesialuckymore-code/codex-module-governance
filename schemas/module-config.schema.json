@@ -4,9 +4,9 @@
   "title": "Codex Module Governance configuration",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "module", "models", "subAgentPolicy", "storage", "projectInitialization", "ledger", "occupancy", "validation", "adjudication", "recovery", "centralIntegration", "publishing"],
+  "required": ["schemaVersion", "module", "models", "subAgentPolicy", "storage", "projectInitialization", "ledger", "occupancy", "validation", "adjudication", "recovery", "centralIntegration", "dispatch", "publishing"],
   "properties": {
-    "schemaVersion": { "const": "0.9.0" },
+    "schemaVersion": { "const": "0.10.0" },
     "module": {
       "type": "object",
       "additionalProperties": false,
@@ -124,7 +124,20 @@
         "recoveryOverridesNormalRouting": { "const": true },
         "requireDownstreamGates": { "const": true },
         "allowDirectBusinessExecution": { "const": false },
-        "actualDispatchAvailable": { "const": false }
+        "actualDispatchAvailable": { "const": true }
+      }
+    },
+    "dispatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requireTwoPhaseRuntimeConfirmation", "greenSharedReadParallel", "yellowIsolatedWriteAllowed", "redConflictHardStop", "subAgentsReturnToParentWindowOnly", "allowSubAgentDoneDeclaration"],
+      "properties": {
+        "requireTwoPhaseRuntimeConfirmation": { "const": true },
+        "greenSharedReadParallel": { "const": true },
+        "yellowIsolatedWriteAllowed": { "const": true },
+        "redConflictHardStop": { "const": true },
+        "subAgentsReturnToParentWindowOnly": { "const": true },
+        "allowSubAgentDoneDeclaration": { "const": false }
       }
     },
     "publishing": {

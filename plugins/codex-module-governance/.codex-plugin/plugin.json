@@ -1,7 +1,7 @@
 {
   "name": "codex-module-governance",
-  "version": "0.9.0",
-  "description": "Private Codex governance with one central entry, deterministic routing, verified ledgers, validation, adjudication, and recovery controls.",
+  "version": "0.10.0",
+  "description": "Private Codex governance with one central entry, two-phase task dispatch, verified ledgers, validation, adjudication, and recovery controls.",
   "author": {
     "name": "QIANYI"
   },
@@ -10,10 +10,10 @@
   "interface": {
     "displayName": "Codex 模块治理",
     "shortDescription": "私有多任务施工治理、建档与工程总账。",
-    "longDescription": "以唯一中央入口统筹 Codex 模块的私有建档、唯一工程总账、原子占用、独立验收、Boss 裁定和失联恢复；不直接施工。",
+    "longDescription": "以唯一中央入口统筹 Codex 模块的私有建档、唯一工程总账、原子占用、两段式任务调度、独立验收、Boss 裁定和失联恢复；不直接修改业务系统。",
     "developerName": "QIANYI",
     "category": "Productivity",
-    "capabilities": ["Single central governance entry", "Deterministic C02-C08 routing", "Verified module ledger", "Atomic occupancy review", "Independent validation", "Boss-controlled adjudication", "Disconnection recovery control"],
-    "defaultPrompt": "作为唯一 Codex 模块中央，先读取工程总账和恢复状态，再把 Boss 的要求路由到 C02-C08；不要直接施工，C10 完成前不要真实派发。"
+    "capabilities": ["Single central governance entry", "Deterministic C02-C10 routing", "Two-phase task-window dispatch", "First-level sub-agent control", "Verified module ledger", "Atomic occupancy review", "Independent validation", "Boss-controlled adjudication", "Disconnection recovery control"],
+    "defaultPrompt": "作为唯一 Codex 模块中央，先读取工程总账和恢复状态，再把 Boss 的要求路由到 C02-C10；派发必须经过 Boss 批准、C05 占用和真实运行确认。"
   }
 }

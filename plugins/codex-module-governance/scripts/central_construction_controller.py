@@ -15,7 +15,7 @@ from initialize_project import C02Error, PROJECT_ID_PATTERN, load_data_root
 from ledger_manager import LedgerError, load_ledger
 
 
-SCHEMA_VERSION = "0.9.0"
+SCHEMA_VERSION = "0.10.0"
 CENTRAL_SKILL = "central-construction-controller"
 CENTRAL_MODEL = "gpt-5.6-sol"
 TASK_MODEL = "gpt-5.6-terra"
@@ -34,6 +34,7 @@ EXPECTED = {
     "C07": ("EXECUTOR", "adjudication-request-organizer", "adjudication_request_organizer.py"),
     "C08": ("EXECUTOR", "disconnection-recovery-controller", "disconnection_recovery_controller.py"),
     "C09": ("CENTRAL", CENTRAL_SKILL, "central_construction_controller.py"),
+    "C10": ("EXECUTOR", "task-window-dispatch-controller", "task_window_dispatch_controller.py"),
 }
 
 ROUTES = {
@@ -51,7 +52,8 @@ ROUTES = {
     "RECORD_RECOVERY_DECISION": ("C08", "disconnection-recovery-controller", "RECORD_RECOVERY_DECISION"),
     "RELEASE_OCCUPANCY": ("C08", "disconnection-recovery-controller", "VERIFY_CONTROLLED_OCCUPANCY_RELEASE"),
 }
-PENDING_C10 = {"DISPATCH_TASK_WINDOW", "DISPATCH_SUB_AGENT", "RESUME_BUSINESS_EXECUTION"}
+DISPATCH_INTENTS = {"DISPATCH_TASK_WINDOW", "DISPATCH_SUB_AGENT"}
+PENDING_INTENTS = {"RESUME_BUSINESS_EXECUTION"}
 RECOVERY_INTENTS = {
     "FREEZE_DISCONNECTION", "TAKEOVER_CONTROL", "RECORD_RECOVERY_DECISION", "RELEASE_OCCUPANCY"
 }
@@ -114,7 +116,7 @@ def validate_registry(registry: Dict[str, Any], check_files: bool = True) -> Dic
         if check_files and (not (PLUGIN_SKILLS / skill / "SKILL.md").is_file() or not (PLUGIN_SCRIPTS / script).is_file()):
             raise CentralRoutingError(f"C09_{stage}_CAPABILITY_FILE_MISSING")
     pending = {entry.get("stage"): entry.get("status") for entry in registry.get("pendingCapabilities", []) if isinstance(entry, dict)}
-    if pending != {"C10": "NOT_IMPLEMENTED", "C11": "NOT_IMPLEMENTED"}:
+    if pending != {"C11": "NOT_IMPLEMENTED"}:
         raise CentralRoutingError("C09_PENDING_CAPABILITY_BOUNDARY_INVALID")
     return registry
 
@@ -139,7 +141,7 @@ def validate_request(request: Dict[str, Any]) -> Dict[str, Any]:
     if request.get("submittedBy") != "boss":
         raise CentralRoutingError("C09_REQUEST_MUST_COME_FROM_BOSS")
     intent = request.get("intent")
-    if intent not in set(ROUTES) | PENDING_C10:
+    if intent not in set(ROUTES) | DISPATCH_INTENTS | PENDING_INTENTS:
         raise CentralRoutingError("C09_INTENT_UNSUPPORTED")
     if request.get("executionMode") not in {"READ_ONLY", "PREPARE", "APPLY"}:
         raise CentralRoutingError("C09_EXECUTION_MODE_INVALID")
@@ -210,12 +212,20 @@ def route(data_root: Path, request: Dict[str, Any], registry: Dict[str, Any]) ->
             recoveryCaseId=recovery.get("caseId"),
         )
         return output
-    if intent in PENDING_C10:
+    if intent in DISPATCH_INTENTS:
+        output.update(
+            routeStatus="ROUTED_APPLY_REQUIRES_C10_GATES",
+            targetStage="C10",
+            targetSkill="task-window-dispatch-controller",
+            requiredAction="PREPARE_TWO_PHASE_RUNTIME_DISPATCH",
+        )
+        return output
+    if intent in PENDING_INTENTS:
         output.update(
             routeStatus="BLOCKED_CAPABILITY_NOT_IMPLEMENTED",
-            targetStage="C10",
+            targetStage="C08",
             targetSkill=None,
-            requiredAction="COMPLETE_AND_ACCEPT_C10_BEFORE_ACTUAL_DISPATCH_OR_RESUME",
+            requiredAction="COMPLETE_RECOVERY_REVIEW_BEFORE_BUSINESS_RESUME",
         )
         return output
     stage, skill, required_action = ROUTES[intent]
@@ -236,10 +246,10 @@ def status(registry: Dict[str, Any]) -> Dict[str, Any]:
         "canonicalCentralSkill": CENTRAL_SKILL,
         "centralEntryCount": 1,
         "readyStages": list(EXPECTED),
-        "pendingStages": ["C10", "C11"],
+        "pendingStages": ["C11"],
         "models": {"central": CENTRAL_MODEL, "taskWindow": TASK_MODEL, "subAgent": TASK_MODEL},
         "subAgentPolicy": {"maxConcurrentFirstLevel": 3, "allowGrandchildren": False},
-        "boundaries": {"actualDispatchAvailable": False, "businessExecutionAvailable": False},
+        "boundaries": {"twoPhaseDispatchAvailable": True, "runtimeConfirmationRequired": True, "businessExecutionAvailable": False},
         "registryDigest": canonical_digest(registry),
     }
 
