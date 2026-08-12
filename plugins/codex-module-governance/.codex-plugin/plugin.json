@@ -1,7 +1,7 @@
 {
   "name": "codex-module-governance",
-  "version": "0.5.0",
-  "description": "Private Codex module governance with safe registration, a verified ledger, draft task packages, and atomic occupancy checks.",
+  "version": "0.6.0",
+  "description": "Private Codex module governance with verified ledgers, task packages, occupancy checks, and independent handback validation.",
   "author": {
     "name": "QIANYI"
   },
@@ -10,10 +10,10 @@
   "interface": {
     "displayName": "Codex 模块治理",
     "shortDescription": "私有多任务施工治理、建档与工程总账。",
-    "longDescription": "为 Codex 模块提供仓库外私有建档、唯一详细工程总账、待 Boss 审阅的施工任务包和原子占用冲突检查；不直接派发或施工。",
+    "longDescription": "为 Codex 模块提供私有建档、唯一工程总账、待审任务包、原子占用检查及 Boss 最终批准前的独立回传验收；不直接施工。",
     "developerName": "QIANYI",
     "category": "Productivity",
-    "capabilities": ["Private project registration", "Verified module ledger", "Draft task packages", "Atomic occupancy review", "Duplicate detection"],
-    "defaultPrompt": "读取 Codex 模块总账、生成待审任务包，或检查经 Boss 审阅任务的占用冲突；不要实际派发或施工。"
+    "capabilities": ["Private project registration", "Verified module ledger", "Draft task packages", "Atomic occupancy review", "Independent handback validation"],
+    "defaultPrompt": "读取 Codex 模块总账、检查占用，或独立验收经 Boss 允许回传的任务证据；没有最终批准不要标记 DONE。"
   }
 }

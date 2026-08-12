@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-task-handback.schema.json",
+  "title": "C06 task-window handback",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["handbackSchemaVersion", "recordType", "handbackId", "projectId", "packageId", "c05ReviewId", "taskId", "windowId", "completionSignalId", "submittedBy", "bossHandbackAuthorization", "executedScopeRefs", "evidenceRefs", "testAndObjectRefs", "unresolvedRefs", "residualRiskRefs"],
+  "properties": {
+    "handbackSchemaVersion": { "const": "0.6.0" },
+    "recordType": { "const": "C06_TASK_WINDOW_HANDBACK" },
+    "handbackId": { "type": "string" },
+    "projectId": { "type": "string" },
+    "packageId": { "type": "string" },
+    "c05ReviewId": { "type": "string" },
+    "taskId": { "type": "string" },
+    "windowId": { "type": "string" },
+    "completionSignalId": { "type": "string" },
+    "submittedBy": { "type": "object" },
+    "bossHandbackAuthorization": { "type": "object" },
+    "executedScopeRefs": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "evidenceRefs": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "testAndObjectRefs": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "unresolvedRefs": { "type": "array", "items": { "type": "string" } },
+    "residualRiskRefs": { "type": "array", "items": { "type": "string" } }
+  }
+}

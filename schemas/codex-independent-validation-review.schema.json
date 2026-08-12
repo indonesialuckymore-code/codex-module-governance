@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-independent-validation-review.schema.json",
+  "title": "C06 independent validation review",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["reviewSchemaVersion", "recordType", "validationId", "handbackId", "taskId", "centralReviewer", "scopeAssessment", "evidenceAssessment"],
+  "properties": {
+    "reviewSchemaVersion": { "const": "0.6.0" },
+    "recordType": { "const": "C06_INDEPENDENT_VALIDATION_REVIEW" },
+    "validationId": { "type": "string" },
+    "handbackId": { "type": "string" },
+    "taskId": { "type": "string" },
+    "centralReviewer": { "type": "object" },
+    "scopeAssessment": { "type": "object" },
+    "evidenceAssessment": { "type": "object" }
+  }
+}

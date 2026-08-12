@@ -1,6 +1,6 @@
 {
   "$schema": "../schemas/module-config.schema.json",
-  "schemaVersion": "0.5.0",
+  "schemaVersion": "0.6.0",
   "module": {
     "id": "replace-with-module-id",
     "displayName": "Codex 模块"
@@ -33,6 +33,13 @@
     "atomicReservation": true,
     "allowParallelSharedRead": true,
     "dispatchOnEligible": false
+  },
+  "validation": {
+    "soleWriter": "codex-module-central",
+    "requireBossHandbackAuthorization": true,
+    "requireIndependentReadback": true,
+    "requireBossFinalApprovalForDone": true,
+    "releaseOccupancyOnDone": false
   },
   "publishing": {
     "mode": "private",

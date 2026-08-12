@@ -1,0 +1,4 @@
+interface:
+  display_name: "回传与独立验收器"
+  short_description: "核对施工回传、动态证据和 Boss 最终完成批准门槛"
+  default_prompt: "Use $independent-handover-validator to independently assess a Boss-authorized task handback before any DONE decision."

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-validation-decision.schema.json",
+  "title": "C06 independent validation decision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "recordType", "validationId", "projectId", "packageId", "c05ReviewId", "handbackId", "taskId", "windowId", "createdAt", "writerId", "outcome", "source", "bossHandbackAuthorizationRef", "scopeAssessment", "evidenceAssessment", "unresolvedRefs", "residualRiskRefs", "ledgerMutation", "completionBoundary", "receiptIds", "latestReceiptId"],
+  "properties": {
+    "schemaVersion": { "const": "0.6.0" },
+    "recordType": { "const": "C06_VALIDATION_DECISION" },
+    "validationId": { "type": "string" },
+    "projectId": { "type": "string" },
+    "packageId": { "type": "string" },
+    "c05ReviewId": { "type": "string" },
+    "handbackId": { "type": "string" },
+    "taskId": { "type": "string" },
+    "windowId": { "type": "string" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "writerId": { "const": "codex-module-central" },
+    "outcome": { "enum": ["PASS_PENDING_BOSS_APPROVAL", "NEEDS_REVIEW", "PARTIAL", "CONFLICT"] },
+    "source": { "type": "object" },
+    "bossHandbackAuthorizationRef": { "type": "string" },
+    "scopeAssessment": { "type": "object" },
+    "evidenceAssessment": { "type": "object" },
+    "unresolvedRefs": { "type": "array" },
+    "residualRiskRefs": { "type": "array" },
+    "ledgerMutation": { "type": "object" },
+    "completionBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bossFinalApprovalRequired", "doneAllowed", "doneRecorded", "testCreationAllowed", "businessWriteAllowed", "occupancyReleased"],
+      "properties": {
+        "bossFinalApprovalRequired": { "type": "boolean" },
+        "doneAllowed": { "const": false },
+        "doneRecorded": { "const": false },
+        "testCreationAllowed": { "const": false },
+        "businessWriteAllowed": { "const": false },
+        "occupancyReleased": { "const": false }
+      }
+    },
+    "receiptIds": { "const": ["receipt-000000-validate"] },
+    "latestReceiptId": { "const": "receipt-000000-validate" }
+  }
+}

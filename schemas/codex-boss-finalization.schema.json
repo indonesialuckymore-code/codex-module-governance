@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-boss-finalization.schema.json",
+  "title": "C06 Boss finalization",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "recordType", "validationId", "projectId", "taskId", "createdAt", "writerId", "validationDecisionDigest", "bossDecision", "bossDecisionRef", "ledgerMutation", "executionBoundary"],
+  "properties": {
+    "schemaVersion": { "const": "0.6.0" },
+    "recordType": { "const": "C06_BOSS_FINALIZATION" },
+    "validationId": { "type": "string" },
+    "projectId": { "type": "string" },
+    "taskId": { "type": "string" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "writerId": { "const": "codex-module-central" },
+    "validationDecisionDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "bossDecision": { "enum": ["APPROVED", "REJECTED"] },
+    "bossDecisionRef": { "type": "string" },
+    "ledgerMutation": { "type": "object" },
+    "executionBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["doneRecorded", "testCreated", "businessWritePerformed", "occupancyReleased"],
+      "properties": {
+        "doneRecorded": { "type": "boolean" },
+        "testCreated": { "const": false },
+        "businessWritePerformed": { "const": false },
+        "occupancyReleased": { "const": false }
+      }
+    }
+  }
+}
