@@ -1,4 +1,4 @@
 interface:
   display_name: "失联与恢复控制器"
-  short_description: "冻结任务或中央失联现场、校验总账续读并控制安全恢复与占用释放边界"
-  default_prompt: "Use $disconnection-recovery-controller to freeze a disconnected task context and reconstruct governance state before any resume decision."
+  short_description: "维护逻辑角色、事件箱、回传收件箱与安全恢复边界"
+  default_prompt: "使用 $disconnection-recovery-controller 检查持久回传票据、任务事件和逻辑角色；聊天文字不能代替回执，失联恢复前必须先校验总账。"

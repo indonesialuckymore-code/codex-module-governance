@@ -33,10 +33,12 @@ from occupancy_conflict_checker import OccupancyError, verify_decision_data as v
 from task_package_generator import TaskPackageError, load_package, verify_package
 
 
-SCHEMA_VERSION = "0.7.0"
+SCHEMA_VERSION = "0.8.0"
 C10_SCHEMA_VERSION = "0.15.0"
 DISPATCHES_DIRECTORY = Path("dispatches")
 VALIDATIONS_DIRECTORY = Path("handover-validations")
+RETURN_ROOT = Path("return-inbox")
+RETURN_SCHEMA_VERSION = "0.18.0"
 DECISION_FILENAME = "validation-decision.json"
 FINALIZATION_FILENAME = "boss-finalization.json"
 RECEIPTS_DIRECTORY = "receipts"
@@ -140,9 +142,110 @@ def load_json_inside_data_root(raw_path: str, data_root: Path, missing_error: st
     return raw, canonical_digest(raw)
 
 
+def require_return_ticket_id(value: Any, error: str) -> str:
+    ticket_id = require_reference(value, error)
+    if len(ticket_id) > 96:
+        raise HandoverValidationError(error)
+    return ticket_id
+
+
+def return_ticket_root(data_root: Path, project_id: str, ticket_id: str) -> Path:
+    return data_root / RETURN_ROOT / project_id / "tickets" / ticket_id
+
+
+def return_submission_path(data_root: Path, project_id: str, ticket_id: str) -> Path:
+    return return_ticket_root(data_root, project_id, ticket_id) / "submission.json"
+
+
+def return_submission_receipt_path(data_root: Path, project_id: str, ticket_id: str) -> Path:
+    return return_ticket_root(data_root, project_id, ticket_id) / "receipt-000000-submission.json"
+
+
+def return_delivery_path(data_root: Path, project_id: str, ticket_id: str) -> Path:
+    return return_ticket_root(data_root, project_id, ticket_id) / "receipt-000001-delivery.json"
+
+
+def return_policy_path(data_root: Path, project_id: str, policy_id: str) -> Path:
+    return data_root / RETURN_ROOT / project_id / "policies" / f"{policy_id}.json"
+
+
+def return_policy_receipt_path(data_root: Path, project_id: str, policy_id: str) -> Path:
+    return data_root / RETURN_ROOT / project_id / "policies" / f"{policy_id}.receipt.json"
+
+
+def load_return_ticket_submission(data_root: Path, project_id: str, ticket_id: str) -> Dict[str, Any]:
+    ticket_id = require_return_ticket_id(ticket_id, "C06_RETURN_TICKET_ID_INVALID")
+    try:
+        submission = json.loads(return_submission_path(data_root, project_id, ticket_id).read_text(encoding="utf-8"))
+        receipt = json.loads(return_submission_receipt_path(data_root, project_id, ticket_id).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raise HandoverValidationError("C06_RETURN_TICKET_NOT_QUEUED")
+    required = {
+        "returnSchemaVersion", "recordType", "createdAt", "projectId", "returnTicketId", "handbackId", "taskId", "windowId",
+        "completionSignalId", "sourceWindow", "routeRevisionSeen", "sourceHandbackRelativePath", "sourceHandbackDigest", "boundary",
+    }
+    receipt_required = {"returnSchemaVersion", "recordType", "createdAt", "projectId", "returnTicketId", "submissionDigest", "submission"}
+    if not isinstance(submission, dict) or set(submission) != required or submission.get("returnSchemaVersion") != RETURN_SCHEMA_VERSION or submission.get("recordType") != "C08_RETURN_SUBMISSION" or submission.get("projectId") != project_id or submission.get("returnTicketId") != ticket_id or not isinstance(receipt, dict) or set(receipt) != receipt_required or receipt.get("returnSchemaVersion") != RETURN_SCHEMA_VERSION or receipt.get("recordType") != "C08_IMMUTABLE_RETURN_SUBMISSION_RECEIPT" or receipt.get("projectId") != project_id or receipt.get("returnTicketId") != ticket_id or receipt.get("submission") != submission or receipt.get("submissionDigest") != canonical_digest(submission):
+        raise HandoverValidationError("C06_RETURN_TICKET_INTEGRITY_INVALID")
+    return submission
+
+
+def verify_return_ticket(data_root: Path, project_id: str, handback: Dict[str, Any], handback_digest: str) -> Dict[str, Any]:
+    ticket_id = handback["returnTicketId"]
+    submission = load_return_ticket_submission(data_root, project_id, ticket_id)
+    try:
+        delivery = json.loads(return_delivery_path(data_root, project_id, ticket_id).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raise HandoverValidationError("C06_RETURN_TICKET_NOT_QUEUED")
+    delivery_required = {"returnSchemaVersion", "recordType", "createdAt", "projectId", "returnTicketId", "eventId", "eventDigest", "eventReceiptDigest", "submissionDigest", "boundary"}
+    if not isinstance(delivery, dict):
+        raise HandoverValidationError("C06_RETURN_TICKET_INTEGRITY_INVALID")
+    try:
+        event = json.loads((data_root / "task-events" / project_id / "inbox" / f"{delivery.get('eventId')}.json").read_text(encoding="utf-8"))
+        event_receipt = json.loads((data_root / "task-events" / project_id / "receipts" / f"{delivery.get('eventId')}.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raise HandoverValidationError("C06_RETURN_TICKET_NOT_QUEUED")
+    if set(delivery) != delivery_required or delivery.get("returnSchemaVersion") != RETURN_SCHEMA_VERSION or delivery.get("recordType") != "C08_RETURN_DELIVERY_RECEIPT" or delivery.get("projectId") != project_id or delivery.get("returnTicketId") != ticket_id or delivery.get("submissionDigest") != canonical_digest(submission) or not isinstance(event, dict) or event.get("eventType") != "TASK_HANDBACK_QUEUED" or event.get("decisionRef") != ticket_id or event.get("sourceInputDigest") != canonical_digest(submission) or delivery.get("eventDigest") != canonical_digest(event) or not isinstance(event_receipt, dict) or event_receipt.get("artifact") != event or event_receipt.get("artifactDigest") != canonical_digest(event) or delivery.get("eventReceiptDigest") != canonical_digest(event_receipt):
+        raise HandoverValidationError("C06_RETURN_TICKET_INTEGRITY_INVALID")
+    pairs = {"handbackId": handback["handbackId"], "taskId": handback["taskId"], "windowId": handback["windowId"], "completionSignalId": handback["completionSignalId"]}
+    if any(submission.get(key) != value for key, value in pairs.items()) or submission.get("sourceHandbackDigest") != handback_digest:
+        raise HandoverValidationError("C06_RETURN_TICKET_HANDOFF_MISMATCH")
+    return submission
+
+
+def verify_auto_return_policy(data_root: Path, project_id: str, policy_id: str) -> Dict[str, Any]:
+    policy_id = require_return_ticket_id(policy_id, "C06_RETURN_POLICY_ID_INVALID")
+    try:
+        policy = json.loads(return_policy_path(data_root, project_id, policy_id).read_text(encoding="utf-8"))
+        receipt = json.loads(return_policy_receipt_path(data_root, project_id, policy_id).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raise HandoverValidationError("C06_RETURN_POLICY_NOT_FOUND")
+    required = {"returnSchemaVersion", "recordType", "configuredAt", "policyId", "projectId", "mode", "maxConcurrentValidations", "bossAuthorizationRef", "finalDoneRequiresBoss", "sourceInputDigest", "configuredByRole", "boundary"}
+    receipt_required = {"returnSchemaVersion", "recordType", "configuredAt", "projectId", "policyId", "artifactDigest", "artifact"}
+    if not isinstance(policy, dict) or set(policy) != required or policy.get("returnSchemaVersion") != RETURN_SCHEMA_VERSION or policy.get("recordType") != "C08_RETURN_ADMISSION_POLICY" or policy.get("projectId") != project_id or policy.get("policyId") != policy_id or policy.get("mode") != "AUTO_QUEUE_AND_VALIDATE_WITHIN_APPROVED_SCOPE" or policy.get("maxConcurrentValidations") != 1 or policy.get("finalDoneRequiresBoss") is not True or not isinstance(receipt, dict) or set(receipt) != receipt_required or receipt.get("recordType") != "C08_IMMUTABLE_RETURN_POLICY_RECEIPT" or receipt.get("artifact") != policy or receipt.get("artifactDigest") != canonical_digest(policy):
+        raise HandoverValidationError("C06_RETURN_POLICY_INTEGRITY_INVALID")
+    return policy
+
+
+def load_assessment_handback(args: argparse.Namespace, data_root: Path, project_id: str) -> Tuple[Any, str, Optional[str]]:
+    if args.handback:
+        raw, digest = load_json_inside_data_root(args.handback, data_root, "PRIVATE_C06_HANDBACK_REQUIRED_INSIDE_DATA_ROOT", "C06_HANDBACK_INVALID_JSON")
+        return raw, digest, None
+    ticket_id = require_return_ticket_id(args.return_ticket_id, "C06_RETURN_TICKET_ID_INVALID")
+    submission = load_return_ticket_submission(data_root, project_id, ticket_id)
+    candidate = (data_root / submission["sourceHandbackRelativePath"]).resolve()
+    if not candidate.is_file() or not is_within(candidate, data_root):
+        raise HandoverValidationError("C06_RETURN_TICKET_HANDBACK_UNAVAILABLE")
+    try:
+        raw = json.loads(candidate.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raise HandoverValidationError("C06_RETURN_TICKET_HANDBACK_UNAVAILABLE")
+    return raw, canonical_digest(raw), ticket_id
+
+
 def validate_handback(payload: Any, project_id: str, package_id: str) -> Dict[str, Any]:
     required = {
-        "handbackSchemaVersion", "recordType", "handbackId", "projectId", "packageId", "c05ReviewId",
+        "handbackSchemaVersion", "recordType", "handbackId", "returnTicketId", "routeRevisionSeen", "projectId", "packageId", "c05ReviewId",
         "taskId", "windowId", "completionSignalId", "submittedBy", "bossHandbackAuthorization",
         "executedScopeRefs", "evidenceRefs", "testAndObjectRefs", "parentQualityReviewRefs", "unresolvedRefs", "residualRiskRefs",
     }
@@ -161,10 +264,14 @@ def validate_handback(payload: Any, project_id: str, package_id: str) -> Dict[st
     authorization = require_exact_object(
         handback["bossHandbackAuthorization"], {"status", "reference"}, "C06_BOSS_HANDBACK_AUTHORIZATION_INVALID"
     )
-    if str(authorization["status"]).upper() not in {"APPROVED", "REQUIRED", "REJECTED"}:
+    if str(authorization["status"]).upper() not in {"APPROVED", "REQUIRED", "REJECTED", "AUTO_APPROVED_BY_RETURN_POLICY"}:
         raise HandoverValidationError("C06_BOSS_HANDBACK_AUTHORIZATION_INVALID")
+    if not isinstance(handback["routeRevisionSeen"], int) or handback["routeRevisionSeen"] < 1:
+        raise HandoverValidationError("C06_RETURN_ROUTE_REVISION_INVALID")
     return {
         "handbackId": require_reference(handback["handbackId"], "C06_HANDBACK_ID_INVALID"),
+        "returnTicketId": require_return_ticket_id(handback["returnTicketId"], "C06_RETURN_TICKET_ID_INVALID"),
+        "routeRevisionSeen": handback["routeRevisionSeen"],
         "projectId": project_id,
         "packageId": package_id,
         "c05ReviewId": require_reference(handback["c05ReviewId"], "C05_REVIEW_ID_INVALID"),
@@ -401,6 +508,7 @@ def build_decision(
         "source": {
             "packageDigest": canonical_digest(package), "c05DecisionDigest": canonical_digest(c05_decision),
             "handbackDigest": handback_digest, "reviewDigest": review_digest,
+            "returnTicketId": handback["returnTicketId"],
             "parentQualityReviewRefs": handback["parentQualityReviewRefs"],
             "beforeLedgerRevision": before["revision"], "beforeLedgerDigest": canonical_digest(before),
         },
@@ -499,10 +607,11 @@ def assess(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     package_id = require_reference(args.package_id, "TASK_PACKAGE_ID_INVALID")
     if not PROJECT_ID_PATTERN.fullmatch(project_id) or not PROJECT_ID_PATTERN.fullmatch(package_id):
         raise HandoverValidationError("C06_PROJECT_OR_PACKAGE_ID_INVALID")
-    raw_handback, handback_digest = load_json_inside_data_root(
-        args.handback, data_root, "PRIVATE_C06_HANDBACK_REQUIRED_INSIDE_DATA_ROOT", "C06_HANDBACK_INVALID_JSON"
-    )
+    raw_handback, handback_digest, requested_ticket_id = load_assessment_handback(args, data_root, project_id)
     handback = validate_handback(raw_handback, project_id, package_id)
+    if requested_ticket_id and handback["returnTicketId"] != requested_ticket_id:
+        raise HandoverValidationError("C06_RETURN_TICKET_HANDOFF_MISMATCH")
+    verify_return_ticket(data_root, project_id, handback, handback_digest)
     raw_review, review_digest = load_json_inside_data_root(
         args.review, data_root, "PRIVATE_C06_REVIEW_REQUIRED_INSIDE_DATA_ROOT", "C06_REVIEW_INVALID_JSON"
     )
@@ -519,7 +628,11 @@ def assess(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             result["decisionOutcome"] = decision["outcome"]
             return result, 0
     package, c05_decision, ledger = verified_sources(data_root, project_id, package_id, handback)
-    if handback["bossHandbackAuthorization"]["status"] != "APPROVED":
+    authorization_status = handback["bossHandbackAuthorization"]["status"]
+    automatic_policy = authorization_status == "AUTO_APPROVED_BY_RETURN_POLICY"
+    if automatic_policy:
+        verify_auto_return_policy(data_root, project_id, handback["bossHandbackAuthorization"]["reference"])
+    if authorization_status != "APPROVED" and not automatic_policy:
         if args.apply:
             raise HandoverValidationError("C06_BOSS_HANDBACK_AUTHORIZATION_REQUIRED")
         return {
@@ -806,7 +919,9 @@ def parse_args() -> argparse.Namespace:
 
     assess_command = commands.add_parser("assess")
     assess_command.add_argument("--package-id", required=True)
-    assess_command.add_argument("--handback", required=True)
+    handback_source = assess_command.add_mutually_exclusive_group(required=True)
+    handback_source.add_argument("--handback")
+    handback_source.add_argument("--return-ticket-id")
     assess_command.add_argument("--review", required=True)
     action = assess_command.add_mutually_exclusive_group(required=True)
     action.add_argument("--dry-run", action="store_true")

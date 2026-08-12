@@ -106,6 +106,17 @@ def event_payload(route_revision=1, event_id="event-c003-001", canonical_title="
     }
 
 
+def return_handback(ticket_id="return-ticket-c003-001", handback_id="handback-c003-001", completion_signal="completion-signal-c003-001"):
+    return {
+        "handbackSchemaVersion": "0.8.0", "recordType": "C06_TASK_WINDOW_HANDBACK", "handbackId": handback_id,
+        "returnTicketId": ticket_id, "routeRevisionSeen": 1, "projectId": PROJECT, "packageId": "package-c003-001",
+        "c05ReviewId": "c05-review-c003-001", "taskId": TASK, "windowId": WINDOW, "completionSignalId": completion_signal,
+        "submittedBy": {"type": "task-window", "id": WINDOW}, "bossHandbackAuthorization": {"status": "APPROVED", "reference": "boss-return-approval-c003"},
+        "executedScopeRefs": ["scope-c003-001"], "evidenceRefs": ["evidence-c003-001"], "testAndObjectRefs": ["test-c003-001"],
+        "parentQualityReviewRefs": [], "unresolvedRefs": [], "residualRiskRefs": [],
+    }
+
+
 class RoleContinuityTests(unittest.TestCase):
     def test_first_adjudication_forks_central_and_later_has_one_current_role(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -188,6 +199,38 @@ class RoleContinuityTests(unittest.TestCase):
             collision = write(root / "continuity-inputs" / "collision.json", value)
             code, output = continuity(root, "submit-event", "--event", str(collision), writer=False)
             self.assertEqual(code, 2); self.assertEqual(output["reason"], "C08C_EVENT_ID_REUSED")
+
+    def test_return_ticket_is_durable_summary_only_and_reserves_one_validation_slot(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "private"; setup(root)
+            handback = write(root / "continuity-inputs" / "return.json", return_handback())
+            code, queued = continuity(root, "submit-return", "--handback", str(handback), writer=False)
+            self.assertEqual(code, 0, queued); self.assertEqual(queued["status"], "TASK_EVENT_QUEUED")
+            self.assertEqual(queued["returnState"], "QUEUED"); self.assertEqual(queued["centralPayload"], "SUMMARY_ONLY")
+            self.assertTrue((root / "return-inbox" / PROJECT / "tickets" / "return-ticket-c003-001" / "receipt-000001-delivery.json").is_file())
+            code, duplicate = continuity(root, "submit-return", "--handback", str(handback), writer=False)
+            self.assertEqual(code, 0, duplicate); self.assertEqual(duplicate["status"], "IDEMPOTENT_TASK_RETURN")
+            code, admitted = continuity(root, "admit-return", "--return-ticket-id", "return-ticket-c003-001", "--current-thread-ref", "central-thread-g1", "--admission-ref", "central-admission-c003-001")
+            self.assertEqual(code, 0, admitted); self.assertEqual(admitted["returnState"], "ADMITTED")
+            ledger = json.loads((root / "module-ledgers" / PROJECT / "ledger.json").read_text())
+            self.assertEqual(ledger["tasks"][TASK]["status"], "NEEDS_REVIEW")
+            code, reserved = continuity(root, "reserve-next-return", "--current-thread-ref", "central-thread-g1", "--validator-thread-ref", "validator-thread-c003-001")
+            self.assertEqual(code, 0, reserved); self.assertEqual(reserved["status"], "RETURN_VALIDATION_RESERVED")
+            self.assertEqual(reserved["validatorModel"], "gpt-5.6-sol")
+            code, busy = continuity(root, "reserve-next-return", "--current-thread-ref", "central-thread-g1", "--validator-thread-ref", "validator-thread-c003-002")
+            self.assertEqual(code, 0, busy); self.assertEqual(busy["status"], "VALIDATION_SLOT_BUSY")
+
+    def test_auto_return_policy_remains_one_slot_and_preserves_boss_done_gate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "private"; setup(root)
+            policy = write(root / "continuity-inputs" / "return-policy.json", {
+                "returnPolicySchemaVersion": "0.18.0", "recordType": "C08_RETURN_ADMISSION_POLICY", "policyId": "return-policy-c003-001",
+                "projectId": PROJECT, "mode": "AUTO_QUEUE_AND_VALIDATE_WITHIN_APPROVED_SCOPE", "maxConcurrentValidations": 1,
+                "bossAuthorizationRef": "boss-approved-return-policy-c003", "finalDoneRequiresBoss": True,
+            })
+            code, output = continuity(root, "configure-return-policy", "--policy", str(policy), "--current-thread-ref", "central-thread-g1")
+            self.assertEqual(code, 0, output); self.assertEqual(output["maxConcurrentValidations"], 1)
+            self.assertTrue(output["bossFinalApprovalRequired"])
 
     def test_routing_receipt_tampering_is_detected(self):
         with tempfile.TemporaryDirectory() as temp:

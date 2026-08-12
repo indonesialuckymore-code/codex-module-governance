@@ -261,6 +261,7 @@ class C08Tests(unittest.TestCase):
             c06_fixture.setup_ready_for_validation(root)
             handback = c06_fixture.create_handback(root)
             review = c06_fixture.create_review(root)
+            c06_fixture.queue_and_admit_return(root, handback)
             code, output = invoke(c06_fixture.C06, [
                 "--data-root", str(root), "--project-id", c06_fixture.PROJECT,
                 "--writer-id", "codex-module-central", "assess", "--package-id", c06_fixture.PACKAGE,

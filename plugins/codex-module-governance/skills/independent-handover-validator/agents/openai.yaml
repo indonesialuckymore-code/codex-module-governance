@@ -1,4 +1,4 @@
 interface:
   display_name: "回传与独立验收器"
-  short_description: "独立验收、更新窗口并生成自动续派触发"
-  default_prompt: "使用 $independent-handover-validator 独立复核经 Boss 允许的任务回传；最终批准后写入 DONE、更新窗口可复用或退役状态，并通知中央自动续派批准范围内的下一任务。"
+  short_description: "凭回传票据隔离验收，并保留 Boss 最终 DONE 门槛"
+  default_prompt: "使用 $independent-handover-validator 对已取得 TASK_EVENT_QUEUED 回执的回传票据独立验收；中央只收结论和回执，Boss 最终批准后才可写入 DONE 并自动续派。"

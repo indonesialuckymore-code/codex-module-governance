@@ -18,6 +18,7 @@ C03 = SCRIPTS / "ledger_manager.py"
 C04 = SCRIPTS / "task_package_generator.py"
 C05 = SCRIPTS / "occupancy_conflict_checker.py"
 C06 = SCRIPTS / "independent_handover_validator.py"
+C08C = SCRIPTS / "role_continuity_controller.py"
 C09 = SCRIPTS / "central_construction_controller.py"
 C10 = SCRIPTS / "task_window_dispatch_controller.py"
 PROJECT = "c06-demo-project"
@@ -35,6 +36,13 @@ def invoke(script, arguments):
 
 def c03(root, command, *arguments):
     return invoke(C03, ["--data-root", str(root), "--project-id", PROJECT, "--writer-id", "codex-module-central", command, *arguments])
+
+
+def c08(root, command, *arguments, writer=False):
+    base = ["--data-root", str(root), "--project-id", PROJECT]
+    if writer:
+        base.extend(["--writer-id", "codex-module-central"])
+    return invoke(C08C, [*base, command, *arguments])
 
 
 def write_json(path, payload):
@@ -102,11 +110,13 @@ def setup_ready_for_validation(root):
     for command in [
         ["register-window", "--window-id", WINDOW, "--task-id", TASK, "--context-mode", "NEW"],
         ["transition-task", "--task-id", TASK, "--to-status", "IN_PROGRESS", "--reason", "Fictional dispatch already occurred outside C06."],
-        ["record-completion-signal", "--task-id", TASK, "--signal-id", SIGNAL],
     ]:
         code, output = c03(root, command[0], *command[1:])
         if code != 0:
             raise AssertionError(output)
+    code, output = c08(root, "initialize", "--central-thread-ref", "central-thread-g1", "--runtime-project-id", "runtime-project-c06", "--execution-map-ref", "execution-map-c06", writer=True)
+    if code != 0:
+        raise AssertionError(output)
 
 
 def evidence_refs():
@@ -115,11 +125,11 @@ def evidence_refs():
     )]
 
 
-def create_handback(root, boss_status="APPROVED", unresolved=None, residual=None):
+def create_handback(root, boss_status="APPROVED", unresolved=None, residual=None, ticket_id="return-ticket-c06-001"):
     handback = {
-        "handbackSchemaVersion": "0.7.0", "recordType": "C06_TASK_WINDOW_HANDBACK",
+        "handbackSchemaVersion": "0.8.0", "recordType": "C06_TASK_WINDOW_HANDBACK",
         "handbackId": "handback-c06-001", "projectId": PROJECT, "packageId": PACKAGE,
-        "c05ReviewId": "c05-review-006", "taskId": TASK, "windowId": WINDOW,
+        "returnTicketId": ticket_id, "routeRevisionSeen": 1, "c05ReviewId": "c05-review-006", "taskId": TASK, "windowId": WINDOW,
         "completionSignalId": SIGNAL, "submittedBy": {"type": "task-window", "id": WINDOW},
         "bossHandbackAuthorization": {"status": boss_status, "reference": "boss-handback-approval-006"},
         "executedScopeRefs": ["scope-executed-006"], "evidenceRefs": evidence_refs(),
@@ -136,7 +146,7 @@ def create_review(root, mutation=None):
     ))
     refs["testAndObjectIds"] = "test-object-ids-006"
     review = {
-        "reviewSchemaVersion": "0.7.0", "recordType": "C06_INDEPENDENT_VALIDATION_REVIEW",
+        "reviewSchemaVersion": "0.8.0", "recordType": "C06_INDEPENDENT_VALIDATION_REVIEW",
         "validationId": VALIDATION, "handbackId": "handback-c06-001", "taskId": TASK,
         "centralReviewer": {"id": "codex-module-central", "independentReadbackPerformed": True},
         "scopeAssessment": {
@@ -179,8 +189,19 @@ def write_parent_quality_review(root):
     return write_json(root / "dispatches" / PROJECT / "dispatch-c06-001" / "parent-quality-review.json", payload)
 
 
+def queue_and_admit_return(root, handback):
+    code, output = c08(root, "submit-return", "--handback", str(handback))
+    if code != 0:
+        raise AssertionError(output)
+    code, output = c08(root, "admit-return", "--return-ticket-id", output["returnTicketId"], "--current-thread-ref", "central-thread-g1", "--admission-ref", "central-return-admission-006", writer=True)
+    if code != 0:
+        raise AssertionError(output)
+    return output
+
+
 class IndependentHandoverValidatorTests(unittest.TestCase):
     def assess(self, root, handback, review, mode="--dry-run", writer=None):
+        queue_and_admit_return(root, handback)
         arguments = ["--data-root", str(root), "--project-id", PROJECT]
         if writer:
             arguments.extend(["--writer-id", writer])
@@ -208,7 +229,7 @@ class IndependentHandoverValidatorTests(unittest.TestCase):
             code, output = self.assess(root, handback, review)
             self.assertEqual(code, 2); self.assertEqual(output["reason"], "C06_PARENT_QUALITY_REVIEW_NOT_FOUND_OR_INVALID")
             write_parent_quality_review(root)
-            data = json.loads(handback.read_text()); data["parentQualityReviewRefs"] = ["quality-c06-001"]; handback = write_json(handback, data)
+            data = json.loads(handback.read_text()); data["parentQualityReviewRefs"] = ["quality-c06-001"]; data["returnTicketId"] = "return-ticket-c06-002"; handback = write_json(handback, data)
             code, output = self.assess(root, handback, review)
             self.assertEqual(code, 0, output); self.assertEqual(output["status"], "PASS_PENDING_BOSS_APPROVAL")
 
@@ -408,8 +429,9 @@ class IndependentHandoverValidatorTests(unittest.TestCase):
 
             second_evidence = [f"evidence-007-{index}" for index in range(9)]
             second_handback = {
-                "handbackSchemaVersion": "0.7.0", "recordType": "C06_TASK_WINDOW_HANDBACK", "handbackId": "handback-c06-007",
+                "handbackSchemaVersion": "0.8.0", "recordType": "C06_TASK_WINDOW_HANDBACK", "handbackId": "handback-c06-007",
                 "projectId": PROJECT, "packageId": second_package, "c05ReviewId": second_review, "taskId": second_task, "windowId": WINDOW,
+                "returnTicketId": "return-ticket-c06-007", "routeRevisionSeen": 1,
                 "completionSignalId": "completion-signal-007", "submittedBy": {"type": "task-window", "id": WINDOW},
                 "bossHandbackAuthorization": {"status": "APPROVED", "reference": "boss-handback-007"},
                 "executedScopeRefs": ["scope-executed-007"], "evidenceRefs": second_evidence,
@@ -421,13 +443,17 @@ class IndependentHandoverValidatorTests(unittest.TestCase):
             evidence_assessment["testAndObjectIds"] = {"reference": "test-object-ids-007", "verdict": "PASS", "independentlyReadBack": True}
             second_validation = "validation-c06-007"
             second_validation_review = {
-                "reviewSchemaVersion": "0.7.0", "recordType": "C06_INDEPENDENT_VALIDATION_REVIEW", "validationId": second_validation,
+                "reviewSchemaVersion": "0.8.0", "recordType": "C06_INDEPENDENT_VALIDATION_REVIEW", "validationId": second_validation,
                 "handbackId": "handback-c06-007", "taskId": second_task,
                 "centralReviewer": {"id": "codex-module-central", "independentReadbackPerformed": True},
                 "scopeAssessment": {"packageScopeMatch": True, "parallelMechanismFound": False, "unknownWriterFound": False, "permissionExpansionFound": False, "unexplainedErrorFound": False, "duplicateDataFound": False, "blockingResidualRiskFound": False, "rollbackExecutable": True},
                 "evidenceAssessment": evidence_assessment,
             }
             second_review_path = write_json(root / "validation-inputs" / "validation-c06-007.json", second_validation_review)
+            code, returned = c08(root, "submit-return", "--handback", str(second_handback_path))
+            self.assertEqual(code, 0, returned)
+            code, admitted = c08(root, "admit-return", "--return-ticket-id", "return-ticket-c06-007", "--current-thread-ref", "central-thread-g1", "--admission-ref", "central-return-admission-007", writer=True)
+            self.assertEqual(code, 0, admitted)
             code, assessed = invoke(C06, [
                 "--data-root", str(root), "--project-id", PROJECT, "--writer-id", "codex-module-central",
                 "assess", "--package-id", second_package, "--handback", str(second_handback_path), "--review", str(second_review_path), "--apply",
@@ -552,6 +578,62 @@ class IndependentHandoverValidatorTests(unittest.TestCase):
             code, output = self.assess(root, handback, review, "--apply", "codex-module-central")
             self.assertEqual(code, 2)
             self.assertEqual(output["reason"], "C06_BOSS_HANDBACK_AUTHORIZATION_REQUIRED")
+
+    def test_boss_approved_return_policy_can_admit_with_no_per_task_reprompt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "private-data"; setup_ready_for_validation(root)
+            policy = write_json(root / "return-policy-inputs" / "policy.json", {
+                "returnPolicySchemaVersion": "0.18.0", "recordType": "C08_RETURN_ADMISSION_POLICY", "policyId": "return-policy-c06-001",
+                "projectId": PROJECT, "mode": "AUTO_QUEUE_AND_VALIDATE_WITHIN_APPROVED_SCOPE", "maxConcurrentValidations": 1,
+                "bossAuthorizationRef": "boss-return-policy-approval-006", "finalDoneRequiresBoss": True,
+            })
+            code, output = c08(root, "configure-return-policy", "--policy", str(policy), "--current-thread-ref", "central-thread-g1", writer=True)
+            self.assertEqual(code, 0, output)
+            handback = create_handback(root, "AUTO_APPROVED_BY_RETURN_POLICY")
+            data = json.loads(handback.read_text()); data["bossHandbackAuthorization"]["reference"] = "return-policy-c06-001"; write_json(handback, data)
+            code, output = self.assess(root, handback, create_review(root), "--apply", "codex-module-central")
+            self.assertEqual(code, 0, output); self.assertEqual(output["status"], "PASS_PENDING_BOSS_APPROVAL")
+            self.assertTrue(output["bossFinalApprovalRequired"])
+
+    def test_return_pipeline_quarantines_evidence_and_records_only_validation_outcome_for_central(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "private-data"; setup_ready_for_validation(root)
+            handback, review = create_handback(root), create_review(root)
+            queue_and_admit_return(root, handback)
+            code, reserved = c08(root, "reserve-next-return", "--current-thread-ref", "central-thread-g1", "--validator-thread-ref", "independent-validator-c06-001", writer=True)
+            self.assertEqual(code, 0, reserved); self.assertEqual(reserved["centralPayload"], "TICKET_AND_STATUS_ONLY")
+            code, assessed = invoke(C06, [
+                "--data-root", str(root), "--project-id", PROJECT, "--writer-id", "codex-module-central", "assess", "--package-id", PACKAGE,
+                "--return-ticket-id", "return-ticket-c06-001", "--review", str(review), "--apply",
+            ])
+            self.assertEqual(code, 0, assessed); self.assertEqual(assessed["status"], "PASS_PENDING_BOSS_APPROVAL")
+            code, recorded = c08(root, "record-return-validation", "--return-ticket-id", "return-ticket-c06-001", "--current-thread-ref", "central-thread-g1", "--validator-thread-ref", "independent-validator-c06-001", "--validation-id", VALIDATION, writer=True)
+            self.assertEqual(code, 0, recorded); self.assertEqual(recorded["status"], "RETURN_VALIDATION_RECORDED")
+            self.assertEqual(recorded["centralPayload"], "OUTCOME_AND_RECEIPT_ONLY")
+            self.assertEqual(recorded["alertKind"], "BOSS_FINAL_DONE_APPROVAL")
+
+    def test_chat_style_handback_without_durable_return_ticket_is_refused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "private-data"; setup_ready_for_validation(root)
+            handback, review = create_handback(root), create_review(root)
+            code, output = invoke(C06, [
+                "--data-root", str(root), "--project-id", PROJECT, "assess", "--package-id", PACKAGE,
+                "--handback", str(handback), "--review", str(review), "--dry-run",
+            ])
+            self.assertEqual(code, 2, output); self.assertEqual(output["reason"], "C06_RETURN_TICKET_NOT_QUEUED")
+
+    def test_tampered_return_delivery_receipt_is_refused_before_evidence_review(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "private-data"; setup_ready_for_validation(root)
+            handback, review = create_handback(root), create_review(root)
+            queue_and_admit_return(root, handback)
+            delivery = root / "return-inbox" / PROJECT / "tickets" / "return-ticket-c06-001" / "receipt-000001-delivery.json"
+            data = json.loads(delivery.read_text()); data["eventDigest"] = "0" * 64; write_json(delivery, data)
+            code, output = invoke(C06, [
+                "--data-root", str(root), "--project-id", PROJECT, "assess", "--package-id", PACKAGE,
+                "--return-ticket-id", "return-ticket-c06-001", "--review", str(review), "--dry-run",
+            ])
+            self.assertEqual(code, 2, output); self.assertEqual(output["reason"], "C06_RETURN_TICKET_INTEGRITY_INVALID")
 
     def test_non_central_writer_cannot_apply(self):
         with tempfile.TemporaryDirectory() as temporary:

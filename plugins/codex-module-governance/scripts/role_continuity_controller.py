@@ -27,17 +27,21 @@ from ledger_manager import (
     TASK_ID_PATTERN,
     canonical_digest,
     load_ledger,
+    record_completion_signal,
     verify_ledger,
     window_current_task_id,
 )
 
 
 SCHEMA_VERSION = "0.15.0"
+RETURN_SCHEMA_VERSION = "0.18.0"
 ROLES = {"CURRENT_CENTRAL", "CURRENT_ADJUDICATION"}
 ROLE_MODELS = {"CURRENT_CENTRAL": "gpt-5.6-sol", "CURRENT_ADJUDICATION": "gpt-5.6-sol"}
-EVENT_TYPES = {"IN_PROGRESS", "BLOCKED_FOR_DECISION", "DECISION_APPLIED", "READY_FOR_VALIDATION", "SUB_AGENT_APPEND_REQUEST"}
+EVENT_TYPES = {"IN_PROGRESS", "BLOCKED_FOR_DECISION", "DECISION_APPLIED", "READY_FOR_VALIDATION", "SUB_AGENT_APPEND_REQUEST", "TASK_HANDBACK_QUEUED"}
 ROOT = Path("role-continuity")
 EVENT_ROOT = Path("task-events")
+RETURN_ROOT = Path("return-inbox")
+RETURN_VALIDATOR_MODEL = "gpt-5.6-sol"
 SAFE_TEXT = re.compile(r"^[^\r\n]{1,500}$")
 
 
@@ -138,6 +142,57 @@ def event_receipt_path(data_root: Path, project_id: str, event_id: str) -> Path:
 
 def acknowledgement_path(data_root: Path, project_id: str, event_id: str) -> Path:
     return data_root / EVENT_ROOT / project_id / "acknowledged" / f"{event_id}.json"
+
+
+def return_root(data_root: Path, project_id: str) -> Path:
+    return data_root / RETURN_ROOT / project_id
+
+
+def return_ticket_root(data_root: Path, project_id: str, ticket_id: str) -> Path:
+    return return_root(data_root, project_id) / "tickets" / ticket_id
+
+
+def return_submission_path(data_root: Path, project_id: str, ticket_id: str) -> Path:
+    return return_ticket_root(data_root, project_id, ticket_id) / "submission.json"
+
+
+def return_submission_receipt_path(data_root: Path, project_id: str, ticket_id: str) -> Path:
+    return return_ticket_root(data_root, project_id, ticket_id) / "receipt-000000-submission.json"
+
+
+def return_delivery_path(data_root: Path, project_id: str, ticket_id: str) -> Path:
+    return return_ticket_root(data_root, project_id, ticket_id) / "receipt-000001-delivery.json"
+
+
+def return_admission_path(data_root: Path, project_id: str, ticket_id: str) -> Path:
+    return return_ticket_root(data_root, project_id, ticket_id) / "receipt-000002-admission.json"
+
+
+def return_reservation_path(data_root: Path, project_id: str, ticket_id: str) -> Path:
+    return return_ticket_root(data_root, project_id, ticket_id) / "receipt-000003-validation-reservation.json"
+
+
+def return_validation_path(data_root: Path, project_id: str, ticket_id: str) -> Path:
+    return return_ticket_root(data_root, project_id, ticket_id) / "receipt-000004-validation-result.json"
+
+
+def return_policy_path(data_root: Path, project_id: str, policy_id: str) -> Path:
+    return return_root(data_root, project_id) / "policies" / f"{policy_id}.json"
+
+
+def return_policy_receipt_path(data_root: Path, project_id: str, policy_id: str) -> Path:
+    return return_root(data_root, project_id) / "policies" / f"{policy_id}.receipt.json"
+
+
+def return_ticket_ref(value: Any, error: str) -> str:
+    candidate = ref(value, error)
+    if len(candidate) > 96:
+        raise ContinuityError(error)
+    return candidate
+
+
+def return_event_id(ticket_id: str) -> str:
+    return return_ticket_ref(f"return-event-{ticket_id}", "C08C_RETURN_EVENT_ID_INVALID")
 
 
 def read_json(path: Path, error: str) -> Dict[str, Any]:
@@ -503,6 +558,324 @@ def submit_event(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     return {"status": "TASK_EVENT_QUEUED", "eventId": event["eventId"], "taskId": task["taskId"], "eventType": event["eventType"], "targetRole": "CURRENT_CENTRAL", "targetGenerationAtSubmission": active["generation"], "writePerformed": True, "ledgerUpdated": False}, 0
 
 
+def relative_private_path(path: Path, data_root: Path, error: str) -> str:
+    try:
+        return path.resolve().relative_to(data_root.resolve()).as_posix()
+    except ValueError:
+        raise ContinuityError(error)
+
+
+def load_return_handback(raw_path: str, data_root: Path, project_id: str) -> Tuple[Dict[str, Any], str]:
+    handback, digest = private_json(raw_path, data_root, "C08C_RETURN_HANDBACK_INVALID_JSON")
+    required = {
+        "handbackSchemaVersion", "recordType", "handbackId", "returnTicketId", "routeRevisionSeen", "projectId", "packageId", "c05ReviewId",
+        "taskId", "windowId", "completionSignalId", "submittedBy", "bossHandbackAuthorization", "executedScopeRefs", "evidenceRefs",
+        "testAndObjectRefs", "parentQualityReviewRefs", "unresolvedRefs", "residualRiskRefs",
+    }
+    if set(handback) != required or handback.get("handbackSchemaVersion") != "0.8.0" or handback.get("recordType") != "C06_TASK_WINDOW_HANDBACK" or handback.get("projectId") != project_id:
+        raise ContinuityError("C08C_RETURN_HANDBACK_SCHEMA_INVALID")
+    ticket_id = return_ticket_ref(handback.get("returnTicketId"), "C08C_RETURN_TICKET_ID_INVALID")
+    task_id = task_ref(handback.get("taskId"), "C08C_RETURN_TASK_ID_INVALID")
+    window_id = task_ref(handback.get("windowId"), "C08C_RETURN_WINDOW_ID_INVALID")
+    handback_id = ref(handback.get("handbackId"), "C08C_RETURN_HANDBACK_ID_INVALID")
+    completion_signal_id = ref(handback.get("completionSignalId"), "C08C_RETURN_COMPLETION_SIGNAL_INVALID")
+    submitter = exact(handback.get("submittedBy"), {"type", "id"}, "C08C_RETURN_SUBMITTER_INVALID")
+    if submitter.get("type") != "task-window" or ref(submitter.get("id"), "C08C_RETURN_SUBMITTER_INVALID") != window_id:
+        raise ContinuityError("C08C_RETURN_SUBMITTER_INVALID")
+    if not isinstance(handback.get("routeRevisionSeen"), int) or handback["routeRevisionSeen"] < 1:
+        raise ContinuityError("C08C_RETURN_ROUTE_REVISION_INVALID")
+    return {
+        "returnTicketId": ticket_id, "handbackId": handback_id, "taskId": task_id, "windowId": window_id,
+        "completionSignalId": completion_signal_id, "routeRevisionSeen": handback["routeRevisionSeen"],
+        "relativePath": relative_private_path(Path(raw_path), data_root, "C08C_PRIVATE_INPUT_REQUIRED"),
+    }, digest
+
+
+def read_return_submission(data_root: Path, project_id: str, ticket_id: str) -> Dict[str, Any]:
+    ticket_id = return_ticket_ref(ticket_id, "C08C_RETURN_TICKET_ID_INVALID")
+    submission = read_json(return_submission_path(data_root, project_id, ticket_id), "C08C_RETURN_SUBMISSION_NOT_FOUND")
+    receipt = read_json(return_submission_receipt_path(data_root, project_id, ticket_id), "C08C_RETURN_SUBMISSION_RECEIPT_MISSING")
+    required = {
+        "returnSchemaVersion", "recordType", "createdAt", "projectId", "returnTicketId", "handbackId", "taskId", "windowId",
+        "completionSignalId", "sourceWindow", "routeRevisionSeen", "sourceHandbackRelativePath", "sourceHandbackDigest", "boundary",
+    }
+    if set(submission) != required or submission.get("returnSchemaVersion") != RETURN_SCHEMA_VERSION or submission.get("recordType") != "C08_RETURN_SUBMISSION" or submission.get("projectId") != project_id or submission.get("returnTicketId") != ticket_id:
+        raise ContinuityError("C08C_RETURN_SUBMISSION_SCHEMA_INVALID")
+    receipt_required = {"returnSchemaVersion", "recordType", "createdAt", "projectId", "returnTicketId", "submissionDigest", "submission"}
+    if set(receipt) != receipt_required or receipt.get("returnSchemaVersion") != RETURN_SCHEMA_VERSION or receipt.get("recordType") != "C08_IMMUTABLE_RETURN_SUBMISSION_RECEIPT" or receipt.get("projectId") != project_id or receipt.get("returnTicketId") != ticket_id or receipt.get("submission") != submission or receipt.get("submissionDigest") != canonical_digest(submission):
+        raise ContinuityError("C08C_RETURN_SUBMISSION_RECEIPT_INVALID")
+    return submission
+
+
+def read_return_delivery(data_root: Path, project_id: str, ticket_id: str) -> Dict[str, Any]:
+    submission = read_return_submission(data_root, project_id, ticket_id)
+    delivery = read_json(return_delivery_path(data_root, project_id, ticket_id), "C08C_RETURN_DELIVERY_PENDING")
+    required = {"returnSchemaVersion", "recordType", "createdAt", "projectId", "returnTicketId", "eventId", "eventDigest", "eventReceiptDigest", "submissionDigest", "boundary"}
+    if set(delivery) != required or delivery.get("returnSchemaVersion") != RETURN_SCHEMA_VERSION or delivery.get("recordType") != "C08_RETURN_DELIVERY_RECEIPT" or delivery.get("projectId") != project_id or delivery.get("returnTicketId") != ticket_id or delivery.get("submissionDigest") != canonical_digest(submission):
+        raise ContinuityError("C08C_RETURN_DELIVERY_RECEIPT_INVALID")
+    event = read_json(event_path(data_root, project_id, delivery["eventId"]), "C08C_RETURN_EVENT_MISSING")
+    event_receipt = read_json(event_receipt_path(data_root, project_id, delivery["eventId"]), "C08C_RETURN_EVENT_RECEIPT_MISSING")
+    if event.get("eventType") != "TASK_HANDBACK_QUEUED" or event.get("sourceInputDigest") != canonical_digest(submission) or delivery.get("eventDigest") != canonical_digest(event) or delivery.get("eventReceiptDigest") != canonical_digest(event_receipt) or event_receipt.get("artifact") != event or event_receipt.get("artifactDigest") != canonical_digest(event):
+        raise ContinuityError("C08C_RETURN_DELIVERY_RECEIPT_INVALID")
+    return {"submission": submission, "delivery": delivery, "event": event}
+
+
+def return_ticket_state(data_root: Path, project_id: str, ticket_id: str) -> str:
+    try:
+        read_return_submission(data_root, project_id, ticket_id)
+    except ContinuityError as error:
+        if str(error) == "C08C_RETURN_SUBMISSION_NOT_FOUND":
+            return "LOCAL_REPLY_ONLY"
+        raise
+    if not return_delivery_path(data_root, project_id, ticket_id).exists():
+        return "OUTBOX_PENDING"
+    delivery = read_return_delivery(data_root, project_id, ticket_id)
+    if not return_admission_path(data_root, project_id, ticket_id).exists():
+        acknowledgement = acknowledgement_path(data_root, project_id, delivery["delivery"]["eventId"])
+        return "ACKNOWLEDGED" if acknowledgement.exists() else "QUEUED"
+    if not return_reservation_path(data_root, project_id, ticket_id).exists():
+        return "ADMITTED"
+    if not return_validation_path(data_root, project_id, ticket_id).exists():
+        return "VALIDATING"
+    return "VALIDATION_RECORDED"
+
+
+def persist_return_event(data_root: Path, project_id: str, ticket_id: str, routing: Dict[str, Any], ledger: Dict[str, Any]) -> Dict[str, Any]:
+    submission = read_return_submission(data_root, project_id, ticket_id)
+    event_id = return_event_id(ticket_id)
+    target = event_path(data_root, project_id, event_id)
+    if target.exists():
+        event = read_json(target, "C08C_RETURN_EVENT_INVALID")
+        if event.get("sourceInputDigest") != canonical_digest(submission):
+            raise ContinuityError("C08C_RETURN_EVENT_COLLISION")
+        receipt = read_json(event_receipt_path(data_root, project_id, event_id), "C08C_RETURN_EVENT_RECEIPT_MISSING")
+        if receipt.get("artifact") != event or receipt.get("artifactDigest") != canonical_digest(event):
+            raise ContinuityError("C08C_RETURN_EVENT_RECEIPT_MISSING")
+        if not return_delivery_path(data_root, project_id, ticket_id).exists():
+            delivery = {
+                "returnSchemaVersion": RETURN_SCHEMA_VERSION, "recordType": "C08_RETURN_DELIVERY_RECEIPT", "createdAt": utc_now(),
+                "projectId": project_id, "returnTicketId": ticket_id, "eventId": event_id, "eventDigest": canonical_digest(event),
+                "eventReceiptDigest": canonical_digest(receipt), "submissionDigest": canonical_digest(submission),
+                "boundary": {"taskEventQueued": True, "chatReplyIsNotDeliveryProof": True, "ledgerUpdated": False, "businessWritePerformed": False},
+            }
+            write_exclusive(return_delivery_path(data_root, project_id, ticket_id), delivery)
+        return event
+    task = ledger["tasks"].get(submission["taskId"])
+    window = ledger["windows"].get(submission["windowId"])
+    if not isinstance(task, dict) or not isinstance(window, dict):
+        raise ContinuityError("C08C_RETURN_SOURCE_MISMATCH")
+    active = routing["roles"]["CURRENT_CENTRAL"]
+    event = {
+        "schemaVersion": SCHEMA_VERSION, "recordType": "C08_DURABLE_TASK_EVENT", "createdAt": utc_now(),
+        "eventId": event_id, "projectId": project_id,
+        "taskIdentity": {"taskId": submission["taskId"], "canonicalTitle": canonical_task_title(task)},
+        "eventType": "TASK_HANDBACK_QUEUED",
+        "sourceWindow": submission["sourceWindow"], "targetRole": "CURRENT_CENTRAL",
+        "routeRevisionSeen": submission["routeRevisionSeen"], "decisionRef": submission["returnTicketId"],
+        "evidenceRefs": [submission["returnTicketId"]],
+        "summary": f"任务 {submission['taskId']} 已提交可验证回传包；中央只需处理回传票据 {submission['returnTicketId']}。",
+        "sourceInputDigest": canonical_digest(submission),
+        "targetAtSubmission": {"routingRevision": routing["revision"], "generation": active["generation"], "threadRef": active["activeThreadRef"]},
+        "boundary": {"chatNotificationIsAdvisory": True, "eventPersistsAcrossRoleHandover": True, "ledgerUpdated": False, "businessWritePerformed": False, "detailQuarantinedFromCentral": True},
+    }
+    receipt = {"schemaVersion": SCHEMA_VERSION, "recordType": "C08_IMMUTABLE_TASK_EVENT_RECEIPT", "createdAt": utc_now(), "projectId": project_id, "eventId": event_id, "artifactDigest": canonical_digest(event), "artifact": event}
+    write_exclusive(event_receipt_path(data_root, project_id, event_id), receipt)
+    write_exclusive(target, event)
+    delivery = {
+        "returnSchemaVersion": RETURN_SCHEMA_VERSION, "recordType": "C08_RETURN_DELIVERY_RECEIPT", "createdAt": utc_now(),
+        "projectId": project_id, "returnTicketId": ticket_id, "eventId": event_id, "eventDigest": canonical_digest(event),
+        "eventReceiptDigest": canonical_digest(receipt), "submissionDigest": canonical_digest(submission),
+        "boundary": {"taskEventQueued": True, "chatReplyIsNotDeliveryProof": True, "ledgerUpdated": False, "businessWritePerformed": False},
+    }
+    write_exclusive(return_delivery_path(data_root, project_id, ticket_id), delivery)
+    return event
+
+
+def submit_return(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
+    data_root = load_data_root(args); project_id = project_ref(args.project_id)
+    handback, handback_digest = load_return_handback(args.handback, data_root, project_id)
+    ticket_id = handback["returnTicketId"]
+    routing = verify_routing(data_root, project_id); ledger = verified_ledger(data_root, project_id)
+    task = ledger["tasks"].get(handback["taskId"]); window = ledger["windows"].get(handback["windowId"])
+    if handback["routeRevisionSeen"] > routing["revision"]:
+        raise ContinuityError("C08C_RETURN_FUTURE_ROUTE_REVISION")
+    if not isinstance(task, dict) or task.get("status") not in {"IN_PROGRESS", "NEEDS_REVIEW"} or not isinstance(window, dict) or window_current_task_id(window) != handback["taskId"]:
+        raise ContinuityError("C08C_RETURN_SOURCE_MISMATCH")
+    source_window = {"windowId": handback["windowId"], "runtimeThreadRef": window.get("runtimeThreadRef", window.get("windowId")), "generation": window.get("generation", 1)}
+    if not isinstance(source_window["generation"], int) or source_window["generation"] < 1:
+        raise ContinuityError("C08C_RETURN_SOURCE_MISMATCH")
+    with continuity_lock(data_root, project_id):
+        target = return_submission_path(data_root, project_id, ticket_id)
+        delivery_preexisted = return_delivery_path(data_root, project_id, ticket_id).exists()
+        if target.exists():
+            existing = read_return_submission(data_root, project_id, ticket_id)
+            if existing.get("sourceHandbackDigest") != handback_digest:
+                raise ContinuityError("C08C_RETURN_TICKET_REUSED")
+        else:
+            submission = {
+                "returnSchemaVersion": RETURN_SCHEMA_VERSION, "recordType": "C08_RETURN_SUBMISSION", "createdAt": utc_now(),
+                "projectId": project_id, "returnTicketId": ticket_id, "handbackId": handback["handbackId"], "taskId": handback["taskId"],
+                "windowId": handback["windowId"], "completionSignalId": handback["completionSignalId"], "sourceWindow": source_window,
+                "routeRevisionSeen": handback["routeRevisionSeen"], "sourceHandbackRelativePath": handback["relativePath"], "sourceHandbackDigest": handback_digest,
+                "boundary": {"chatReplyIsNotDeliveryProof": True, "centralGetsSummaryOnly": True, "taskDoneDeclared": False, "businessWritePerformed": False},
+            }
+            receipt = {"returnSchemaVersion": RETURN_SCHEMA_VERSION, "recordType": "C08_IMMUTABLE_RETURN_SUBMISSION_RECEIPT", "createdAt": utc_now(), "projectId": project_id, "returnTicketId": ticket_id, "submissionDigest": canonical_digest(submission), "submission": submission}
+            write_exclusive(return_submission_receipt_path(data_root, project_id, ticket_id), receipt)
+            write_exclusive(target, submission)
+        event = persist_return_event(data_root, project_id, ticket_id, routing, ledger)
+    delivery = read_return_delivery(data_root, project_id, ticket_id)["delivery"]
+    status = "IDEMPOTENT_TASK_RETURN" if target.exists() and delivery_preexisted else "TASK_EVENT_QUEUED"
+    return {"status": status, "returnState": "QUEUED", "returnTicketId": ticket_id, "eventId": event["eventId"], "handbackDigest": handback_digest, "deliveryReceiptId": "receipt-000001-delivery", "taskId": handback["taskId"], "centralPayload": "SUMMARY_ONLY", "doneRecorded": False, "writePerformed": status == "TASK_EVENT_QUEUED", "message": "已写入可消费回传票据和中央事件箱；只有此回执成立，聊天文字不算回传。"}, 0
+
+
+def reconcile_return(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
+    data_root = load_data_root(args); project_id = project_ref(args.project_id); ticket_id = return_ticket_ref(args.return_ticket_id, "C08C_RETURN_TICKET_ID_INVALID")
+    routing = verify_routing(data_root, project_id); ledger = verified_ledger(data_root, project_id)
+    with continuity_lock(data_root, project_id):
+        submission = read_return_submission(data_root, project_id, ticket_id)
+        if return_delivery_path(data_root, project_id, ticket_id).exists():
+            delivery = read_return_delivery(data_root, project_id, ticket_id)["delivery"]
+            return {"status": "IDEMPOTENT_RETURN_DELIVERY", "returnState": return_ticket_state(data_root, project_id, ticket_id), "returnTicketId": ticket_id, "eventId": delivery["eventId"], "writePerformed": False}, 0
+        event = persist_return_event(data_root, project_id, ticket_id, routing, ledger)
+    return {"status": "TASK_EVENT_QUEUED", "returnState": "QUEUED", "returnTicketId": ticket_id, "eventId": event["eventId"], "writePerformed": True, "message": "已补齐先前中断的回传投递；没有聊天补发可替代此回执。"}, 0
+
+
+def validate_return_policy(raw: Dict[str, Any], project_id: str) -> Dict[str, Any]:
+    required = {"returnPolicySchemaVersion", "recordType", "policyId", "projectId", "mode", "maxConcurrentValidations", "bossAuthorizationRef", "finalDoneRequiresBoss"}
+    value = exact(raw, required, "C08C_RETURN_POLICY_SCHEMA_INVALID")
+    if value.get("returnPolicySchemaVersion") != RETURN_SCHEMA_VERSION or value.get("recordType") != "C08_RETURN_ADMISSION_POLICY" or value.get("projectId") != project_id or value.get("mode") != "AUTO_QUEUE_AND_VALIDATE_WITHIN_APPROVED_SCOPE" or value.get("maxConcurrentValidations") != 1 or value.get("finalDoneRequiresBoss") is not True:
+        raise ContinuityError("C08C_RETURN_POLICY_SCHEMA_INVALID")
+    return {"policyId": return_ticket_ref(value.get("policyId"), "C08C_RETURN_POLICY_ID_INVALID"), "projectId": project_id, "mode": value["mode"], "maxConcurrentValidations": 1, "bossAuthorizationRef": ref(value.get("bossAuthorizationRef"), "C08C_RETURN_POLICY_AUTHORIZATION_INVALID"), "finalDoneRequiresBoss": True}
+
+
+def configure_return_policy(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
+    data_root = load_data_root(args); project_id = project_ref(args.project_id); require_writer(args.writer_id)
+    raw, input_digest = private_json(args.policy, data_root, "C08C_RETURN_POLICY_INVALID_JSON"); policy = validate_return_policy(raw, project_id)
+    routing = verify_routing(data_root, project_id); current_role(routing, "CURRENT_CENTRAL", ref(args.current_thread_ref, "C08C_THREAD_REF_INVALID"))
+    target = return_policy_path(data_root, project_id, policy["policyId"])
+    if target.exists():
+        existing = read_json(target, "C08C_RETURN_POLICY_INVALID")
+        if existing.get("sourceInputDigest") == input_digest:
+            return {"status": "IDEMPOTENT_RETURN_POLICY", "policyId": policy["policyId"], "writePerformed": False}, 0
+        raise ContinuityError("C08C_RETURN_POLICY_ID_REUSED")
+    artifact = {"returnSchemaVersion": RETURN_SCHEMA_VERSION, "recordType": "C08_RETURN_ADMISSION_POLICY", "configuredAt": utc_now(), **policy, "sourceInputDigest": input_digest, "configuredByRole": "CURRENT_CENTRAL", "boundary": {"allowsAutoAdmissionOnlyWithinApprovedScope": True, "maxConcurrentValidations": 1, "bossFinalApprovalStillRequired": True, "businessWritePerformed": False}}
+    receipt = {"returnSchemaVersion": RETURN_SCHEMA_VERSION, "recordType": "C08_IMMUTABLE_RETURN_POLICY_RECEIPT", "configuredAt": utc_now(), "projectId": project_id, "policyId": policy["policyId"], "artifactDigest": canonical_digest(artifact), "artifact": artifact}
+    write_exclusive(return_policy_receipt_path(data_root, project_id, policy["policyId"]), receipt)
+    write_exclusive(target, artifact)
+    return {"status": "RETURN_POLICY_CONFIGURED", "policyId": policy["policyId"], "mode": policy["mode"], "maxConcurrentValidations": 1, "bossFinalApprovalRequired": True, "writePerformed": True}, 0
+
+
+def ensure_return_event_acknowledgement(data_root: Path, project_id: str, ticket_id: str, current_thread_ref: str, acknowledgement_ref: str, routing: Dict[str, Any]) -> Dict[str, Any]:
+    delivery = read_return_delivery(data_root, project_id, ticket_id)["delivery"]
+    target = acknowledgement_path(data_root, project_id, delivery["eventId"])
+    if target.exists():
+        existing = read_json(target, "C08C_ACKNOWLEDGEMENT_INVALID")
+        if existing.get("eventId") != delivery["eventId"] or existing.get("projectId") != project_id:
+            raise ContinuityError("C08C_ACKNOWLEDGEMENT_INVALID")
+        return existing
+    active = current_role(routing, "CURRENT_CENTRAL", current_thread_ref)
+    event = read_json(event_path(data_root, project_id, delivery["eventId"]), "C08C_RETURN_EVENT_MISSING")
+    acknowledgement = {
+        "schemaVersion": SCHEMA_VERSION, "recordType": "C08_TASK_EVENT_ACKNOWLEDGEMENT", "createdAt": utc_now(), "projectId": project_id,
+        "eventId": delivery["eventId"], "eventDigest": canonical_digest(event), "acknowledgementRef": acknowledgement_ref,
+        "acknowledgedByRole": "CURRENT_CENTRAL", "acknowledgedByThreadRef": current_thread_ref, "centralGeneration": active["generation"], "routingRevision": routing["revision"],
+        "boundary": {"eventAcknowledged": True, "ledgerUpdated": False, "businessWritePerformed": False, "acknowledgementIsNotValidation": True},
+    }
+    write_exclusive(target, acknowledgement)
+    return acknowledgement
+
+
+def admit_return(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
+    data_root = load_data_root(args); project_id = project_ref(args.project_id); require_writer(args.writer_id)
+    ticket_id = return_ticket_ref(args.return_ticket_id, "C08C_RETURN_TICKET_ID_INVALID"); current_thread_ref = ref(args.current_thread_ref, "C08C_THREAD_REF_INVALID"); admission_ref = ref(args.admission_ref, "C08C_RETURN_ADMISSION_REF_INVALID")
+    routing = verify_routing(data_root, project_id); current_role(routing, "CURRENT_CENTRAL", current_thread_ref)
+    with continuity_lock(data_root, project_id):
+        delivery = read_return_delivery(data_root, project_id, ticket_id); submission = delivery["submission"]
+        target = return_admission_path(data_root, project_id, ticket_id)
+        if target.exists():
+            existing = read_json(target, "C08C_RETURN_ADMISSION_INVALID")
+            if existing.get("returnTicketId") != ticket_id or existing.get("completionSignalId") != submission["completionSignalId"]:
+                raise ContinuityError("C08C_RETURN_ADMISSION_INVALID")
+            return {"status": "IDEMPOTENT_RETURN_ADMISSION", "returnState": return_ticket_state(data_root, project_id, ticket_id), "returnTicketId": ticket_id, "taskId": submission["taskId"], "writePerformed": False}, 0
+        acknowledgement = ensure_return_event_acknowledgement(data_root, project_id, ticket_id, current_thread_ref, admission_ref, routing)
+        signal_result, signal_code = record_completion_signal(argparse.Namespace(data_root=str(data_root), config=None, project_id=project_id, writer_id=CENTRAL_WRITER, task_id=submission["taskId"], signal_id=submission["completionSignalId"]))
+        if signal_code != 0:
+            raise ContinuityError("C08C_RETURN_COMPLETION_SIGNAL_FAILED")
+        artifact = {
+            "returnSchemaVersion": RETURN_SCHEMA_VERSION, "recordType": "C08_RETURN_ADMISSION_RECEIPT", "createdAt": utc_now(), "projectId": project_id,
+            "returnTicketId": ticket_id, "taskId": submission["taskId"], "completionSignalId": submission["completionSignalId"], "eventId": delivery["delivery"]["eventId"],
+            "acknowledgementDigest": canonical_digest(acknowledgement), "ledgerReceiptId": signal_result.get("receiptId"), "admissionRef": admission_ref,
+            "boundary": {"centralReadSummaryOnly": True, "taskMovedToNeedsReview": True, "taskDoneDeclared": False, "businessWritePerformed": False},
+        }
+        write_exclusive(target, artifact)
+    return {"status": "RETURN_ADMITTED_FOR_INDEPENDENT_VALIDATION", "returnState": "ADMITTED", "returnTicketId": ticket_id, "taskId": submission["taskId"], "centralPayload": "SUMMARY_ONLY", "doneRecorded": False, "writePerformed": True, "message": "中央已确认回传并登记完成信号；下一步由独立验收槽处理，中央不读取施工原文。"}, 0
+
+
+def pending_return_ticket_ids(data_root: Path, project_id: str) -> List[str]:
+    tickets = return_root(data_root, project_id) / "tickets"
+    if not tickets.exists():
+        return []
+    candidates = []
+    for root in tickets.iterdir():
+        if not root.is_dir() or not (root / "submission.json").is_file():
+            continue
+        submission = read_return_submission(data_root, project_id, root.name)
+        candidates.append((submission["createdAt"], submission["returnTicketId"]))
+    return [ticket_id for _, ticket_id in sorted(candidates)]
+
+
+def reserve_next_return(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
+    data_root = load_data_root(args); project_id = project_ref(args.project_id); require_writer(args.writer_id)
+    current_thread_ref = ref(args.current_thread_ref, "C08C_THREAD_REF_INVALID"); validator_thread_ref = ref(args.validator_thread_ref, "C08C_VALIDATOR_THREAD_REF_INVALID")
+    routing = verify_routing(data_root, project_id); current_role(routing, "CURRENT_CENTRAL", current_thread_ref)
+    with continuity_lock(data_root, project_id):
+        active = [ticket_id for ticket_id in pending_return_ticket_ids(data_root, project_id) if return_reservation_path(data_root, project_id, ticket_id).exists() and not return_validation_path(data_root, project_id, ticket_id).exists()]
+        if active:
+            return {"status": "VALIDATION_SLOT_BUSY", "maxConcurrentValidations": 1, "activeReturnTicketId": active[0], "writePerformed": False}, 0
+        for ticket_id in pending_return_ticket_ids(data_root, project_id):
+            if not return_admission_path(data_root, project_id, ticket_id).exists() or return_validation_path(data_root, project_id, ticket_id).exists():
+                continue
+            delivery = read_return_delivery(data_root, project_id, ticket_id); submission = delivery["submission"]
+            reservation = {
+                "returnSchemaVersion": RETURN_SCHEMA_VERSION, "recordType": "C08_RETURN_VALIDATION_RESERVATION", "createdAt": utc_now(), "projectId": project_id,
+                "returnTicketId": ticket_id, "taskId": submission["taskId"], "handbackId": submission["handbackId"], "validatorThreadRef": validator_thread_ref,
+                "validatorModel": RETURN_VALIDATOR_MODEL, "centralThreadRef": current_thread_ref, "submissionDigest": canonical_digest(submission),
+                "boundary": {"maxConcurrentValidations": 1, "centralGetsNoEvidenceBody": True, "validatorCannotDispatchOrFinalizeDone": True, "businessWritePerformed": False},
+            }
+            write_exclusive(return_reservation_path(data_root, project_id, ticket_id), reservation)
+            return {"status": "RETURN_VALIDATION_RESERVED", "returnState": "VALIDATING", "returnTicketId": ticket_id, "taskId": submission["taskId"], "validatorThreadRef": validator_thread_ref, "validatorModel": RETURN_VALIDATOR_MODEL, "validationInput": {"returnTicketId": ticket_id, "taskId": submission["taskId"], "handbackId": submission["handbackId"]}, "centralPayload": "TICKET_AND_STATUS_ONLY", "writePerformed": True}, 0
+    return {"status": "RETURN_INBOX_EMPTY", "maxConcurrentValidations": 1, "writePerformed": False}, 0
+
+
+def record_return_validation(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
+    data_root = load_data_root(args); project_id = project_ref(args.project_id); require_writer(args.writer_id)
+    ticket_id = return_ticket_ref(args.return_ticket_id, "C08C_RETURN_TICKET_ID_INVALID"); current_thread_ref = ref(args.current_thread_ref, "C08C_THREAD_REF_INVALID"); validator_thread_ref = ref(args.validator_thread_ref, "C08C_VALIDATOR_THREAD_REF_INVALID"); validation_id = ref(args.validation_id, "C08C_VALIDATION_ID_INVALID")
+    routing = verify_routing(data_root, project_id); current_role(routing, "CURRENT_CENTRAL", current_thread_ref)
+    with continuity_lock(data_root, project_id):
+        submission = read_return_delivery(data_root, project_id, ticket_id)["submission"]
+        reservation = read_json(return_reservation_path(data_root, project_id, ticket_id), "C08C_RETURN_VALIDATION_NOT_RESERVED")
+        if reservation.get("validatorThreadRef") != validator_thread_ref or reservation.get("returnTicketId") != ticket_id:
+            raise ContinuityError("C08C_RETURN_VALIDATION_RESERVATION_MISMATCH")
+        target = return_validation_path(data_root, project_id, ticket_id)
+        if target.exists():
+            existing = read_json(target, "C08C_RETURN_VALIDATION_RESULT_INVALID")
+            if existing.get("validationId") == validation_id:
+                return {"status": "IDEMPOTENT_RETURN_VALIDATION_RESULT", "returnTicketId": ticket_id, "validationId": validation_id, "writePerformed": False}, 0
+            raise ContinuityError("C08C_RETURN_VALIDATION_ALREADY_RECORDED")
+        from independent_handover_validator import verify_decision_data
+        try:
+            decision = verify_decision_data(data_root, project_id, validation_id)
+        except Exception as error:
+            raise ContinuityError(f"C08C_RETURN_VALIDATION_DECISION_UNVERIFIED:{error}")
+        if decision.get("taskId") != submission["taskId"] or decision.get("handbackId") != submission["handbackId"] or decision.get("source", {}).get("returnTicketId") != ticket_id:
+            raise ContinuityError("C08C_RETURN_VALIDATION_DECISION_MISMATCH")
+        outcome = decision["outcome"]
+        alert_kind = "BOSS_FINAL_DONE_APPROVAL" if outcome == "PASS_PENDING_BOSS_APPROVAL" else "BOSS_EXCEPTION_REVIEW"
+        artifact = {"returnSchemaVersion": RETURN_SCHEMA_VERSION, "recordType": "C08_RETURN_VALIDATION_RESULT", "createdAt": utc_now(), "projectId": project_id, "returnTicketId": ticket_id, "taskId": submission["taskId"], "validationId": validation_id, "outcome": outcome, "decisionDigest": canonical_digest(decision), "alertKind": alert_kind, "boundary": {"centralReceivesOutcomeOnly": True, "bossFinalApprovalRequired": outcome == "PASS_PENDING_BOSS_APPROVAL", "taskDoneDeclared": False, "businessWritePerformed": False}}
+        write_exclusive(target, artifact)
+    return {"status": "RETURN_VALIDATION_RECORDED", "returnState": "VALIDATION_RECORDED", "returnTicketId": ticket_id, "taskId": submission["taskId"], "validationId": validation_id, "outcome": outcome, "alertKind": alert_kind, "doneRecorded": False, "centralPayload": "OUTCOME_AND_RECEIPT_ONLY", "writePerformed": True}, 0
+
+
 def current_role(routing: Dict[str, Any], role: str, thread_ref: str) -> Dict[str, Any]:
     active = routing["roles"].get(role)
     if not isinstance(active, dict) or active.get("status") != "ACTIVE" or active.get("activeThreadRef") != thread_ref:
@@ -552,7 +925,12 @@ def verify_all(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         receipt = read_json(event_receipt_path(data_root, project_id, event_id), "C08C_TASK_EVENT_RECEIPT_MISSING")
         if receipt.get("artifact") != event or receipt.get("artifactDigest") != canonical_digest(event):
             raise ContinuityError("C08C_TASK_EVENT_INTEGRITY_INVALID")
-    return {"status": "C08_ROLE_CONTINUITY_VERIFIED", "projectId": project_id, "routingRevision": routing["revision"], "centralGeneration": routing["roles"]["CURRENT_CENTRAL"]["generation"], "adjudicationGeneration": routing["roles"]["CURRENT_ADJUDICATION"]["generation"] if routing["roles"]["CURRENT_ADJUDICATION"] else None, "pendingEventCount": len(pending_event_ids(data_root, project_id)), "writePerformed": False}, 0
+    return_tickets = pending_return_ticket_ids(data_root, project_id)
+    for ticket_id in return_tickets:
+        read_return_submission(data_root, project_id, ticket_id)
+        if return_delivery_path(data_root, project_id, ticket_id).exists():
+            read_return_delivery(data_root, project_id, ticket_id)
+    return {"status": "C08_ROLE_CONTINUITY_VERIFIED", "projectId": project_id, "routingRevision": routing["revision"], "centralGeneration": routing["roles"]["CURRENT_CENTRAL"]["generation"], "adjudicationGeneration": routing["roles"]["CURRENT_ADJUDICATION"]["generation"] if routing["roles"]["CURRENT_ADJUDICATION"] else None, "pendingEventCount": len(pending_event_ids(data_root, project_id)), "returnTicketCount": len(return_tickets), "writePerformed": False}, 0
 
 
 def parse_args() -> argparse.Namespace:
@@ -564,6 +942,12 @@ def parse_args() -> argparse.Namespace:
     prepare_parser = commands.add_parser("prepare-handover"); prepare_parser.add_argument("--request", required=True)
     activation_parser = commands.add_parser("activate-successor"); activation_parser.add_argument("--handover-id", required=True); activation_parser.add_argument("--activation", required=True)
     event_parser = commands.add_parser("submit-event"); event_parser.add_argument("--event", required=True)
+    return_parser = commands.add_parser("submit-return"); return_parser.add_argument("--handback", required=True)
+    reconcile_parser = commands.add_parser("reconcile-return"); reconcile_parser.add_argument("--return-ticket-id", required=True)
+    policy_parser = commands.add_parser("configure-return-policy"); policy_parser.add_argument("--policy", required=True); policy_parser.add_argument("--current-thread-ref", required=True)
+    admit_parser = commands.add_parser("admit-return"); admit_parser.add_argument("--return-ticket-id", required=True); admit_parser.add_argument("--current-thread-ref", required=True); admit_parser.add_argument("--admission-ref", required=True)
+    reserve_parser = commands.add_parser("reserve-next-return"); reserve_parser.add_argument("--current-thread-ref", required=True); reserve_parser.add_argument("--validator-thread-ref", required=True)
+    result_parser = commands.add_parser("record-return-validation"); result_parser.add_argument("--return-ticket-id", required=True); result_parser.add_argument("--current-thread-ref", required=True); result_parser.add_argument("--validator-thread-ref", required=True); result_parser.add_argument("--validation-id", required=True)
     pending_parser = commands.add_parser("list-pending"); pending_parser.add_argument("--current-thread-ref", required=True)
     ack_parser = commands.add_parser("acknowledge-event"); ack_parser.add_argument("--event-id", required=True); ack_parser.add_argument("--current-thread-ref", required=True); ack_parser.add_argument("--acknowledgement-ref", required=True)
     commands.add_parser("verify")
@@ -571,7 +955,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def dispatch(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
-    return {"initialize": initialize, "prepare-handover": prepare_handover, "activate-successor": activate_successor, "submit-event": submit_event, "list-pending": list_pending, "acknowledge-event": acknowledge_event, "verify": verify_all}[args.command](args)
+    return {"initialize": initialize, "prepare-handover": prepare_handover, "activate-successor": activate_successor, "submit-event": submit_event, "submit-return": submit_return, "reconcile-return": reconcile_return, "configure-return-policy": configure_return_policy, "admit-return": admit_return, "reserve-next-return": reserve_next_return, "record-return-validation": record_return_validation, "list-pending": list_pending, "acknowledge-event": acknowledge_event, "verify": verify_all}[args.command](args)
 
 
 def main() -> int:
