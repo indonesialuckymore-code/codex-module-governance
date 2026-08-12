@@ -95,11 +95,11 @@ def activate(root, handover_id, role, successor, package_path):
     return continuity(root, "activate-successor", "--handover-id", handover_id, "--activation", str(path))
 
 
-def event_payload(route_revision=1, event_id="event-c003-001", canonical_title="C-003｜业务名称"):
+def event_payload(route_revision=1, event_id="event-c003-001", canonical_title="C-003｜业务名称", event_type="READY_FOR_VALIDATION"):
     return {
         "eventSchemaVersion": "0.15.0", "recordType": "C08_TASK_EVENT_INPUT", "eventId": event_id,
         "projectId": PROJECT, "taskIdentity": {"taskId": TASK, "canonicalTitle": canonical_title},
-        "eventType": "READY_FOR_VALIDATION",
+        "eventType": event_type,
         "sourceWindow": {"windowId": WINDOW, "runtimeThreadRef": WINDOW, "generation": 1},
         "targetRole": "CURRENT_CENTRAL", "routeRevisionSeen": route_revision,
         "decisionRef": None, "evidenceRefs": ["evidence-c003-001"], "summary": "Fictional task is ready for validation.",
@@ -136,6 +136,15 @@ class RoleContinuityTests(unittest.TestCase):
             self.assertEqual(code, 0, current); self.assertEqual(current["pendingCount"], 1)
             code, ack = continuity(root, "acknowledge-event", "--event-id", "event-c003-001", "--current-thread-ref", "central-thread-g2", "--acknowledgement-ref", "central-ledger-update-001")
             self.assertEqual(code, 0, ack); self.assertEqual(ack["centralGeneration"], 2)
+
+    def test_in_scope_sub_agent_append_request_reaches_current_central(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "private"; setup(root)
+            event = event_payload(event_id="event-c003-append", event_type="SUB_AGENT_APPEND_REQUEST")
+            event["decisionRef"] = "append-c10-001"; event["summary"] = "A private C10 append request is ready for central review."
+            path = write(root / "continuity-inputs" / "append-event.json", event)
+            code, output = continuity(root, "submit-event", "--event", str(path), writer=False)
+            self.assertEqual(code, 0, output); self.assertEqual(output["eventType"], "SUB_AGENT_APPEND_REQUEST")
 
     def test_handover_refuses_stale_ledger_snapshot(self):
         with tempfile.TemporaryDirectory() as temp:

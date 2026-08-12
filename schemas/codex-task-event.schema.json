@@ -16,7 +16,7 @@
       "required": ["taskId", "canonicalTitle"],
       "properties": { "taskId": { "type": "string" }, "canonicalTitle": { "type": "string" } }
     },
-    "eventType": { "enum": ["IN_PROGRESS", "BLOCKED_FOR_DECISION", "DECISION_APPLIED", "READY_FOR_VALIDATION"] },
+    "eventType": { "enum": ["IN_PROGRESS", "BLOCKED_FOR_DECISION", "DECISION_APPLIED", "READY_FOR_VALIDATION", "SUB_AGENT_APPEND_REQUEST"] },
     "sourceWindow": {
       "type": "object",
       "additionalProperties": false,

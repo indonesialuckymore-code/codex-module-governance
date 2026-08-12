@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-parent-quality-review.schema.json",
+  "title": "C10 task-window quality consolidation after sub-agent work",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["qualityReviewSchemaVersion", "recordType", "qualityReviewId", "dispatchId", "projectId", "taskId", "windowId", "subAgentReturns", "acceptanceCoverage", "conflictResolutions", "parentReadbackEvidenceRefs", "scopeCheck", "unifiedStatus", "unresolvedRefs", "recommendedParentAction"],
+  "properties": {
+    "qualityReviewSchemaVersion": { "const": "0.15.0" },
+    "recordType": { "const": "C10_PARENT_QUALITY_REVIEW" },
+    "qualityReviewId": { "type": "string" },
+    "dispatchId": { "type": "string" },
+    "projectId": { "type": "string" },
+    "taskId": { "type": "string" },
+    "windowId": { "type": "string" },
+    "subAgentReturns": { "type": "array", "minItems": 1, "items": { "type": "object" } },
+    "acceptanceCoverage": { "type": "object" },
+    "conflictResolutions": { "type": "array", "minItems": 1, "items": { "type": "object" } },
+    "parentReadbackEvidenceRefs": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "scopeCheck": { "type": "object" },
+    "unifiedStatus": { "enum": ["NEEDS_REVIEW", "PARTIAL", "BLOCKED"] },
+    "unresolvedRefs": { "type": "array", "items": { "type": "string" } },
+    "recommendedParentAction": { "type": "string", "minLength": 1, "maxLength": 1000 }
+  }
+}

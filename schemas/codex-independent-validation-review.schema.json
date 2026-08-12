@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["reviewSchemaVersion", "recordType", "validationId", "handbackId", "taskId", "centralReviewer", "scopeAssessment", "evidenceAssessment"],
   "properties": {
-    "reviewSchemaVersion": { "const": "0.6.0" },
+    "reviewSchemaVersion": { "const": "0.7.0" },
     "recordType": { "const": "C06_INDEPENDENT_VALIDATION_REVIEW" },
     "validationId": { "type": "string" },
     "handbackId": { "type": "string" },

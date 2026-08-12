@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import ledger_manager
+
 
 SCRIPTS = Path(__file__).parent
 C02 = SCRIPTS / "initialize_project.py"
@@ -115,13 +117,13 @@ def evidence_refs():
 
 def create_handback(root, boss_status="APPROVED", unresolved=None, residual=None):
     handback = {
-        "handbackSchemaVersion": "0.6.0", "recordType": "C06_TASK_WINDOW_HANDBACK",
+        "handbackSchemaVersion": "0.7.0", "recordType": "C06_TASK_WINDOW_HANDBACK",
         "handbackId": "handback-c06-001", "projectId": PROJECT, "packageId": PACKAGE,
         "c05ReviewId": "c05-review-006", "taskId": TASK, "windowId": WINDOW,
         "completionSignalId": SIGNAL, "submittedBy": {"type": "task-window", "id": WINDOW},
         "bossHandbackAuthorization": {"status": boss_status, "reference": "boss-handback-approval-006"},
         "executedScopeRefs": ["scope-executed-006"], "evidenceRefs": evidence_refs(),
-        "testAndObjectRefs": ["test-object-ids-006"], "unresolvedRefs": unresolved or [],
+        "testAndObjectRefs": ["test-object-ids-006"], "parentQualityReviewRefs": [], "unresolvedRefs": unresolved or [],
         "residualRiskRefs": residual or [],
     }
     return write_json(root / "handbacks" / "handback-c06-001.json", handback)
@@ -134,7 +136,7 @@ def create_review(root, mutation=None):
     ))
     refs["testAndObjectIds"] = "test-object-ids-006"
     review = {
-        "reviewSchemaVersion": "0.6.0", "recordType": "C06_INDEPENDENT_VALIDATION_REVIEW",
+        "reviewSchemaVersion": "0.7.0", "recordType": "C06_INDEPENDENT_VALIDATION_REVIEW",
         "validationId": VALIDATION, "handbackId": "handback-c06-001", "taskId": TASK,
         "centralReviewer": {"id": "codex-module-central", "independentReadbackPerformed": True},
         "scopeAssessment": {
@@ -150,6 +152,31 @@ def create_review(root, mutation=None):
     if mutation:
         mutation(review)
     return write_json(root / "validation-inputs" / f"{VALIDATION}.json", review)
+
+
+def add_returned_sub_agent(root):
+    before = ledger_manager.load_ledger(root, PROJECT)
+    def mutate(after):
+        after["subAgents"]["agent-c06-001"] = {
+            "subAgentId": "agent-c06-001", "windowId": WINDOW, "taskId": TASK,
+            "dispatchId": "dispatch-c06-001", "level": 1, "status": "RETURNED",
+            "returnId": "return-c06-001", "runtimeAgentRef": "runtime-agent-c06-001",
+        }
+    ledger_manager.commit_mutation(root, PROJECT, before, "codex-module-central", "TEST_ADD_RETURNED_SUB_AGENT", {"taskId": TASK}, mutate)
+
+
+def write_parent_quality_review(root):
+    payload = {
+        "schemaVersion": "0.15.0", "recordType": "C10_PARENT_QUALITY_REVIEW", "qualityReviewId": "quality-c06-001",
+        "dispatchId": "dispatch-c06-001", "projectId": PROJECT, "taskId": TASK, "windowId": WINDOW,
+        "subAgentReturns": [{"subAgentId": "agent-c06-001", "returnId": "return-c06-001"}],
+        "acceptanceCoverage": {key: [f"coverage-{key}-006"] for key in ("positiveCases", "negativeCases", "idempotencyChecks", "rollbackChecks", "logAndHistoryChecks", "readbackChecks")},
+        "conflictResolutions": [{"subAgentId": "agent-c06-001", "outcome": "NO_CONFLICT", "resolutionRef": "resolution-c06-001"}],
+        "parentReadbackEvidenceRefs": ["parent-readback-c06-001"], "scopeCheck": {"withinApprovedScope": True, "unexpectedWriteFound": False},
+        "unifiedStatus": "NEEDS_REVIEW", "unresolvedRefs": [], "recommendedParentAction": "Send consolidated evidence to C06.",
+        "boundary": {"parentQualityGatePassed": True, "parentMayRequestC06": True},
+    }
+    return write_json(root / "dispatches" / PROJECT / "dispatch-c06-001" / "parent-quality-review.json", payload)
 
 
 class IndependentHandoverValidatorTests(unittest.TestCase):
@@ -173,6 +200,17 @@ class IndependentHandoverValidatorTests(unittest.TestCase):
             self.assertEqual(code, 0, output)
             self.assertEqual(output["taskStatusAfter"], "NEEDS_REVIEW")
             self.assertFalse(output["doneRecorded"])
+
+    def test_c06_requires_parent_quality_gate_when_task_used_sub_agents(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "private-data"; setup_ready_for_validation(root); add_returned_sub_agent(root)
+            handback, review = create_handback(root), create_review(root)
+            code, output = self.assess(root, handback, review)
+            self.assertEqual(code, 2); self.assertEqual(output["reason"], "C06_PARENT_QUALITY_REVIEW_NOT_FOUND_OR_INVALID")
+            write_parent_quality_review(root)
+            data = json.loads(handback.read_text()); data["parentQualityReviewRefs"] = ["quality-c06-001"]; handback = write_json(handback, data)
+            code, output = self.assess(root, handback, review)
+            self.assertEqual(code, 0, output); self.assertEqual(output["status"], "PASS_PENDING_BOSS_APPROVAL")
 
     def test_only_boss_approved_pass_can_finalize_done(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -291,19 +329,19 @@ class IndependentHandoverValidatorTests(unittest.TestCase):
             scope_digest = hashlib.sha256(json.dumps(execution_plan, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
             authorization = {"status": "APPROVED", "reference": "boss-map-approval-007", "scope": {"type": "EXECUTION_MAP", "scopeId": "central-plan-007", "scopeDigest": scope_digest, "waveId": "wave-02", "taskIds": [blocked_task, second_task, parallel_task]}}
             request_path = write_json(second_request_path, {
-                "dispatchSchemaVersion": "0.14.0", "recordType": "C10_DISPATCH_REQUEST", "dispatchId": dispatch_id,
+                "dispatchSchemaVersion": "0.15.0", "recordType": "C10_DISPATCH_REQUEST", "dispatchId": dispatch_id,
                 "projectId": PROJECT, "packageId": second_package, "reviewId": second_review, "taskId": second_task,
                 "runtimeProject": {"codexProjectId": "codex-project-007", "projectPath": "/tmp/fictional-project", "isGitRepository": True, "environment": "WORKTREE"},
                 "bossDispatchAuthorization": authorization, "subAgents": [],
             })
             write_json(blocked_request_path, {
-                "dispatchSchemaVersion": "0.14.0", "recordType": "C10_DISPATCH_REQUEST", "dispatchId": blocked_dispatch_id,
+                "dispatchSchemaVersion": "0.15.0", "recordType": "C10_DISPATCH_REQUEST", "dispatchId": blocked_dispatch_id,
                 "projectId": PROJECT, "packageId": blocked_package, "reviewId": blocked_review, "taskId": blocked_task,
                 "runtimeProject": {"codexProjectId": "codex-project-009", "projectPath": "/tmp/fictional-project", "isGitRepository": True, "environment": "WORKTREE"},
                 "bossDispatchAuthorization": authorization, "subAgents": [],
             })
             write_json(parallel_request_path, {
-                "dispatchSchemaVersion": "0.14.0", "recordType": "C10_DISPATCH_REQUEST", "dispatchId": parallel_dispatch_id,
+                "dispatchSchemaVersion": "0.15.0", "recordType": "C10_DISPATCH_REQUEST", "dispatchId": parallel_dispatch_id,
                 "projectId": PROJECT, "packageId": parallel_package, "reviewId": parallel_review, "taskId": parallel_task,
                 "runtimeProject": {"codexProjectId": "codex-project-008", "projectPath": "/tmp/fictional-project", "isGitRepository": True, "environment": "WORKTREE"},
                 "bossDispatchAuthorization": authorization, "subAgents": [],
@@ -354,7 +392,7 @@ class IndependentHandoverValidatorTests(unittest.TestCase):
             self.assertEqual(ledger["windows"][WINDOW]["status"], "RESERVED_FOR_REUSE")
             self.assertEqual(ledger["windows"][WINDOW]["reservedForTaskId"], second_task)
             confirmation = {
-                "confirmationSchemaVersion": "0.14.0", "recordType": "C10_RUNTIME_CONFIRMATION", "dispatchId": dispatch_id,
+                "confirmationSchemaVersion": "0.15.0", "recordType": "C10_RUNTIME_CONFIRMATION", "dispatchId": dispatch_id,
                 "taskWindow": {"status": "REUSED", "taskId": second_task, "runtimeTitle": "C-07｜Fictional second assignment｜G1", "generation": 1, "windowId": WINDOW, "runtimeThreadRef": "thread-c07-final", "runtimeProjectId": "codex-project-007", "runtimeCwd": "/tmp/.codex/worktrees/abcd/fictional-project", "environmentType": "WORKTREE", "associationMethod": "DIRECT", "associationHandoffRefs": []},
                 "subAgents": [],
             }
@@ -370,12 +408,12 @@ class IndependentHandoverValidatorTests(unittest.TestCase):
 
             second_evidence = [f"evidence-007-{index}" for index in range(9)]
             second_handback = {
-                "handbackSchemaVersion": "0.6.0", "recordType": "C06_TASK_WINDOW_HANDBACK", "handbackId": "handback-c06-007",
+                "handbackSchemaVersion": "0.7.0", "recordType": "C06_TASK_WINDOW_HANDBACK", "handbackId": "handback-c06-007",
                 "projectId": PROJECT, "packageId": second_package, "c05ReviewId": second_review, "taskId": second_task, "windowId": WINDOW,
                 "completionSignalId": "completion-signal-007", "submittedBy": {"type": "task-window", "id": WINDOW},
                 "bossHandbackAuthorization": {"status": "APPROVED", "reference": "boss-handback-007"},
                 "executedScopeRefs": ["scope-executed-007"], "evidenceRefs": second_evidence,
-                "testAndObjectRefs": ["test-object-ids-007"], "unresolvedRefs": [], "residualRiskRefs": [],
+                "testAndObjectRefs": ["test-object-ids-007"], "parentQualityReviewRefs": [], "unresolvedRefs": [], "residualRiskRefs": [],
             }
             second_handback_path = write_json(root / "handbacks" / "handback-c06-007.json", second_handback)
             categories = ("beforeSnapshot", "afterSnapshot", "positiveCase", "negativeCase", "idempotency", "rollback", "logsAndHistory", "upstreamReadback", "downstreamReadback")
@@ -383,7 +421,7 @@ class IndependentHandoverValidatorTests(unittest.TestCase):
             evidence_assessment["testAndObjectIds"] = {"reference": "test-object-ids-007", "verdict": "PASS", "independentlyReadBack": True}
             second_validation = "validation-c06-007"
             second_validation_review = {
-                "reviewSchemaVersion": "0.6.0", "recordType": "C06_INDEPENDENT_VALIDATION_REVIEW", "validationId": second_validation,
+                "reviewSchemaVersion": "0.7.0", "recordType": "C06_INDEPENDENT_VALIDATION_REVIEW", "validationId": second_validation,
                 "handbackId": "handback-c06-007", "taskId": second_task,
                 "centralReviewer": {"id": "codex-module-central", "independentReadbackPerformed": True},
                 "scopeAssessment": {"packageScopeMatch": True, "parallelMechanismFound": False, "unknownWriterFound": False, "permissionExpansionFound": False, "unexplainedErrorFound": False, "duplicateDataFound": False, "blockingResidualRiskFound": False, "rollbackExecutable": True},

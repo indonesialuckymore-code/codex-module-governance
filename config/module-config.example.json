@@ -1,6 +1,6 @@
 {
   "$schema": "../schemas/module-config.schema.json",
-  "schemaVersion": "0.14.0",
+  "schemaVersion": "0.15.0",
   "module": {
     "id": "replace-with-module-id",
     "displayName": "Codex 模块"
@@ -12,7 +12,11 @@
   },
   "subAgentPolicy": {
     "maxConcurrentFirstLevel": 3,
-    "allowGrandchildren": false
+    "allowGrandchildren": false,
+    "proactiveDelegation": true,
+    "allowInScopeDynamicAppend": true,
+    "requireStructuredReturn": true,
+    "requireParentQualityGate": true
   },
   "storage": {
     "userDataRoot": "replace-with-user-selected-private-directory"
@@ -76,7 +80,9 @@
     "yellowIsolatedWriteAllowed": true,
     "redConflictHardStop": true,
     "subAgentsReturnToParentWindowOnly": true,
-    "allowSubAgentDoneDeclaration": false
+    "allowSubAgentDoneDeclaration": false,
+    "parentMustReadCriticalEvidence": true,
+    "noRawSubAgentOutputConcatenation": true
   },
   "externalSkills": {
     "protocol": "codex-governance-protocol-v1",

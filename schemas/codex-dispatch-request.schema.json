@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["dispatchSchemaVersion", "recordType", "dispatchId", "projectId", "packageId", "reviewId", "taskId", "runtimeProject", "bossDispatchAuthorization", "subAgents"],
   "properties": {
-    "dispatchSchemaVersion": { "const": "0.14.0" },
+    "dispatchSchemaVersion": { "const": "0.15.0" },
     "recordType": { "const": "C10_DISPATCH_REQUEST" },
     "dispatchId": { "type": "string" },
     "projectId": { "type": "string" },
@@ -45,6 +45,22 @@
         }
       }
     },
-    "subAgents": { "type": "array", "maxItems": 3 }
+    "subAgents": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["subAgentId", "role", "level", "delegationReason", "executionMode", "scope"],
+        "properties": {
+          "subAgentId": { "type": "string" },
+          "role": { "type": "string", "minLength": 1, "maxLength": 160 },
+          "level": { "const": 1 },
+          "delegationReason": { "enum": ["LARGE_MATERIALS", "INDEPENDENT_SCOPE", "INDEPENDENT_VERIFICATION", "CROSS_CHECK"] },
+          "executionMode": { "enum": ["READ_ONLY", "ISOLATED_WORK", "INDEPENDENT_VALIDATION"] },
+          "scope": { "type": "string", "minLength": 1, "maxLength": 600 }
+        }
+      }
+    }
   }
 }

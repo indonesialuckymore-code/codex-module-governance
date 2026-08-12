@@ -30,7 +30,7 @@ from occupancy_conflict_checker import OccupancyError, verify_decision_data
 from task_package_generator import TaskPackageError, load_package, verify_package
 
 
-SCHEMA_VERSION = "0.14.0"
+SCHEMA_VERSION = "0.15.0"
 ROOT = Path("dispatches")
 REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
 WINDOW_ID = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{2,127}$")
@@ -75,6 +75,18 @@ def fallback_path(root: Path, project_id: str, dispatch_id: str) -> Path:
 
 def return_path(root: Path, project_id: str, dispatch_id: str, sub_agent_id: str) -> Path:
     return dispatch_dir(root, project_id, dispatch_id) / "sub-agent-returns" / f"{sub_agent_id}.json"
+
+
+def append_plan_path(root: Path, project_id: str, dispatch_id: str, append_id: str) -> Path:
+    return dispatch_dir(root, project_id, dispatch_id) / "sub-agent-appends" / append_id / "append-plan.json"
+
+
+def append_confirmation_path(root: Path, project_id: str, dispatch_id: str, append_id: str) -> Path:
+    return dispatch_dir(root, project_id, dispatch_id) / "sub-agent-appends" / append_id / "append-confirmation.json"
+
+
+def parent_quality_review_path(root: Path, project_id: str, dispatch_id: str) -> Path:
+    return dispatch_dir(root, project_id, dispatch_id) / "parent-quality-review.json"
 
 
 def write_exclusive(path: Path, value: Dict[str, Any]) -> None:
@@ -172,6 +184,40 @@ def validate_authorization(raw: Any, task_id: str) -> Dict[str, Any]:
     }
 
 
+def validate_sub_agent_specs(raw_agents: Any, error: str = "C10_SUB_AGENT_SCHEMA_INVALID") -> List[Dict[str, str]]:
+    """Validate a bounded, independently checkable first-level delegation plan."""
+    if not isinstance(raw_agents, list) or len(raw_agents) > 3:
+        raise DispatchError("C10_FIRST_LEVEL_SUB_AGENT_LIMIT_EXCEEDED")
+    allowed_reasons = {"LARGE_MATERIALS", "INDEPENDENT_SCOPE", "INDEPENDENT_VERIFICATION", "CROSS_CHECK"}
+    allowed_modes = {"READ_ONLY", "ISOLATED_WORK", "INDEPENDENT_VALIDATION"}
+    normalized: List[Dict[str, str]] = []
+    for agent in raw_agents:
+        item = exact(agent, {"subAgentId", "role", "level", "delegationReason", "executionMode", "scope"}, error)
+        if item["level"] != 1:
+            raise DispatchError("C10_GRANDCHILD_SUB_AGENT_FORBIDDEN")
+        role = str(item["role"]).strip()
+        scope = str(item["scope"]).strip()
+        reason = str(item["delegationReason"]).strip().upper()
+        mode = str(item["executionMode"]).strip().upper()
+        if not role or len(role) > 160 or not scope or len(scope) > 600:
+            raise DispatchError("C10_SUB_AGENT_ROLE_OR_SCOPE_INVALID")
+        if reason not in allowed_reasons:
+            raise DispatchError("C10_SUB_AGENT_DELEGATION_REASON_INVALID")
+        if mode not in allowed_modes:
+            raise DispatchError("C10_SUB_AGENT_EXECUTION_MODE_INVALID")
+        normalized.append({
+            "subAgentId": require_ref(item["subAgentId"], "C10_SUB_AGENT_ID_INVALID", WINDOW_ID),
+            "role": role,
+            "level": 1,
+            "delegationReason": reason,
+            "executionMode": mode,
+            "scope": scope,
+        })
+    if len({x["subAgentId"] for x in normalized}) != len(normalized):
+        raise DispatchError("C10_DUPLICATE_SUB_AGENT_ID")
+    return normalized
+
+
 def validate_request(raw: Dict[str, Any], project_id: str, package_id: str, review_id: str) -> Dict[str, Any]:
     value = exact(raw, {"dispatchSchemaVersion", "recordType", "dispatchId", "projectId", "packageId", "reviewId", "taskId", "runtimeProject", "bossDispatchAuthorization", "subAgents"}, "C10_DISPATCH_REQUEST_SCHEMA_UNSUPPORTED")
     if value["dispatchSchemaVersion"] != SCHEMA_VERSION or value["recordType"] != "C10_DISPATCH_REQUEST" or value["projectId"] != project_id or value["packageId"] != package_id or value["reviewId"] != review_id:
@@ -179,20 +225,7 @@ def validate_request(raw: Dict[str, Any], project_id: str, package_id: str, revi
     task_id = require_ref(value["taskId"], "C10_TASK_ID_INVALID", WINDOW_ID)
     authorization = validate_authorization(value["bossDispatchAuthorization"], task_id)
     runtime_project = validate_runtime_project(value["runtimeProject"])
-    agents = value["subAgents"]
-    if not isinstance(agents, list) or len(agents) > 3:
-        raise DispatchError("C10_FIRST_LEVEL_SUB_AGENT_LIMIT_EXCEEDED")
-    normalized: List[Dict[str, str]] = []
-    for agent in agents:
-        item = exact(agent, {"subAgentId", "role", "level"}, "C10_SUB_AGENT_SCHEMA_INVALID")
-        if item["level"] != 1:
-            raise DispatchError("C10_GRANDCHILD_SUB_AGENT_FORBIDDEN")
-        role = str(item["role"]).strip()
-        if not role or len(role) > 160:
-            raise DispatchError("C10_SUB_AGENT_ROLE_INVALID")
-        normalized.append({"subAgentId": require_ref(item["subAgentId"], "C10_SUB_AGENT_ID_INVALID", WINDOW_ID), "role": role, "level": 1})
-    if len({x["subAgentId"] for x in normalized}) != len(normalized):
-        raise DispatchError("C10_DUPLICATE_SUB_AGENT_ID")
+    normalized = validate_sub_agent_specs(value["subAgents"])
     return {
         "dispatchId": require_ref(value["dispatchId"], "C10_DISPATCH_ID_INVALID"),
         "projectId": project_id,
@@ -478,13 +511,146 @@ def confirm(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             for agent_id, runtime_ref in agent_runtime.items():
                 if agent_id in after["subAgents"]: raise DispatchError("C10_SUB_AGENT_ID_ALREADY_REGISTERED")
                 spec = plan_agents[agent_id]
-                after["subAgents"][agent_id] = {"subAgentId": agent_id, "windowId": confirmation["windowId"], "role": spec["role"], "model": "gpt-5.6-terra", "level": 1, "status": "REGISTERED", "runtimeAgentRef": runtime_ref, "dispatchId": dispatch_id, "registeredAt": utc_now()}
+                after["subAgents"][agent_id] = {
+                    "subAgentId": agent_id, "windowId": confirmation["windowId"], "taskId": plan["taskId"],
+                    "role": spec["role"], "scope": spec["scope"], "delegationReason": spec["delegationReason"],
+                    "executionMode": spec["executionMode"], "model": "gpt-5.6-terra", "level": 1,
+                    "status": "REGISTERED", "runtimeAgentRef": runtime_ref, "dispatchId": dispatch_id,
+                    "registeredAt": utc_now(),
+                }
             target_task = after["tasks"][plan["taskId"]]; target_task["status"] = "IN_PROGRESS"
             target_task["history"].append({"at": utc_now(), "event": "C10_RUNTIME_DISPATCH_CONFIRMED", "dispatchId": dispatch_id, "windowId": confirmation["windowId"], "from": "READY", "to": "IN_PROGRESS", "by": CENTRAL_WRITER})
         result = commit_mutation(root, project_id, before, CENTRAL_WRITER, "C10_CONFIRM_RUNTIME_DISPATCH", {"dispatchId": dispatch_id, "taskId": plan["taskId"], "windowId": confirmation["windowId"], "subAgentCount": len(confirmation["agents"])}, mutate)
-        artifact = {"schemaVersion": SCHEMA_VERSION, "recordType": "C10_DISPATCH_CONFIRMATION", "dispatchId": dispatch_id, "confirmedAt": utc_now(), "projectId": project_id, "taskId": plan["taskId"], "taskIdentity": plan["taskIdentity"], "windowId": confirmation["windowId"], "windowAssignment": {"assignmentNumber": plan["windowAction"]["assignmentNumber"], "maxAssignments": MAX_TASKS_PER_WINDOW, "isFinalAllowedAssignment": plan["windowAction"]["assignmentNumber"] == MAX_TASKS_PER_WINDOW}, "runtimeThreadRef": confirmation["runtimeThreadRef"], "runtimeProjectId": confirmation["runtimeProjectId"], "runtimeCwd": confirmation["runtimeCwd"], "environmentType": confirmation["environmentType"], "associationMethod": confirmation["associationMethod"], "associationHandoffRefs": confirmation["associationHandoffRefs"], "authorizationScope": plan["authorizationScope"], "subAgents": confirmation["agents"], "sourceConfirmationDigest": confirmation_digest, "ledgerReceiptId": result["receiptId"], "boundary": {"runtimeConfirmed": True, "projectAssociationVerified": True, "taskStatus": "IN_PROGRESS", "businessWritePerformed": False, "completionMustReturnToParentWindow": True}}
+        artifact = {"schemaVersion": SCHEMA_VERSION, "recordType": "C10_DISPATCH_CONFIRMATION", "dispatchId": dispatch_id, "confirmedAt": utc_now(), "projectId": project_id, "taskId": plan["taskId"], "taskIdentity": plan["taskIdentity"], "windowId": confirmation["windowId"], "windowAssignment": {"assignmentNumber": plan["windowAction"]["assignmentNumber"], "maxAssignments": MAX_TASKS_PER_WINDOW, "isFinalAllowedAssignment": plan["windowAction"]["assignmentNumber"] == MAX_TASKS_PER_WINDOW}, "runtimeThreadRef": confirmation["runtimeThreadRef"], "runtimeProjectId": confirmation["runtimeProjectId"], "runtimeCwd": confirmation["runtimeCwd"], "environmentType": confirmation["environmentType"], "associationMethod": confirmation["associationMethod"], "associationHandoffRefs": confirmation["associationHandoffRefs"], "authorizationScope": plan["authorizationScope"], "subAgents": confirmation["agents"], "sourceConfirmationDigest": confirmation_digest, "ledgerReceiptId": result["receiptId"], "boundary": {"runtimeConfirmed": True, "projectAssociationVerified": True, "taskStatus": "IN_PROGRESS", "businessWritePerformed": False, "completionMustReturnToParentWindow": True, "parentQualityGateRequiredIfSubAgentsUsed": bool(confirmation["agents"])}}
         write_exclusive(target, artifact)
     return {"status": "RUNTIME_DISPATCH_CONFIRMED", "dispatchId": dispatch_id, "windowId": confirmation["windowId"], "assignmentNumber": plan["windowAction"]["assignmentNumber"], "maxAssignments": MAX_TASKS_PER_WINDOW, "associationMethod": confirmation["associationMethod"], "subAgentCount": len(confirmation["agents"]), "taskStatus": "IN_PROGRESS", "ledgerReceiptId": result["receiptId"], "writePerformed": True, "dispatchPerformed": True, "businessWritePerformed": False}, 0
+
+
+def task_window_agents(ledger: Dict[str, Any], window_id: str, task_id: str) -> Dict[str, Dict[str, Any]]:
+    """Return only the first-level helpers belonging to this live task assignment."""
+    return {
+        agent_id: agent for agent_id, agent in ledger.get("subAgents", {}).items()
+        if isinstance(agent, dict) and agent.get("windowId") == window_id
+        and agent.get("taskId") == task_id and agent.get("level") == 1
+    }
+
+
+def validate_append_request(raw: Dict[str, Any], project_id: str, dispatch_id: str, confirmation: Dict[str, Any]) -> Dict[str, Any]:
+    value = exact(raw, {"appendSchemaVersion", "recordType", "appendId", "dispatchId", "projectId", "taskId", "windowId", "trigger", "subAgents"}, "C10_APPEND_REQUEST_SCHEMA_UNSUPPORTED")
+    if (
+        value["appendSchemaVersion"] != SCHEMA_VERSION or value["recordType"] != "C10_SUB_AGENT_APPEND_REQUEST"
+        or value["dispatchId"] != dispatch_id or value["projectId"] != project_id
+        or value["taskId"] != confirmation.get("taskId") or value["windowId"] != confirmation.get("windowId")
+    ):
+        raise DispatchError("C10_APPEND_REQUEST_SCOPE_MISMATCH")
+    trigger = exact(value["trigger"], {"phase", "delegationReason", "withinApprovedScope", "sharedWriteRisk", "summary"}, "C10_APPEND_TRIGGER_INVALID")
+    phase = str(trigger["phase"]).strip().upper()
+    reason = str(trigger["delegationReason"]).strip().upper()
+    summary = str(trigger["summary"]).strip()
+    if phase not in {"PRE_EXECUTION", "DISCOVERY", "PRE_VALIDATION"} or reason not in {"LARGE_MATERIALS", "INDEPENDENT_SCOPE", "INDEPENDENT_VERIFICATION", "CROSS_CHECK"}:
+        raise DispatchError("C10_APPEND_TRIGGER_INVALID")
+    if trigger["withinApprovedScope"] is not True or trigger["sharedWriteRisk"] is not False or not summary or len(summary) > 600:
+        raise DispatchError("C10_APPEND_SCOPE_OR_WRITE_RISK_NOT_ACCEPTABLE")
+    return {
+        "appendId": require_ref(value["appendId"], "C10_APPEND_ID_INVALID"), "dispatchId": dispatch_id,
+        "projectId": project_id, "taskId": confirmation["taskId"], "windowId": confirmation["windowId"],
+        "trigger": {"phase": phase, "delegationReason": reason, "withinApprovedScope": True, "sharedWriteRisk": False, "summary": summary},
+        "subAgents": validate_sub_agent_specs(value["subAgents"], "C10_APPEND_SUB_AGENT_SCHEMA_INVALID"),
+    }
+
+
+def prepare_append(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
+    root = load_data_root(args); project_id = require_ref(args.project_id, "C10_PROJECT_ID_INVALID")
+    dispatch_id = require_ref(args.dispatch_id, "C10_DISPATCH_ID_INVALID")
+    if args.writer_id != CENTRAL_WRITER: raise DispatchError("C10_WRITER_NOT_AUTHORIZED")
+    confirmation = read_json(confirmation_path(root, project_id, dispatch_id), "C10_DISPATCH_MUST_BE_CONFIRMED_BEFORE_APPEND")
+    raw, request_digest = load_private(args.append_request, root, "C10_APPEND_REQUEST_INVALID_JSON")
+    request = validate_append_request(raw, project_id, dispatch_id, confirmation)
+    target = append_plan_path(root, project_id, dispatch_id, request["appendId"])
+    if target.exists():
+        existing = read_json(target, "C10_EXISTING_APPEND_PLAN_INVALID")
+        if existing.get("source", {}).get("requestDigest") == request_digest:
+            return {"status": "IDEMPOTENT_EXISTING_SUB_AGENT_APPEND_PLAN", "dispatchId": dispatch_id, "appendId": request["appendId"], "writePerformed": False, "dispatchPerformed": False}, 0
+        raise DispatchError("C10_APPEND_ID_REUSED_WITH_DIFFERENT_REQUEST")
+    with dispatch_lock(root, project_id), ledger_lock(root, project_id):
+        ledger = load_ledger(root, project_id)
+        if ledger.get("recovery", {}).get("state") not in {"NORMAL", "CLOSED"} or ledger.get("hardStops"):
+            raise DispatchError("C10_RECOVERY_OR_HARD_STOP_BLOCKS_APPEND")
+        task = ledger.get("tasks", {}).get(request["taskId"])
+        window = ledger.get("windows", {}).get(request["windowId"])
+        if not isinstance(task, dict) or task.get("status") != "IN_PROGRESS" or not isinstance(window, dict) or window_current_task_id(window) != request["taskId"]:
+            raise DispatchError("C10_APPEND_REQUIRES_LIVE_TASK_WINDOW")
+        existing_agents = task_window_agents(ledger, request["windowId"], request["taskId"])
+        if len(existing_agents) + len(request["subAgents"]) > 3:
+            raise DispatchError("C10_FIRST_LEVEL_SUB_AGENT_LIMIT_EXCEEDED")
+        if set(existing_agents).intersection({agent["subAgentId"] for agent in request["subAgents"]}):
+            raise DispatchError("C10_SUB_AGENT_ID_ALREADY_REGISTERED")
+        plan = {
+            "schemaVersion": SCHEMA_VERSION, "recordType": "C10_SUB_AGENT_APPEND_PLAN", "appendId": request["appendId"],
+            "dispatchId": dispatch_id, "projectId": project_id, "taskId": request["taskId"], "windowId": request["windowId"],
+            "createdAt": utc_now(), "status": "PENDING_RUNTIME_CONFIRMATION", "trigger": request["trigger"],
+            "subAgents": [{**agent, "model": "gpt-5.6-terra", "parent": "TASK_WINDOW"} for agent in request["subAgents"]],
+            "source": {"requestDigest": request_digest, "dispatchConfirmationDigest": canonical_digest(confirmation), "ledgerRevision": ledger["revision"], "ledgerDigest": canonical_digest(ledger)},
+            "boundary": {"withinApprovedScope": True, "sharedWriteRisk": False, "businessWritePerformed": False, "requiresParentQualityGate": True, "completionReturnsToParentWindow": True},
+        }
+        write_exclusive(target, plan)
+    return {"status": "READY_FOR_RUNTIME_SUB_AGENT_APPEND", "dispatchId": dispatch_id, "appendId": request["appendId"], "windowId": request["windowId"], "subAgentCount": len(request["subAgents"]), "writePerformed": True, "dispatchPerformed": False, "businessWritePerformed": False}, 0
+
+
+def validate_append_confirmation(raw: Dict[str, Any], append_id: str, dispatch_id: str, plan: Dict[str, Any]) -> Dict[str, Any]:
+    value = exact(raw, {"appendConfirmationSchemaVersion", "recordType", "appendId", "dispatchId", "windowId", "subAgents"}, "C10_APPEND_CONFIRMATION_SCHEMA_UNSUPPORTED")
+    if value["appendConfirmationSchemaVersion"] != SCHEMA_VERSION or value["recordType"] != "C10_SUB_AGENT_APPEND_RUNTIME_CONFIRMATION" or value["appendId"] != append_id or value["dispatchId"] != dispatch_id or value["windowId"] != plan["windowId"]:
+        raise DispatchError("C10_APPEND_CONFIRMATION_SCOPE_MISMATCH")
+    agents = value["subAgents"]
+    if not isinstance(agents, list) or len(agents) != len(plan["subAgents"]):
+        raise DispatchError("C10_SUB_AGENT_CONFIRMATION_COUNT_MISMATCH")
+    expected = {agent["subAgentId"] for agent in plan["subAgents"]}; normalized = []
+    for raw_agent in agents:
+        agent = exact(raw_agent, {"subAgentId", "status", "runtimeAgentRef"}, "C10_SUB_AGENT_CONFIRMATION_INVALID")
+        agent_id = require_ref(agent["subAgentId"], "C10_SUB_AGENT_ID_INVALID", WINDOW_ID)
+        if agent_id not in expected or agent["status"] != "CREATED": raise DispatchError("C10_SUB_AGENT_RUNTIME_NOT_CONFIRMED")
+        normalized.append({"subAgentId": agent_id, "runtimeAgentRef": require_ref(agent["runtimeAgentRef"], "C10_RUNTIME_AGENT_REF_INVALID")})
+    if len({agent["subAgentId"] for agent in normalized}) != len(normalized): raise DispatchError("C10_DUPLICATE_SUB_AGENT_CONFIRMATION")
+    return {"windowId": plan["windowId"], "agents": normalized}
+
+
+def confirm_append(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
+    root = load_data_root(args); project_id = require_ref(args.project_id, "C10_PROJECT_ID_INVALID"); dispatch_id = require_ref(args.dispatch_id, "C10_DISPATCH_ID_INVALID"); append_id = require_ref(args.append_id, "C10_APPEND_ID_INVALID")
+    if args.writer_id != CENTRAL_WRITER: raise DispatchError("C10_WRITER_NOT_AUTHORIZED")
+    plan = read_json(append_plan_path(root, project_id, dispatch_id, append_id), "C10_APPEND_PLAN_NOT_FOUND_OR_INVALID")
+    raw, confirmation_digest = load_private(args.confirmation, root, "C10_APPEND_CONFIRMATION_INVALID_JSON")
+    confirmation = validate_append_confirmation(raw, append_id, dispatch_id, plan)
+    target = append_confirmation_path(root, project_id, dispatch_id, append_id)
+    if target.exists():
+        existing = read_json(target, "C10_EXISTING_APPEND_CONFIRMATION_INVALID")
+        if existing.get("sourceConfirmationDigest") == confirmation_digest:
+            return {"status": "IDEMPOTENT_SUB_AGENT_APPEND_CONFIRMATION", "dispatchId": dispatch_id, "appendId": append_id, "writePerformed": False, "dispatchPerformed": True}, 0
+        raise DispatchError("C10_APPEND_CONFIRMATION_ALREADY_EXISTS_WITH_DIFFERENT_CONTENT")
+    with dispatch_lock(root, project_id), ledger_lock(root, project_id):
+        before = load_ledger(root, project_id)
+        task = before.get("tasks", {}).get(plan["taskId"]); window = before.get("windows", {}).get(plan["windowId"])
+        if before.get("recovery", {}).get("state") not in {"NORMAL", "CLOSED"} or before.get("hardStops"):
+            raise DispatchError("C10_RECOVERY_OR_HARD_STOP_BLOCKS_APPEND")
+        if not isinstance(task, dict) or task.get("status") != "IN_PROGRESS" or not isinstance(window, dict) or window_current_task_id(window) != plan["taskId"]:
+            raise DispatchError("C10_APPEND_REQUIRES_LIVE_TASK_WINDOW")
+        existing_agents = task_window_agents(before, plan["windowId"], plan["taskId"])
+        if len(existing_agents) + len(confirmation["agents"]) > 3: raise DispatchError("C10_FIRST_LEVEL_SUB_AGENT_LIMIT_EXCEEDED")
+        if set(existing_agents).intersection({agent["subAgentId"] for agent in confirmation["agents"]}): raise DispatchError("C10_SUB_AGENT_ID_ALREADY_REGISTERED")
+        specs = {agent["subAgentId"]: agent for agent in plan["subAgents"]}
+        def mutate(after: Dict[str, Any]) -> None:
+            for item in confirmation["agents"]:
+                spec = specs[item["subAgentId"]]
+                after["subAgents"][item["subAgentId"]] = {
+                    "subAgentId": item["subAgentId"], "windowId": plan["windowId"], "taskId": plan["taskId"], "role": spec["role"],
+                    "scope": spec["scope"], "delegationReason": spec["delegationReason"], "executionMode": spec["executionMode"],
+                    "model": "gpt-5.6-terra", "level": 1, "status": "REGISTERED", "runtimeAgentRef": item["runtimeAgentRef"],
+                    "dispatchId": dispatch_id, "appendId": append_id, "registeredAt": utc_now(),
+                }
+            after["tasks"][plan["taskId"]]["history"].append({"at": utc_now(), "event": "C10_SUB_AGENT_APPEND_CONFIRMED", "dispatchId": dispatch_id, "appendId": append_id, "windowId": plan["windowId"], "to": "IN_PROGRESS", "by": CENTRAL_WRITER})
+        result = commit_mutation(root, project_id, before, CENTRAL_WRITER, "C10_CONFIRM_SUB_AGENT_APPEND", {"dispatchId": dispatch_id, "appendId": append_id, "taskId": plan["taskId"], "windowId": plan["windowId"], "subAgentCount": len(confirmation["agents"])}, mutate)
+        artifact = {"schemaVersion": SCHEMA_VERSION, "recordType": "C10_SUB_AGENT_APPEND_CONFIRMATION", "appendId": append_id, "dispatchId": dispatch_id, "projectId": project_id, "taskId": plan["taskId"], "windowId": plan["windowId"], "confirmedAt": utc_now(), "subAgents": confirmation["agents"], "sourceConfirmationDigest": confirmation_digest, "ledgerReceiptId": result["receiptId"], "boundary": {"runtimeConfirmed": True, "businessWritePerformed": False, "parentQualityGateRequired": True}}
+        write_exclusive(target, artifact)
+    return {"status": "SUB_AGENT_APPEND_CONFIRMED", "dispatchId": dispatch_id, "appendId": append_id, "windowId": plan["windowId"], "subAgentCount": len(confirmation["agents"]), "ledgerReceiptId": result["receiptId"], "writePerformed": True, "dispatchPerformed": True, "businessWritePerformed": False}, 0
 
 
 def export_fallback(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
@@ -559,17 +725,34 @@ def export_fallback(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
 
 
 def validate_return(raw: Dict[str, Any], dispatch_id: str, sub_agent_id: str, window_id: str) -> Dict[str, Any]:
-    value = exact(raw, {"returnSchemaVersion", "recordType", "dispatchId", "subAgentId", "returnId", "submittedToWindowId", "status", "evidenceRefs", "unresolvedRefs"}, "C10_SUB_AGENT_RETURN_SCHEMA_UNSUPPORTED")
+    value = exact(raw, {"returnSchemaVersion", "recordType", "dispatchId", "subAgentId", "returnId", "submittedToWindowId", "status", "scope", "confirmedFacts", "completedWork", "evidenceRefs", "unresolvedRefs", "scopeDeviation", "risksAndConflicts", "recommendedParentAction"}, "C10_SUB_AGENT_RETURN_SCHEMA_UNSUPPORTED")
     if value["returnSchemaVersion"] != SCHEMA_VERSION or value["recordType"] != "C10_SUB_AGENT_RETURN" or value["dispatchId"] != dispatch_id or value["subAgentId"] != sub_agent_id or value["submittedToWindowId"] != window_id:
         raise DispatchError("C10_SUB_AGENT_RETURN_SCOPE_MISMATCH")
     if value["status"] not in {"NEEDS_REVIEW", "PARTIAL", "BLOCKED"}:
         raise DispatchError("C10_SUB_AGENT_CANNOT_DECLARE_DONE")
-    def refs(raw_refs: Any, error: str) -> List[str]:
-        if not isinstance(raw_refs, list) or len(raw_refs) > 80: raise DispatchError(error)
+    def refs(raw_refs: Any, error: str, allow_empty: bool = True) -> List[str]:
+        if not isinstance(raw_refs, list) or len(raw_refs) > 80 or (not allow_empty and not raw_refs): raise DispatchError(error)
         normalized = [require_ref(item, error) for item in raw_refs]
         if len(normalized) != len(set(normalized)): raise DispatchError(error)
         return normalized
-    return {"returnId": require_ref(value["returnId"], "C10_RETURN_ID_INVALID"), "status": value["status"], "evidenceRefs": refs(value["evidenceRefs"], "C10_EVIDENCE_REFS_INVALID"), "unresolvedRefs": refs(value["unresolvedRefs"], "C10_UNRESOLVED_REFS_INVALID")}
+    def statements(raw_items: Any, error: str, allow_empty: bool = False) -> List[str]:
+        if not isinstance(raw_items, list) or len(raw_items) > 40 or (not allow_empty and not raw_items): raise DispatchError(error)
+        normalized = [str(item).strip() for item in raw_items]
+        if any(not item or len(item) > 600 for item in normalized) or len(normalized) != len(set(normalized)): raise DispatchError(error)
+        return normalized
+    scope = str(value["scope"]).strip(); recommendation = str(value["recommendedParentAction"]).strip()
+    if not scope or len(scope) > 600 or not recommendation or len(recommendation) > 1000:
+        raise DispatchError("C10_SUB_AGENT_RETURN_SUMMARY_INVALID")
+    return {
+        "returnId": require_ref(value["returnId"], "C10_RETURN_ID_INVALID"), "status": value["status"], "scope": scope,
+        "confirmedFacts": statements(value["confirmedFacts"], "C10_CONFIRMED_FACTS_INVALID"),
+        "completedWork": statements(value["completedWork"], "C10_COMPLETED_WORK_INVALID"),
+        "evidenceRefs": refs(value["evidenceRefs"], "C10_EVIDENCE_REFS_INVALID", allow_empty=False),
+        "unresolvedRefs": refs(value["unresolvedRefs"], "C10_UNRESOLVED_REFS_INVALID"),
+        "scopeDeviation": statements(value["scopeDeviation"], "C10_SCOPE_DEVIATION_INVALID", allow_empty=True),
+        "risksAndConflicts": statements(value["risksAndConflicts"], "C10_RISKS_AND_CONFLICTS_INVALID", allow_empty=True),
+        "recommendedParentAction": recommendation,
+    }
 
 
 def record_return(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
@@ -589,15 +772,94 @@ def record_return(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         if not isinstance(agent, dict) or agent.get("dispatchId") != dispatch_id or agent.get("windowId") != confirmation["windowId"] or agent.get("level") != 1:
             raise DispatchError("C10_SUB_AGENT_NOT_REGISTERED_TO_PARENT_WINDOW")
         if agent.get("status") != "REGISTERED": raise DispatchError("C10_SUB_AGENT_NOT_ACTIVE")
-        expected_ids = {item["subAgentId"] for item in confirmation["subAgents"]}
-        returned_ids = {path.stem for path in (dispatch_dir(root, project_id, dispatch_id) / "sub-agent-returns").glob("*.json")} if (dispatch_dir(root, project_id, dispatch_id) / "sub-agent-returns").exists() else set()
-        all_returned = returned_ids | {sub_agent_id} == expected_ids
+        expected_agents = task_window_agents(before, confirmation["windowId"], confirmation["taskId"])
+        if sub_agent_id not in expected_agents or expected_agents[sub_agent_id].get("dispatchId") != dispatch_id:
+            raise DispatchError("C10_SUB_AGENT_NOT_REGISTERED_TO_PARENT_WINDOW")
+        all_returned = all(
+            agent_id == sub_agent_id or agent.get("status") == "RETURNED"
+            for agent_id, agent in expected_agents.items()
+        )
         def mutate(after: Dict[str, Any]) -> None:
             target_agent = after["subAgents"][sub_agent_id]; target_agent["status"] = "RETURNED"; target_agent["returnId"] = value["returnId"]; target_agent["returnedAt"] = utc_now()
         result = commit_mutation(root, project_id, before, CENTRAL_WRITER, "C10_RECORD_SUB_AGENT_RETURN", {"dispatchId": dispatch_id, "subAgentId": sub_agent_id, "returnId": value["returnId"], "allSubAgentsReturned": all_returned}, mutate)
-        artifact = {"schemaVersion": SCHEMA_VERSION, "recordType": "C10_VERIFIED_SUB_AGENT_RETURN", "dispatchId": dispatch_id, "subAgentId": sub_agent_id, "returnId": value["returnId"], "recordedAt": utc_now(), "submittedToWindowId": confirmation["windowId"], "status": value["status"], "evidenceRefs": value["evidenceRefs"], "unresolvedRefs": value["unresolvedRefs"], "sourceReturnDigest": return_digest, "ledgerReceiptId": result["receiptId"], "allSubAgentsReturned": all_returned, "boundary": {"taskDoneDeclared": False, "parentWindowMustAggregate": True, "parentCompletionAllowed": all_returned}}
+        artifact = {"schemaVersion": SCHEMA_VERSION, "recordType": "C10_VERIFIED_SUB_AGENT_RETURN", "dispatchId": dispatch_id, "subAgentId": sub_agent_id, "returnId": value["returnId"], "recordedAt": utc_now(), "submittedToWindowId": confirmation["windowId"], "status": value["status"], "scope": value["scope"], "confirmedFacts": value["confirmedFacts"], "completedWork": value["completedWork"], "evidenceRefs": value["evidenceRefs"], "unresolvedRefs": value["unresolvedRefs"], "scopeDeviation": value["scopeDeviation"], "risksAndConflicts": value["risksAndConflicts"], "recommendedParentAction": value["recommendedParentAction"], "sourceReturnDigest": return_digest, "ledgerReceiptId": result["receiptId"], "allSubAgentsReturned": all_returned, "boundary": {"taskDoneDeclared": False, "parentWindowMustAggregate": True, "parentQualityGateRequired": True, "parentCompletionAllowed": False}}
         write_exclusive(target, artifact)
-    return {"status": "SUB_AGENT_RETURN_RECORDED", "dispatchId": dispatch_id, "subAgentId": sub_agent_id, "allSubAgentsReturned": all_returned, "parentCompletionAllowed": all_returned, "taskDoneDeclared": False, "writePerformed": True}, 0
+    return {"status": "SUB_AGENT_RETURN_RECORDED", "dispatchId": dispatch_id, "subAgentId": sub_agent_id, "allSubAgentsReturned": all_returned, "parentQualityGateRequired": True, "parentCompletionAllowed": False, "taskDoneDeclared": False, "writePerformed": True}, 0
+
+
+def validate_parent_quality_review(raw: Dict[str, Any], dispatch_id: str, project_id: str, task_id: str, window_id: str, agents: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    required = {"qualityReviewSchemaVersion", "recordType", "qualityReviewId", "dispatchId", "projectId", "taskId", "windowId", "subAgentReturns", "acceptanceCoverage", "conflictResolutions", "parentReadbackEvidenceRefs", "scopeCheck", "unifiedStatus", "unresolvedRefs", "recommendedParentAction"}
+    value = exact(raw, required, "C10_PARENT_QUALITY_REVIEW_SCHEMA_UNSUPPORTED")
+    if value["qualityReviewSchemaVersion"] != SCHEMA_VERSION or value["recordType"] != "C10_PARENT_QUALITY_REVIEW" or value["dispatchId"] != dispatch_id or value["projectId"] != project_id or value["taskId"] != task_id or value["windowId"] != window_id:
+        raise DispatchError("C10_PARENT_QUALITY_REVIEW_SCOPE_MISMATCH")
+    returns = value["subAgentReturns"]
+    if not isinstance(returns, list) or len(returns) != len(agents): raise DispatchError("C10_PARENT_QUALITY_REVIEW_RETURNS_INVALID")
+    return_ids: Dict[str, str] = {}
+    for item in returns:
+        normalized = exact(item, {"subAgentId", "returnId"}, "C10_PARENT_QUALITY_REVIEW_RETURNS_INVALID")
+        return_ids[require_ref(normalized["subAgentId"], "C10_PARENT_QUALITY_REVIEW_RETURNS_INVALID", WINDOW_ID)] = require_ref(normalized["returnId"], "C10_PARENT_QUALITY_REVIEW_RETURNS_INVALID")
+    expected_returns = {agent_id: agent.get("returnId") for agent_id, agent in agents.items()}
+    if return_ids != expected_returns:
+        raise DispatchError("C10_PARENT_QUALITY_REVIEW_RETURNS_INCOMPLETE")
+    coverage_keys = {"positiveCases", "negativeCases", "idempotencyChecks", "rollbackChecks", "logAndHistoryChecks", "readbackChecks"}
+    coverage = exact(value["acceptanceCoverage"], coverage_keys, "C10_PARENT_QUALITY_REVIEW_COVERAGE_INVALID")
+    normalized_coverage: Dict[str, List[str]] = {}
+    for key, refs in coverage.items():
+        if not isinstance(refs, list) or not refs or len(refs) > 40:
+            raise DispatchError("C10_PARENT_QUALITY_REVIEW_COVERAGE_INVALID")
+        normalized_refs = [require_ref(ref, "C10_PARENT_QUALITY_REVIEW_COVERAGE_INVALID") for ref in refs]
+        if len(normalized_refs) != len(set(normalized_refs)):
+            raise DispatchError("C10_PARENT_QUALITY_REVIEW_COVERAGE_INVALID")
+        normalized_coverage[key] = normalized_refs
+    conflicts = value["conflictResolutions"]
+    if not isinstance(conflicts, list) or len(conflicts) != len(agents): raise DispatchError("C10_PARENT_QUALITY_REVIEW_CONFLICTS_INVALID")
+    seen_conflicts = set(); normalized_conflicts = []
+    for item in conflicts:
+        normalized = exact(item, {"subAgentId", "outcome", "resolutionRef"}, "C10_PARENT_QUALITY_REVIEW_CONFLICTS_INVALID")
+        agent_id = require_ref(normalized["subAgentId"], "C10_PARENT_QUALITY_REVIEW_CONFLICTS_INVALID", WINDOW_ID)
+        if agent_id not in agents or agent_id in seen_conflicts or str(normalized["outcome"]).upper() not in {"NO_CONFLICT", "RESOLVED", "ESCALATED"}:
+            raise DispatchError("C10_PARENT_QUALITY_REVIEW_CONFLICTS_INVALID")
+        resolution_ref = require_ref(normalized["resolutionRef"], "C10_PARENT_QUALITY_REVIEW_CONFLICTS_INVALID")
+        normalized_conflicts.append({"subAgentId": agent_id, "outcome": str(normalized["outcome"]).upper(), "resolutionRef": resolution_ref}); seen_conflicts.add(agent_id)
+    readback_refs = value["parentReadbackEvidenceRefs"]
+    if not isinstance(readback_refs, list) or not readback_refs or len(readback_refs) > 40:
+        raise DispatchError("C10_PARENT_QUALITY_REVIEW_READBACK_INVALID")
+    normalized_readback = [require_ref(item, "C10_PARENT_QUALITY_REVIEW_READBACK_INVALID") for item in readback_refs]
+    if len(normalized_readback) != len(set(normalized_readback)): raise DispatchError("C10_PARENT_QUALITY_REVIEW_READBACK_INVALID")
+    scope_check = exact(value["scopeCheck"], {"withinApprovedScope", "unexpectedWriteFound"}, "C10_PARENT_QUALITY_REVIEW_SCOPE_INVALID")
+    if scope_check["withinApprovedScope"] is not True or scope_check["unexpectedWriteFound"] is not False:
+        raise DispatchError("C10_PARENT_QUALITY_REVIEW_SCOPE_INVALID")
+    status = str(value["unifiedStatus"]).upper()
+    if status not in {"NEEDS_REVIEW", "PARTIAL", "BLOCKED"}: raise DispatchError("C10_PARENT_QUALITY_REVIEW_CANNOT_DECLARE_DONE")
+    unresolved = value["unresolvedRefs"]
+    if not isinstance(unresolved, list) or len(unresolved) > 80: raise DispatchError("C10_PARENT_QUALITY_REVIEW_UNRESOLVED_INVALID")
+    normalized_unresolved = [require_ref(item, "C10_PARENT_QUALITY_REVIEW_UNRESOLVED_INVALID") for item in unresolved]
+    if len(normalized_unresolved) != len(set(normalized_unresolved)): raise DispatchError("C10_PARENT_QUALITY_REVIEW_UNRESOLVED_INVALID")
+    recommendation = str(value["recommendedParentAction"]).strip()
+    if not recommendation or len(recommendation) > 1000: raise DispatchError("C10_PARENT_QUALITY_REVIEW_RECOMMENDATION_INVALID")
+    return {"qualityReviewId": require_ref(value["qualityReviewId"], "C10_PARENT_QUALITY_REVIEW_ID_INVALID"), "subAgentReturns": [{"subAgentId": key, "returnId": return_ids[key]} for key in sorted(return_ids)], "acceptanceCoverage": normalized_coverage, "conflictResolutions": normalized_conflicts, "parentReadbackEvidenceRefs": normalized_readback, "scopeCheck": {"withinApprovedScope": True, "unexpectedWriteFound": False}, "unifiedStatus": status, "unresolvedRefs": normalized_unresolved, "recommendedParentAction": recommendation}
+
+
+def record_parent_quality_review(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
+    root = load_data_root(args); project_id = require_ref(args.project_id, "C10_PROJECT_ID_INVALID"); dispatch_id = require_ref(args.dispatch_id, "C10_DISPATCH_ID_INVALID")
+    if args.writer_id != CENTRAL_WRITER: raise DispatchError("C10_WRITER_NOT_AUTHORIZED")
+    confirmation = read_json(confirmation_path(root, project_id, dispatch_id), "C10_DISPATCH_MUST_BE_CONFIRMED_BEFORE_PARENT_QUALITY_REVIEW")
+    raw, review_digest = load_private(args.quality_review, root, "C10_PARENT_QUALITY_REVIEW_INVALID_JSON")
+    with dispatch_lock(root, project_id), ledger_lock(root, project_id):
+        ledger = load_ledger(root, project_id); agents = task_window_agents(ledger, confirmation["windowId"], confirmation["taskId"])
+        if not agents: raise DispatchError("C10_PARENT_QUALITY_REVIEW_REQUIRES_SUB_AGENTS")
+        if any(agent.get("status") != "RETURNED" or not agent.get("returnId") for agent in agents.values()):
+            raise DispatchError("C10_PARENT_QUALITY_GATE_REQUIRES_ALL_SUB_AGENT_RETURNS")
+        review = validate_parent_quality_review(raw, dispatch_id, project_id, confirmation["taskId"], confirmation["windowId"], agents)
+        target = parent_quality_review_path(root, project_id, dispatch_id)
+        if target.exists():
+            existing = read_json(target, "C10_EXISTING_PARENT_QUALITY_REVIEW_INVALID")
+            if existing.get("sourceReviewDigest") == review_digest:
+                return {"status": "IDEMPOTENT_PARENT_QUALITY_REVIEW", "dispatchId": dispatch_id, "qualityReviewId": existing["qualityReviewId"], "writePerformed": False, "parentMayRequestC06": True}, 0
+            raise DispatchError("C10_PARENT_QUALITY_REVIEW_ALREADY_EXISTS_WITH_DIFFERENT_CONTENT")
+        artifact = {"schemaVersion": SCHEMA_VERSION, "recordType": "C10_PARENT_QUALITY_REVIEW", "qualityReviewId": review["qualityReviewId"], "dispatchId": dispatch_id, "projectId": project_id, "taskId": confirmation["taskId"], "windowId": confirmation["windowId"], "recordedAt": utc_now(), "subAgentReturns": review["subAgentReturns"], "acceptanceCoverage": review["acceptanceCoverage"], "conflictResolutions": review["conflictResolutions"], "parentReadbackEvidenceRefs": review["parentReadbackEvidenceRefs"], "scopeCheck": review["scopeCheck"], "unifiedStatus": review["unifiedStatus"], "unresolvedRefs": review["unresolvedRefs"], "recommendedParentAction": review["recommendedParentAction"], "sourceReviewDigest": review_digest, "boundary": {"taskDoneDeclared": False, "parentQualityGatePassed": True, "parentMayRequestC06": True, "businessWritePerformed": False}}
+        write_exclusive(target, artifact)
+    return {"status": "PARENT_QUALITY_GATE_RECORDED", "dispatchId": dispatch_id, "qualityReviewId": review["qualityReviewId"], "parentMayRequestC06": True, "taskDoneDeclared": False, "writePerformed": True, "businessWritePerformed": False}, 0
 
 
 def parse_args() -> argparse.Namespace:
@@ -608,14 +870,17 @@ def parse_args() -> argparse.Namespace:
     prepare_parser = commands.add_parser("prepare"); prepare_parser.add_argument("--package-id", required=True); prepare_parser.add_argument("--review-id", required=True); prepare_parser.add_argument("--request", required=True)
     confirm_parser = commands.add_parser("confirm"); confirm_parser.add_argument("--dispatch-id", required=True); confirm_parser.add_argument("--confirmation", required=True)
     fallback_parser = commands.add_parser("export-fallback"); fallback_parser.add_argument("--dispatch-id", required=True)
+    append_prepare_parser = commands.add_parser("prepare-append"); append_prepare_parser.add_argument("--dispatch-id", required=True); append_prepare_parser.add_argument("--append-request", required=True)
+    append_confirm_parser = commands.add_parser("confirm-append"); append_confirm_parser.add_argument("--dispatch-id", required=True); append_confirm_parser.add_argument("--append-id", required=True); append_confirm_parser.add_argument("--confirmation", required=True)
     return_parser = commands.add_parser("record-return"); return_parser.add_argument("--dispatch-id", required=True); return_parser.add_argument("--sub-agent-id", required=True); return_parser.add_argument("--return-file", required=True)
+    quality_parser = commands.add_parser("record-parent-quality-review"); quality_parser.add_argument("--dispatch-id", required=True); quality_parser.add_argument("--quality-review", required=True)
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     try:
-        handlers = {"prepare": prepare, "confirm": confirm, "export-fallback": export_fallback, "record-return": record_return}; result, code = handlers[args.command](args); print_result(result); return code
+        handlers = {"prepare": prepare, "confirm": confirm, "prepare-append": prepare_append, "confirm-append": confirm_append, "export-fallback": export_fallback, "record-return": record_return, "record-parent-quality-review": record_parent_quality_review}; result, code = handlers[args.command](args); print_result(result); return code
     except (C02Error, DispatchError, LedgerError) as error:
         reason = str(error)
         status = "NEEDS_REVIEW" if reason == "C10_TASK_IDENTITY_MISMATCH" else "REFUSED"

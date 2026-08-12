@@ -33,7 +33,9 @@ from occupancy_conflict_checker import OccupancyError, verify_decision_data as v
 from task_package_generator import TaskPackageError, load_package, verify_package
 
 
-SCHEMA_VERSION = "0.6.0"
+SCHEMA_VERSION = "0.7.0"
+C10_SCHEMA_VERSION = "0.15.0"
+DISPATCHES_DIRECTORY = Path("dispatches")
 VALIDATIONS_DIRECTORY = Path("handover-validations")
 DECISION_FILENAME = "validation-decision.json"
 FINALIZATION_FILENAME = "boss-finalization.json"
@@ -95,6 +97,10 @@ def receipt_directory(data_root: Path, project_id: str, validation_id: str) -> P
     return validation_directory(data_root, project_id, validation_id) / RECEIPTS_DIRECTORY
 
 
+def parent_quality_review_path(data_root: Path, project_id: str, dispatch_id: str) -> Path:
+    return data_root / DISPATCHES_DIRECTORY / project_id / dispatch_id / "parent-quality-review.json"
+
+
 def write_json_exclusive(path: Path, payload: Dict[str, Any]) -> None:
     serialized = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     try:
@@ -138,7 +144,7 @@ def validate_handback(payload: Any, project_id: str, package_id: str) -> Dict[st
     required = {
         "handbackSchemaVersion", "recordType", "handbackId", "projectId", "packageId", "c05ReviewId",
         "taskId", "windowId", "completionSignalId", "submittedBy", "bossHandbackAuthorization",
-        "executedScopeRefs", "evidenceRefs", "testAndObjectRefs", "unresolvedRefs", "residualRiskRefs",
+        "executedScopeRefs", "evidenceRefs", "testAndObjectRefs", "parentQualityReviewRefs", "unresolvedRefs", "residualRiskRefs",
     }
     handback = require_exact_object(payload, required, "C06_HANDBACK_SCHEMA_UNSUPPORTED")
     if handback["handbackSchemaVersion"] != SCHEMA_VERSION or handback["recordType"] != "C06_TASK_WINDOW_HANDBACK":
@@ -173,6 +179,7 @@ def validate_handback(payload: Any, project_id: str, package_id: str) -> Dict[st
         "executedScopeRefs": require_reference_list(handback["executedScopeRefs"], "C06_EXECUTED_SCOPE_REFS_INVALID"),
         "evidenceRefs": require_reference_list(handback["evidenceRefs"], "C06_EVIDENCE_REFS_INVALID"),
         "testAndObjectRefs": require_reference_list(handback["testAndObjectRefs"], "C06_TEST_OBJECT_REFS_INVALID"),
+        "parentQualityReviewRefs": require_reference_list(handback["parentQualityReviewRefs"], "C06_PARENT_QUALITY_REVIEW_REFS_INVALID", allow_empty=True),
         "unresolvedRefs": require_reference_list(handback["unresolvedRefs"], "C06_UNRESOLVED_REFS_INVALID", allow_empty=True),
         "residualRiskRefs": require_reference_list(handback["residualRiskRefs"], "C06_RESIDUAL_RISK_REFS_INVALID", allow_empty=True),
     }
@@ -250,6 +257,80 @@ def require_writer(writer_id: Optional[str]) -> str:
     return writer_id
 
 
+def verify_parent_quality_reviews(data_root: Path, project_id: str, ledger: Dict[str, Any], handback: Dict[str, Any]) -> None:
+    """Require the parent window's consolidation when this assignment used helpers.
+
+    C06 remains the independent final reviewer. This check only stops the parent
+    from skipping its own evidence consolidation or silently pasting child output.
+    """
+    grouped: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for agent_id, agent in ledger.get("subAgents", {}).items():
+        if (
+            isinstance(agent, dict) and agent.get("windowId") == handback["windowId"]
+            and agent.get("taskId") == handback["taskId"] and agent.get("level") == 1
+        ):
+            dispatch_id = agent.get("dispatchId")
+            if not isinstance(dispatch_id, str) or not REFERENCE_PATTERN.fullmatch(dispatch_id):
+                raise HandoverValidationError("C06_SUB_AGENT_DISPATCH_LINK_INVALID")
+            grouped.setdefault(dispatch_id, {})[agent_id] = agent
+    supplied_refs = set(handback["parentQualityReviewRefs"])
+    if not grouped:
+        if supplied_refs:
+            raise HandoverValidationError("C06_UNEXPECTED_PARENT_QUALITY_REVIEW_REFERENCE")
+        return
+    expected_refs = set()
+    for dispatch_id, agents in grouped.items():
+        if any(agent.get("status") != "RETURNED" or not isinstance(agent.get("returnId"), str) for agent in agents.values()):
+            raise HandoverValidationError("C06_SUB_AGENT_RETURN_NOT_COMPLETE")
+        path = parent_quality_review_path(data_root, project_id, dispatch_id)
+        try:
+            review = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            raise HandoverValidationError("C06_PARENT_QUALITY_REVIEW_NOT_FOUND_OR_INVALID")
+        returns = review.get("subAgentReturns")
+        actual_returns = {}
+        if isinstance(returns, list):
+            for item in returns:
+                if isinstance(item, dict) and isinstance(item.get("subAgentId"), str) and isinstance(item.get("returnId"), str):
+                    actual_returns[item["subAgentId"]] = item["returnId"]
+        expected_returns = {agent_id: agent["returnId"] for agent_id, agent in agents.items()}
+        boundary = review.get("boundary", {})
+        quality_id = review.get("qualityReviewId")
+        coverage = review.get("acceptanceCoverage", {})
+        expected_coverage = {"positiveCases", "negativeCases", "idempotencyChecks", "rollbackChecks", "logAndHistoryChecks", "readbackChecks"}
+        coverage_is_complete = isinstance(coverage, dict) and set(coverage) == expected_coverage and all(
+            isinstance(refs, list) and refs and all(isinstance(ref, str) and REFERENCE_PATTERN.fullmatch(ref) for ref in refs)
+            for refs in coverage.values()
+        )
+        scope_check = review.get("scopeCheck", {})
+        conflicts = review.get("conflictResolutions")
+        conflict_agents = {
+            item.get("subAgentId") for item in conflicts
+            if isinstance(item, dict) and isinstance(item.get("subAgentId"), str)
+            and item.get("outcome") in {"NO_CONFLICT", "RESOLVED", "ESCALATED"}
+            and isinstance(item.get("resolutionRef"), str) and REFERENCE_PATTERN.fullmatch(item["resolutionRef"])
+        } if isinstance(conflicts, list) else set()
+        parent_readback = review.get("parentReadbackEvidenceRefs")
+        readback_is_present = isinstance(parent_readback, list) and bool(parent_readback) and all(
+            isinstance(ref, str) and REFERENCE_PATTERN.fullmatch(ref) for ref in parent_readback
+        )
+        if (
+            review.get("schemaVersion") != C10_SCHEMA_VERSION or review.get("recordType") != "C10_PARENT_QUALITY_REVIEW"
+            or review.get("projectId") != project_id or review.get("dispatchId") != dispatch_id
+            or review.get("taskId") != handback["taskId"] or review.get("windowId") != handback["windowId"]
+            or actual_returns != expected_returns or boundary.get("parentQualityGatePassed") is not True
+            or boundary.get("parentMayRequestC06") is not True or not isinstance(quality_id, str)
+            or not REFERENCE_PATTERN.fullmatch(quality_id)
+            or not coverage_is_complete or conflict_agents != set(agents)
+            or scope_check != {"withinApprovedScope": True, "unexpectedWriteFound": False}
+            or review.get("unifiedStatus") not in {"NEEDS_REVIEW", "PARTIAL", "BLOCKED"} or not readback_is_present
+        ):
+            raise HandoverValidationError("C06_PARENT_QUALITY_REVIEW_CHAIN_INVALID")
+        expected_refs.add(quality_id)
+    if supplied_refs != expected_refs:
+        raise HandoverValidationError("C06_PARENT_QUALITY_REVIEW_REFERENCE_MISMATCH")
+
+
 def verified_sources(data_root: Path, project_id: str, package_id: str, handback: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     try:
         _, package_exit = verify_package(argparse.Namespace(data_root=str(data_root), config=None, project_id=project_id, package_id=package_id))
@@ -277,6 +358,7 @@ def verified_sources(data_root: Path, project_id: str, package_id: str, handback
         raise HandoverValidationError("C06_HANDBACK_WINDOW_MISMATCH")
     if handback["completionSignalId"] not in task.get("completionSignalIds", []):
         raise HandoverValidationError("C06_COMPLETION_SIGNAL_NOT_RECORDED")
+    verify_parent_quality_reviews(data_root, project_id, ledger, handback)
     return package, c05_decision, ledger
 
 
@@ -319,6 +401,7 @@ def build_decision(
         "source": {
             "packageDigest": canonical_digest(package), "c05DecisionDigest": canonical_digest(c05_decision),
             "handbackDigest": handback_digest, "reviewDigest": review_digest,
+            "parentQualityReviewRefs": handback["parentQualityReviewRefs"],
             "beforeLedgerRevision": before["revision"], "beforeLedgerDigest": canonical_digest(before),
         },
         "bossHandbackAuthorizationRef": handback["bossHandbackAuthorization"]["reference"],

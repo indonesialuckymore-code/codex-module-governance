@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schemaVersion", "module", "models", "subAgentPolicy", "storage", "projectInitialization", "ledger", "occupancy", "validation", "adjudication", "recovery", "centralIntegration", "dispatch", "externalSkills", "naturalLanguageGateway", "publishing"],
   "properties": {
-    "schemaVersion": { "const": "0.14.0" },
+    "schemaVersion": { "const": "0.15.0" },
     "module": {
       "type": "object",
       "additionalProperties": false,
@@ -29,10 +29,14 @@
     "subAgentPolicy": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["maxConcurrentFirstLevel", "allowGrandchildren"],
+      "required": ["maxConcurrentFirstLevel", "allowGrandchildren", "proactiveDelegation", "allowInScopeDynamicAppend", "requireStructuredReturn", "requireParentQualityGate"],
       "properties": {
         "maxConcurrentFirstLevel": { "const": 3 },
-        "allowGrandchildren": { "const": false }
+        "allowGrandchildren": { "const": false },
+        "proactiveDelegation": { "const": true },
+        "allowInScopeDynamicAppend": { "const": true },
+        "requireStructuredReturn": { "const": true },
+        "requireParentQualityGate": { "const": true }
       }
     },
     "storage": {
@@ -130,7 +134,7 @@
     "dispatch": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["requireTwoPhaseRuntimeConfirmation", "allowPlanScopedBatchApproval", "releaseApprovedWavesWhenDependenciesDone", "requireSavedCodexProjectTarget", "maxThreadsPerMonitoringBatch", "greenSharedReadParallel", "yellowIsolatedWriteAllowed", "redConflictHardStop", "subAgentsReturnToParentWindowOnly", "allowSubAgentDoneDeclaration"],
+      "required": ["requireTwoPhaseRuntimeConfirmation", "allowPlanScopedBatchApproval", "releaseApprovedWavesWhenDependenciesDone", "requireSavedCodexProjectTarget", "maxThreadsPerMonitoringBatch", "greenSharedReadParallel", "yellowIsolatedWriteAllowed", "redConflictHardStop", "subAgentsReturnToParentWindowOnly", "allowSubAgentDoneDeclaration", "parentMustReadCriticalEvidence", "noRawSubAgentOutputConcatenation"],
       "properties": {
         "requireTwoPhaseRuntimeConfirmation": { "const": true },
         "allowPlanScopedBatchApproval": { "const": true },
@@ -141,7 +145,9 @@
         "yellowIsolatedWriteAllowed": { "const": true },
         "redConflictHardStop": { "const": true },
         "subAgentsReturnToParentWindowOnly": { "const": true },
-        "allowSubAgentDoneDeclaration": { "const": false }
+        "allowSubAgentDoneDeclaration": { "const": false },
+        "parentMustReadCriticalEvidence": { "const": true },
+        "noRawSubAgentOutputConcatenation": { "const": true }
       }
     },
     "externalSkills": {

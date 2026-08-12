@@ -1,6 +1,6 @@
 ---
 name: task-window-dispatch-controller
-description: 在 Boss 对单项任务或中央启动图作出范围化批准且 C05 占用验收通过后，按并行波次准备和批量派发 Codex 任务窗口及最多 3 个一级子 Agent；强制绑定 Codex 保存项目，只有运行时返回正确项目归属与真实任务 ID 后才登记 C03。Use when 中央要派发一个或一批任务、放行后续依赖波次、复用旧窗口、创建一级子 Agent、修复新任务掉进“最近”而非项目分组、登记真实运行结果或汇总子 Agent 回传。
+description: 在 Boss 对单项任务或中央启动图作出范围化批准且 C05 占用验收通过后，按并行波次准备和批量派发 Codex 任务窗口及最多 3 个一级子 Agent；任务窗口可在原范围内主动补派独立子 Agent，但必须经过结构化回传、父窗口读证和质量闸门，不能牺牲最终质量。强制绑定 Codex 保存项目，只有运行时返回正确项目归属与真实任务 ID 后才登记 C03。Use when 中央要派发一个或一批任务、放行后续依赖波次、复用旧窗口、创建或补派一级子 Agent、修复新任务掉进“最近”而非项目分组、登记真实运行结果或汇总子 Agent 回传。
 ---
 
 # 任务窗口与一级子 Agent 调度
@@ -50,17 +50,41 @@ description: 在 Boss 对单项任务或中央启动图作出范围化批准且 
 
 “同一项目”指 Codex 左栏归入同一个项目。Git 并行任务仍使用不同 worktree 物理目录，这是本地文件隔离，不是跑到另一个项目。
 
-## 子 Agent
+## 子 Agent：主动提速，但父窗口独自对质量负责
 
-- 默认模型 `gpt-5.6-terra`；最多 3 个，且只能一级。
-- 子 Agent 只执行父窗口分配的独立子范围。
-- 子 Agent 回传只能是 `NEEDS_REVIEW`、`PARTIAL` 或 `BLOCKED`，不得声明 `DONE`。
-- 所有子 Agent 回传齐全后，只允许父窗口开始统一汇总；整项完成仍需 C06 和 Boss 最终批准。
+任务窗口在三次固定检查点主动判断，而不是等 Boss 想起再派：完整阅读任务包后的`开始前`、施工中发现新且可隔离材料的`发现时`、提交验收前的`验收前`。
+
+可以派 0–3 个一级 Agent，按真实独立工作量取最小数量：
+
+- `LARGE_MATERIALS`：大量只读材料可拆开，派资料/证据核对。
+- `INDEPENDENT_SCOPE`：已批准范围内有不重叠对象、目录或步骤，派隔离施工或资料整理。
+- `INDEPENDENT_VERIFICATION`：需要独立复核正反例、幂等、回滚或读回，派验证者。
+- `CROSS_CHECK`：发现事实不一致，派只读反证核对。
+
+小任务、必须串行的步骤、共享写入对象、范围不明、外部权限不明或会改变唯一写入方时，派 `0`；不得以“多开 Agent”代替澄清或占用检查。初始派发可带 Agent；运行中新增只可走 `prepare-append → confirm-append`，并同时满足：仍是同一已批准任务、`withinApprovedScope=true`、`sharedWriteRisk=false`、活跃任务窗口、总数不超过 3。它不需要重复向 Boss 索要同一范围批准，但不满足任一条件就停止并交中央/Boss。
+
+每个子 Agent 默认 `gpt-5.6-terra`、只能一级、只执行父窗口分配的独立范围；其模式只能是 `READ_ONLY`、`ISOLATED_WORK` 或 `INDEPENDENT_VALIDATION`。不得下派孙 Agent、改 C03、改任务范围、绕过 C05 或宣布 `DONE`。
+
+子 Agent 回传只能是 `NEEDS_REVIEW`、`PARTIAL` 或 `BLOCKED`，并强制包含：
+
+```text
+【负责范围】
+【已确认事实】
+【完成内容】
+【证据引用】
+【未确认事项】
+【与任务包偏差】
+【风险和冲突】
+【建议父窗口动作】
+【状态】NEEDS_REVIEW / PARTIAL / BLOCKED
+```
+
+父窗口不得把多个回复直接拼接成结论。所有子 Agent 回传齐全后，父窗口必须：逐项覆盖任务包的正例、反例、幂等、回滚、日志/历史和读回验收；读回关键证据；逐项处理子 Agent 间冲突；确认没有越出原范围或出现未知写入；再提交 `record-parent-quality-review`。只有该质量闸门通过，父窗口才能申请 C06；C06 和 Boss 最终批准仍是整项 `DONE` 的唯一通道。
 
 ## 向中央回传
 
 - 任务窗口始终把事件目标写成 `CURRENT_CENTRAL`，不得保存某一代中央聊天 ID 作为永久收件人。
-- 先将 `IN_PROGRESS`、`BLOCKED_FOR_DECISION`、`DECISION_APPLIED` 或 `READY_FOR_VALIDATION` 写入 C08 私有事件箱，再发送聊天提醒。
+- 先将 `IN_PROGRESS`、`BLOCKED_FOR_DECISION`、`DECISION_APPLIED`、`READY_FOR_VALIDATION` 或 `SUB_AGENT_APPEND_REQUEST` 写入 C08 私有事件箱，再发送聊天提醒。补派事件必须引用私有 `C10_SUB_AGENT_APPEND_REQUEST` 文件，中央读回后才可执行 `prepare-append`。
 - 聊天提醒失败不代表事件丢失；当前中央按事件箱读取并确认，旧中央无权确认。
 
 ## 永久边界

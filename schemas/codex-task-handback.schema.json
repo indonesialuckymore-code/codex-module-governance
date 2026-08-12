@@ -4,9 +4,9 @@
   "title": "C06 task-window handback",
   "type": "object",
   "additionalProperties": false,
-  "required": ["handbackSchemaVersion", "recordType", "handbackId", "projectId", "packageId", "c05ReviewId", "taskId", "windowId", "completionSignalId", "submittedBy", "bossHandbackAuthorization", "executedScopeRefs", "evidenceRefs", "testAndObjectRefs", "unresolvedRefs", "residualRiskRefs"],
+  "required": ["handbackSchemaVersion", "recordType", "handbackId", "projectId", "packageId", "c05ReviewId", "taskId", "windowId", "completionSignalId", "submittedBy", "bossHandbackAuthorization", "executedScopeRefs", "evidenceRefs", "testAndObjectRefs", "parentQualityReviewRefs", "unresolvedRefs", "residualRiskRefs"],
   "properties": {
-    "handbackSchemaVersion": { "const": "0.6.0" },
+    "handbackSchemaVersion": { "const": "0.7.0" },
     "recordType": { "const": "C06_TASK_WINDOW_HANDBACK" },
     "handbackId": { "type": "string" },
     "projectId": { "type": "string" },
@@ -20,6 +20,7 @@
     "executedScopeRefs": { "type": "array", "minItems": 1, "items": { "type": "string" } },
     "evidenceRefs": { "type": "array", "minItems": 1, "items": { "type": "string" } },
     "testAndObjectRefs": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "parentQualityReviewRefs": { "type": "array", "items": { "type": "string" } },
     "unresolvedRefs": { "type": "array", "items": { "type": "string" } },
     "residualRiskRefs": { "type": "array", "items": { "type": "string" } }
   }

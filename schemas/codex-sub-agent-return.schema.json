@@ -4,16 +4,22 @@
   "title": "C10 first-level sub-agent return",
   "type": "object",
   "additionalProperties": false,
-  "required": ["returnSchemaVersion", "recordType", "dispatchId", "subAgentId", "returnId", "submittedToWindowId", "status", "evidenceRefs", "unresolvedRefs"],
+  "required": ["returnSchemaVersion", "recordType", "dispatchId", "subAgentId", "returnId", "submittedToWindowId", "status", "scope", "confirmedFacts", "completedWork", "evidenceRefs", "unresolvedRefs", "scopeDeviation", "risksAndConflicts", "recommendedParentAction"],
   "properties": {
-    "returnSchemaVersion": { "const": "0.14.0" },
+    "returnSchemaVersion": { "const": "0.15.0" },
     "recordType": { "const": "C10_SUB_AGENT_RETURN" },
     "dispatchId": { "type": "string" },
     "subAgentId": { "type": "string" },
     "returnId": { "type": "string" },
     "submittedToWindowId": { "type": "string" },
     "status": { "enum": ["NEEDS_REVIEW", "PARTIAL", "BLOCKED"] },
-    "evidenceRefs": { "type": "array", "items": { "type": "string" } },
-    "unresolvedRefs": { "type": "array", "items": { "type": "string" } }
+    "scope": { "type": "string", "minLength": 1, "maxLength": 600 },
+    "confirmedFacts": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "completedWork": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "evidenceRefs": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "unresolvedRefs": { "type": "array", "items": { "type": "string" } },
+    "scopeDeviation": { "type": "array", "items": { "type": "string" } },
+    "risksAndConflicts": { "type": "array", "items": { "type": "string" } },
+    "recommendedParentAction": { "type": "string", "minLength": 1, "maxLength": 1000 }
   }
 }

@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schemaVersion", "recordType", "validationId", "projectId", "packageId", "c05ReviewId", "handbackId", "taskId", "windowId", "createdAt", "writerId", "outcome", "source", "bossHandbackAuthorizationRef", "scopeAssessment", "evidenceAssessment", "unresolvedRefs", "residualRiskRefs", "ledgerMutation", "completionBoundary", "receiptIds", "latestReceiptId"],
   "properties": {
-    "schemaVersion": { "const": "0.6.0" },
+    "schemaVersion": { "const": "0.7.0" },
     "recordType": { "const": "C06_VALIDATION_DECISION" },
     "validationId": { "type": "string" },
     "projectId": { "type": "string" },

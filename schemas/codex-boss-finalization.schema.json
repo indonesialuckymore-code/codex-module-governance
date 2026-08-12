@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schemaVersion", "recordType", "validationId", "projectId", "taskId", "createdAt", "writerId", "validationDecisionDigest", "bossDecision", "bossDecisionRef", "ledgerMutation", "windowMutation", "successorDispatch", "executionBoundary"],
   "properties": {
-    "schemaVersion": { "const": "0.6.0" },
+    "schemaVersion": { "const": "0.7.0" },
     "recordType": { "const": "C06_BOSS_FINALIZATION" },
     "validationId": { "type": "string" },
     "projectId": { "type": "string" },

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-sub-agent-append-request.schema.json",
+  "title": "C10 in-scope sub-agent append request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["appendSchemaVersion", "recordType", "appendId", "dispatchId", "projectId", "taskId", "windowId", "trigger", "subAgents"],
+  "properties": {
+    "appendSchemaVersion": { "const": "0.15.0" },
+    "recordType": { "const": "C10_SUB_AGENT_APPEND_REQUEST" },
+    "appendId": { "type": "string" },
+    "dispatchId": { "type": "string" },
+    "projectId": { "type": "string" },
+    "taskId": { "type": "string" },
+    "windowId": { "type": "string" },
+    "trigger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "delegationReason", "withinApprovedScope", "sharedWriteRisk", "summary"],
+      "properties": {
+        "phase": { "enum": ["PRE_EXECUTION", "DISCOVERY", "PRE_VALIDATION"] },
+        "delegationReason": { "enum": ["LARGE_MATERIALS", "INDEPENDENT_SCOPE", "INDEPENDENT_VERIFICATION", "CROSS_CHECK"] },
+        "withinApprovedScope": { "const": true },
+        "sharedWriteRisk": { "const": false },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 600 }
+      }
+    },
+    "subAgents": { "type": "array", "minItems": 1, "maxItems": 3, "items": { "type": "object" } }
+  }
+}

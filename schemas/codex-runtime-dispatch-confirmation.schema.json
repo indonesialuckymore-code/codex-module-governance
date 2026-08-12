@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["confirmationSchemaVersion", "recordType", "dispatchId", "taskWindow", "subAgents"],
   "properties": {
-    "confirmationSchemaVersion": { "const": "0.14.0" },
+    "confirmationSchemaVersion": { "const": "0.15.0" },
     "recordType": { "const": "C10_RUNTIME_CONFIRMATION" },
     "dispatchId": { "type": "string" },
     "taskWindow": {
