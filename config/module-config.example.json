@@ -1,6 +1,6 @@
 {
   "$schema": "../schemas/module-config.schema.json",
-  "schemaVersion": "0.7.0",
+  "schemaVersion": "0.8.0",
   "module": {
     "id": "replace-with-module-id",
     "displayName": "Codex 模块"
@@ -48,6 +48,15 @@
     "requireBossDecisionBeforeWindowHandoff": true,
     "allowAdviceToChangeTaskState": false,
     "allowAutomaticExecution": false
+  },
+  "recovery": {
+    "soleWriter": "codex-module-central",
+    "freezeBlocksNonRecoveryWrites": true,
+    "releaseOccupancyOnDisconnect": false,
+    "requireBossAuthorizationForTakeover": true,
+    "takeoverResumesBusinessExecution": false,
+    "requireC06ForDoneRelease": true,
+    "requireSeparateBossReleaseAuthorization": true
   },
   "publishing": {
     "mode": "private",

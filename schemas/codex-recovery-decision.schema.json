@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-recovery-decision.schema.json",
+  "title": "C08 recovery decision input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decisionSchemaVersion", "recordType", "caseId", "action", "bossDecisionRef", "reasonRef"],
+  "properties": {
+    "decisionSchemaVersion": { "const": "0.8.0" },
+    "recordType": { "const": "C08_RECOVERY_DECISION_INPUT" },
+    "caseId": { "type": "string" },
+    "action": { "enum": ["KEEP_FROZEN", "PREPARE_RESUME", "CANCEL_TASK"] },
+    "bossDecisionRef": { "type": "string" },
+    "reasonRef": { "type": "string" }
+  }
+}

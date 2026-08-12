@@ -246,6 +246,9 @@ def commit_mutation(
     change_summary: Dict[str, Any],
     mutate,
 ) -> Dict[str, Any]:
+    recovery_state = ledger.get("recovery", {}).get("state", "UNKNOWN")
+    if recovery_state not in {"NORMAL", "CLOSED"} and not operation.startswith("C08_"):
+        raise LedgerError("LEDGER_RECOVERY_FREEZE_ACTIVE")
     before = copy.deepcopy(ledger)
     after = copy.deepcopy(ledger)
     mutate(after)

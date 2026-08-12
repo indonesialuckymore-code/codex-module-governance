@@ -4,9 +4,9 @@
   "title": "Codex Module Governance configuration",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "module", "models", "subAgentPolicy", "storage", "projectInitialization", "ledger", "occupancy", "validation", "adjudication", "publishing"],
+  "required": ["schemaVersion", "module", "models", "subAgentPolicy", "storage", "projectInitialization", "ledger", "occupancy", "validation", "adjudication", "recovery", "publishing"],
   "properties": {
-    "schemaVersion": { "const": "0.7.0" },
+    "schemaVersion": { "const": "0.8.0" },
     "module": {
       "type": "object",
       "additionalProperties": false,
@@ -98,6 +98,20 @@
         "requireBossDecisionBeforeWindowHandoff": { "const": true },
         "allowAdviceToChangeTaskState": { "const": false },
         "allowAutomaticExecution": { "const": false }
+      }
+    },
+    "recovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["soleWriter", "freezeBlocksNonRecoveryWrites", "releaseOccupancyOnDisconnect", "requireBossAuthorizationForTakeover", "takeoverResumesBusinessExecution", "requireC06ForDoneRelease", "requireSeparateBossReleaseAuthorization"],
+      "properties": {
+        "soleWriter": { "const": "codex-module-central" },
+        "freezeBlocksNonRecoveryWrites": { "const": true },
+        "releaseOccupancyOnDisconnect": { "const": false },
+        "requireBossAuthorizationForTakeover": { "const": true },
+        "takeoverResumesBusinessExecution": { "const": false },
+        "requireC06ForDoneRelease": { "const": true },
+        "requireSeparateBossReleaseAuthorization": { "const": true }
       }
     },
     "publishing": {

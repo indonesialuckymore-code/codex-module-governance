@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-occupancy-release.schema.json",
+  "title": "C08 occupancy release input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["releaseSchemaVersion", "recordType", "caseId", "bossReleaseAuthorization", "validationId", "rollbackConfirmed", "noBusinessWritesOutstanding"],
+  "properties": {
+    "releaseSchemaVersion": { "const": "0.8.0" },
+    "recordType": { "const": "C08_OCCUPANCY_RELEASE_INPUT" },
+    "caseId": { "type": "string" },
+    "bossReleaseAuthorization": { "type": "object" },
+    "validationId": { "type": ["string", "null"] },
+    "rollbackConfirmed": { "type": "boolean" },
+    "noBusinessWritesOutstanding": { "type": "boolean" }
+  }
+}

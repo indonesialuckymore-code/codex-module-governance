@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-disconnection-incident.schema.json",
+  "title": "C08 disconnection incident input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["incidentSchemaVersion", "recordType", "caseId", "projectId", "incidentType", "targetId", "taskId", "detectedBy", "detectionRefs", "reasonRef"],
+  "properties": {
+    "incidentSchemaVersion": { "const": "0.8.0" },
+    "recordType": { "const": "C08_DISCONNECTION_INCIDENT" },
+    "caseId": { "type": "string" },
+    "projectId": { "type": "string" },
+    "incidentType": { "enum": ["CENTRAL", "TASK_WINDOW", "SUB_AGENT"] },
+    "targetId": { "type": "string" },
+    "taskId": { "type": ["string", "null"] },
+    "detectedBy": { "type": "string" },
+    "detectionRefs": { "type": "array", "minItems": 1, "maxItems": 40 },
+    "reasonRef": { "type": "string" }
+  }
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "失联与恢复控制器"
+  short_description: "冻结任务或中央失联现场、校验总账续读并控制安全恢复与占用释放边界"
+  default_prompt: "Use $disconnection-recovery-controller to freeze a disconnected task context and reconstruct governance state before any resume decision."
