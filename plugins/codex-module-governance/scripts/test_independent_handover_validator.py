@@ -108,7 +108,7 @@ def setup_ready_for_validation(root):
     if code != 0:
         raise AssertionError(output)
     for command in [
-        ["register-window", "--window-id", WINDOW, "--task-id", TASK, "--context-mode", "NEW"],
+        ["register-window", "--window-id", WINDOW, "--task-id", TASK, "--context-mode", "NEW", "--runtime-model-evidence-ref", "manual-terra-window-c06"],
         ["transition-task", "--task-id", TASK, "--to-status", "IN_PROGRESS", "--reason", "Fictional dispatch already occurred outside C06."],
     ]:
         code, output = c03(root, command[0], *command[1:])
@@ -177,7 +177,7 @@ def add_returned_sub_agent(root):
 
 def write_parent_quality_review(root):
     payload = {
-        "schemaVersion": "0.15.0", "recordType": "C10_PARENT_QUALITY_REVIEW", "qualityReviewId": "quality-c06-001",
+        "schemaVersion": "0.16.0", "recordType": "C10_PARENT_QUALITY_REVIEW", "qualityReviewId": "quality-c06-001",
         "dispatchId": "dispatch-c06-001", "projectId": PROJECT, "taskId": TASK, "windowId": WINDOW,
         "subAgentReturns": [{"subAgentId": "agent-c06-001", "returnId": "return-c06-001"}],
         "acceptanceCoverage": {key: [f"coverage-{key}-006"] for key in ("positiveCases", "negativeCases", "idempotencyChecks", "rollbackChecks", "logAndHistoryChecks", "readbackChecks")},
@@ -350,19 +350,19 @@ class IndependentHandoverValidatorTests(unittest.TestCase):
             scope_digest = hashlib.sha256(json.dumps(execution_plan, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
             authorization = {"status": "APPROVED", "reference": "boss-map-approval-007", "scope": {"type": "EXECUTION_MAP", "scopeId": "central-plan-007", "scopeDigest": scope_digest, "waveId": "wave-02", "taskIds": [blocked_task, second_task, parallel_task]}}
             request_path = write_json(second_request_path, {
-                "dispatchSchemaVersion": "0.15.0", "recordType": "C10_DISPATCH_REQUEST", "dispatchId": dispatch_id,
+                "dispatchSchemaVersion": "0.16.0", "recordType": "C10_DISPATCH_REQUEST", "dispatchId": dispatch_id,
                 "projectId": PROJECT, "packageId": second_package, "reviewId": second_review, "taskId": second_task,
                 "runtimeProject": {"codexProjectId": "codex-project-007", "projectPath": "/tmp/fictional-project", "isGitRepository": True, "environment": "WORKTREE"},
                 "bossDispatchAuthorization": authorization, "subAgents": [],
             })
             write_json(blocked_request_path, {
-                "dispatchSchemaVersion": "0.15.0", "recordType": "C10_DISPATCH_REQUEST", "dispatchId": blocked_dispatch_id,
+                "dispatchSchemaVersion": "0.16.0", "recordType": "C10_DISPATCH_REQUEST", "dispatchId": blocked_dispatch_id,
                 "projectId": PROJECT, "packageId": blocked_package, "reviewId": blocked_review, "taskId": blocked_task,
                 "runtimeProject": {"codexProjectId": "codex-project-009", "projectPath": "/tmp/fictional-project", "isGitRepository": True, "environment": "WORKTREE"},
                 "bossDispatchAuthorization": authorization, "subAgents": [],
             })
             write_json(parallel_request_path, {
-                "dispatchSchemaVersion": "0.15.0", "recordType": "C10_DISPATCH_REQUEST", "dispatchId": parallel_dispatch_id,
+                "dispatchSchemaVersion": "0.16.0", "recordType": "C10_DISPATCH_REQUEST", "dispatchId": parallel_dispatch_id,
                 "projectId": PROJECT, "packageId": parallel_package, "reviewId": parallel_review, "taskId": parallel_task,
                 "runtimeProject": {"codexProjectId": "codex-project-008", "projectPath": "/tmp/fictional-project", "isGitRepository": True, "environment": "WORKTREE"},
                 "bossDispatchAuthorization": authorization, "subAgents": [],
@@ -413,8 +413,8 @@ class IndependentHandoverValidatorTests(unittest.TestCase):
             self.assertEqual(ledger["windows"][WINDOW]["status"], "RESERVED_FOR_REUSE")
             self.assertEqual(ledger["windows"][WINDOW]["reservedForTaskId"], second_task)
             confirmation = {
-                "confirmationSchemaVersion": "0.15.0", "recordType": "C10_RUNTIME_CONFIRMATION", "dispatchId": dispatch_id,
-                "taskWindow": {"status": "REUSED", "taskId": second_task, "runtimeTitle": "C-07｜Fictional second assignment｜G1", "generation": 1, "windowId": WINDOW, "runtimeThreadRef": "thread-c07-final", "runtimeProjectId": "codex-project-007", "runtimeCwd": "/tmp/.codex/worktrees/abcd/fictional-project", "environmentType": "WORKTREE", "associationMethod": "DIRECT", "associationHandoffRefs": []},
+                "confirmationSchemaVersion": "0.16.0", "recordType": "C10_RUNTIME_CONFIRMATION", "dispatchId": dispatch_id,
+                "taskWindow": {"status": "REUSED", "taskId": second_task, "runtimeTitle": "C-07｜Fictional second assignment｜G1", "generation": 1, "windowId": WINDOW, "runtimeThreadRef": "thread-c07-final", "runtimeProjectId": "codex-project-007", "runtimeCwd": "/tmp/.codex/worktrees/abcd/fictional-project", "environmentType": "WORKTREE", "associationMethod": "DIRECT", "associationHandoffRefs": [], "modelControl": {"model": "gpt-5.6-terra", "method": "NATIVE_SEND_MESSAGE_MODEL_OVERRIDE", "evidenceRef": "thread-c07-final"}},
                 "subAgents": [],
             }
             confirmation_path = write_json(root / "c10-inputs" / "confirmation-007.json", confirmation)

@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["appendSchemaVersion", "recordType", "appendId", "dispatchId", "projectId", "taskId", "windowId", "trigger", "subAgents"],
   "properties": {
-    "appendSchemaVersion": { "const": "0.15.0" },
+    "appendSchemaVersion": { "const": "0.16.0" },
     "recordType": { "const": "C10_SUB_AGENT_APPEND_REQUEST" },
     "appendId": { "type": "string" },
     "dispatchId": { "type": "string" },

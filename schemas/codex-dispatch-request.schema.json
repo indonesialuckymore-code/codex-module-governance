@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["dispatchSchemaVersion", "recordType", "dispatchId", "projectId", "packageId", "reviewId", "taskId", "runtimeProject", "bossDispatchAuthorization", "subAgents"],
   "properties": {
-    "dispatchSchemaVersion": { "const": "0.15.0" },
+    "dispatchSchemaVersion": { "const": "0.16.0" },
     "recordType": { "const": "C10_DISPATCH_REQUEST" },
     "dispatchId": { "type": "string" },
     "projectId": { "type": "string" },

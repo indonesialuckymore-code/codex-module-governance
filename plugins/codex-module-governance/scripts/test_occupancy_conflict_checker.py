@@ -22,6 +22,18 @@ PACKAGE_ID = "c05-package-001"
 REVIEW_ID = "c05-review-001"
 
 
+def terra_window_enforcement(evidence_ref="terra-model-proof-001"):
+    return {
+        "model": "gpt-5.6-terra",
+        "runtimeModel": "gpt-5.6-terra",
+        "modelEnforcement": {
+            "model": "gpt-5.6-terra",
+            "method": "NATIVE_CREATE_THREAD_MODEL_PARAMETER",
+            "evidenceRef": evidence_ref,
+        },
+    }
+
+
 def invoke(script, arguments):
     completed = subprocess.run([sys.executable, str(script), *arguments], check=False, capture_output=True, text=True)
     return completed.returncode, json.loads(completed.stdout)
@@ -268,13 +280,24 @@ class OccupancyConflictCheckerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             data_root = Path(temporary) / "private-data"
             setup_project(data_root)
-            code, output = c03(data_root, "register-window", "--window-id", "window-existing", "--task-id", TASK_ID, "--context-mode", "NEW")
+            code, output = c03(data_root, "register-window", "--window-id", "window-existing", "--task-id", TASK_ID, "--context-mode", "NEW", "--runtime-model-evidence-ref", "manual-terra-window-existing")
             self.assertEqual(code, 0, output)
             review = create_review(data_root)
             code, output = self.command(data_root, review)
             self.assertEqual(code, 0, output)
             self.assertEqual(output["windowDecision"]["status"], "REUSE_EXISTING_WINDOW")
             self.assertEqual(output["windowDecision"]["windowId"], "window-existing")
+
+    def test_unverified_legacy_window_is_not_reused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary) / "private-data"
+            setup_project(data_root)
+            code, output = c03(data_root, "register-window", "--window-id", "window-legacy", "--task-id", TASK_ID, "--context-mode", "NEW")
+            self.assertEqual(code, 0, output)
+            review = create_review(data_root)
+            code, output = self.command(data_root, review)
+            self.assertEqual(code, 0, output)
+            self.assertEqual(output["windowDecision"]["status"], "OPEN_NEW_WINDOW")
 
     def test_available_window_gets_only_second_assignment_and_retired_window_is_refused(self):
         ledger = {
@@ -285,13 +308,13 @@ class OccupancyConflictCheckerTests(unittest.TestCase):
             "windows": {
                 "window-available": {
                     "windowId": "window-available", "taskId": "C-OLD", "currentTaskId": None,
-                    "model": "gpt-5.6-terra", "status": "AVAILABLE_FOR_REUSE",
+                    **terra_window_enforcement("terra-model-proof-available"), "status": "AVAILABLE_FOR_REUSE",
                     "assignmentCount": 1, "maxAssignments": 2,
                     "assignmentHistory": [{"assignmentNumber": 1, "taskId": "C-OLD"}],
                 },
                 "window-retired": {
                     "windowId": "window-retired", "taskId": "C-OLD", "currentTaskId": None,
-                    "model": "gpt-5.6-terra", "status": "RETIRED",
+                    **terra_window_enforcement("terra-model-proof-retired"), "status": "RETIRED",
                     "assignmentCount": 2, "maxAssignments": 2,
                     "assignmentHistory": [
                         {"assignmentNumber": 1, "taskId": "C-A"},
@@ -313,7 +336,7 @@ class OccupancyConflictCheckerTests(unittest.TestCase):
     def test_auto_does_not_blindly_reuse_without_compatibility_evidence(self):
         ledger = {
             "tasks": {"C-OLD": {"taskId": "C-OLD", "status": "DONE"}, TASK_ID: {"taskId": TASK_ID, "status": "PLANNED"}},
-            "windows": {"window-available": {"windowId": "window-available", "taskId": "C-OLD", "currentTaskId": None, "model": "gpt-5.6-terra", "status": "AVAILABLE_FOR_REUSE", "assignmentCount": 1, "assignmentHistory": [{"assignmentNumber": 1, "taskId": "C-OLD"}]}},
+            "windows": {"window-available": {"windowId": "window-available", "taskId": "C-OLD", "currentTaskId": None, **terra_window_enforcement("terra-model-proof-auto"), "status": "AVAILABLE_FOR_REUSE", "assignmentCount": 1, "assignmentHistory": [{"assignmentNumber": 1, "taskId": "C-OLD"}]}},
         }
         incompatible = {"reviewId": REVIEW_ID, "taskId": TASK_ID, "windowReview": {"mode": "AUTO", "candidateWindowId": None, "contextCompatibility": "INCOMPATIBLE"}}
         decision = resolve_window({}, ledger, incompatible)
@@ -331,7 +354,7 @@ class OccupancyConflictCheckerTests(unittest.TestCase):
             "windows": {
                 "window-reserved": {
                     "windowId": "window-reserved", "taskId": "C-OLD", "currentTaskId": None,
-                    "model": "gpt-5.6-terra", "status": "RESERVED_FOR_REUSE",
+                    **terra_window_enforcement("terra-model-proof-reserved"), "status": "RESERVED_FOR_REUSE",
                     "assignmentCount": 1, "maxAssignments": 2,
                     "assignmentHistory": [{"assignmentNumber": 1, "taskId": "C-OLD"}],
                     "reservedForTaskId": "C-FIRST-SUCCESSOR",

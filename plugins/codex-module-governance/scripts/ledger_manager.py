@@ -23,6 +23,8 @@ SCHEMA_VERSION = "0.3.0"
 MODULE = "codex"
 CENTRAL_WRITER = "codex-module-central"
 MAX_TASKS_PER_WINDOW = 2
+TASK_RUNTIME_MODEL = "gpt-5.6-terra"
+MANUAL_WINDOW_MODEL_METHOD = "MANUAL_UI_TERRA_SELECTION_EVIDENCE"
 LEDGERS_DIRECTORY = Path("module-ledgers")
 LEDGER_FILENAME = "ledger.json"
 RECEIPTS_DIRECTORY = "receipts"
@@ -492,6 +494,9 @@ def register_window(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     context_mode = require_text(args.context_mode, "WINDOW_CONTEXT_MODE_INVALID", 20).upper()
     if context_mode not in {"NEW", "REUSED"}:
         raise LedgerError("WINDOW_CONTEXT_MODE_INVALID")
+    model_evidence_ref = None
+    if args.runtime_model_evidence_ref is not None:
+        model_evidence_ref = require_opaque_reference(args.runtime_model_evidence_ref, "WINDOW_RUNTIME_MODEL_EVIDENCE_INVALID")
 
     def mutate(ledger: Dict[str, Any]) -> None:
         if window_id in ledger["windows"]:
@@ -506,7 +511,7 @@ def register_window(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         ]
         generation = max(existing_generations, default=0) + 1
         canonical_title = task.get("canonicalTitle", f"{task_id}｜{task['title']}")
-        ledger["windows"][window_id] = {
+        window = {
             "windowId": window_id,
             "taskId": task_id,
             "currentTaskId": task_id,
@@ -514,7 +519,7 @@ def register_window(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             "generation": generation,
             "runtimeTitle": f"{canonical_title}｜G{generation}",
             "runtimeThreadRef": window_id,
-            "model": "gpt-5.6-terra",
+            "model": "UNVERIFIED",
             "contextMode": context_mode,
             "status": "REGISTERED",
             "maxAssignments": MAX_TASKS_PER_WINDOW,
@@ -533,8 +538,20 @@ def register_window(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             }],
             "registeredAt": utc_now(),
         }
+        if model_evidence_ref is not None:
+            window.update({
+                "model": TASK_RUNTIME_MODEL,
+                "runtimeModel": TASK_RUNTIME_MODEL,
+                "modelEnforcement": {
+                    "model": TASK_RUNTIME_MODEL,
+                    "method": MANUAL_WINDOW_MODEL_METHOD,
+                    "evidenceRef": model_evidence_ref,
+                    "confirmedAt": utc_now(),
+                },
+            })
+        ledger["windows"][window_id] = window
 
-    return mutate_ledger(args, "REGISTER_TASK_WINDOW", {"windowId": window_id, "taskId": task_id, "model": "gpt-5.6-terra"}, mutate)
+    return mutate_ledger(args, "REGISTER_TASK_WINDOW", {"windowId": window_id, "taskId": task_id, "model": TASK_RUNTIME_MODEL if model_evidence_ref is not None else "UNVERIFIED", "modelEvidenceRecorded": model_evidence_ref is not None}, mutate)
 
 
 def register_sub_agent(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
@@ -733,6 +750,7 @@ def parse_args() -> argparse.Namespace:
     window.add_argument("--window-id", required=True)
     window.add_argument("--task-id", required=True)
     window.add_argument("--context-mode", required=True)
+    window.add_argument("--runtime-model-evidence-ref")
 
     sub_agent = commands.add_parser("register-sub-agent")
     sub_agent.add_argument("--sub-agent-id", required=True)

@@ -34,7 +34,7 @@ from task_package_generator import TaskPackageError, load_package, verify_packag
 
 
 SCHEMA_VERSION = "0.8.0"
-C10_SCHEMA_VERSION = "0.15.0"
+C10_SCHEMA_VERSION = "0.16.0"
 DISPATCHES_DIRECTORY = Path("dispatches")
 VALIDATIONS_DIRECTORY = Path("handover-validations")
 RETURN_ROOT = Path("return-inbox")

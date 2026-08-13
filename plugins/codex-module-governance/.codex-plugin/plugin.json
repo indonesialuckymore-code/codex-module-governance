@@ -1,7 +1,7 @@
 {
   "name": "codex-module-governance",
-  "version": "0.20.0",
-  "description": "Private Codex governance with one Boss-facing central entry, receipt-backed bidirectional task communication, automatic return inbox, single-slot independent validation, automatic successor dispatch, and quality-gated proactive sub-agent delegation.",
+  "version": "0.21.0",
+  "description": "Private Codex governance with one Boss-facing central entry, receipt-backed bidirectional task communication, automatic return inbox, automatic successor dispatch, and enforced Terra runtime dispatch for task windows and first-level sub-agents.",
   "author": {
     "name": "QIANYI"
   },
@@ -11,7 +11,7 @@
   "interface": {
     "displayName": "Codex 模块治理",
     "shortDescription": "私有多任务施工治理、建档与工程总账。",
-    "longDescription": "先由唯一总设计师形成全项目施工大纲，再通过唯一可见的“中央工作台”由 Codex 中央一次理清任务、依赖和并行波次；中央与任务窗口以原生任务消息和可验证回执双向通信，任务窗口只把摘要送入中央单槽验收；合法 DONE 后自动续派，每个任务窗口最多承接两项串行任务，并以质量闸门控制主动子 Agent 协作。",
+    "longDescription": "先由唯一总设计师形成全项目施工大纲，再通过唯一可见的“中央工作台”由 Codex 中央一次理清任务、依赖和并行波次；中央与任务窗口以原生任务消息和可验证回执双向通信，任务窗口只把摘要送入中央单槽验收；合法 DONE 后自动续派，每个任务窗口最多承接两项串行任务。所有新任务窗口和一级子 Agent 都必须以原生参数使用 5.6 Terra，并留下运行凭据。",
     "developerName": "QIANYI",
     "category": "Productivity",
     "capabilities": ["Reusable construction-outline planning", "One-pass central execution map", "Receipt-backed bidirectional task communication", "Receipt-backed automatic return inbox", "Single-slot independent validation", "Automatic successor dispatch", "Two-task sequential window lifecycle", "Quality-gated proactive sub-agent delegation", "Stable task identity", "Logical central and adjudication roles", "Durable task event inbox", "Planned role handover", "Scoped batch approval", "Dependency-wave dispatch", "Saved-project task binding", "Boss natural-language governance gateway", "Single central governance router", "Two-phase task-window dispatch", "First-level sub-agent control", "External Skill registry and adapters", "Verified module ledger", "Atomic occupancy review", "Independent validation", "Boss-controlled adjudication", "Disconnection recovery control"],

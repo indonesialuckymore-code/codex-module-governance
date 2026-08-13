@@ -1,6 +1,6 @@
 ---
 name: task-window-dispatch-controller
-description: 在 Boss 对单项任务或中央启动图作出范围化批准且 C05 占用验收通过后，按并行波次准备和批量派发 Codex 任务窗口及最多 3 个一级子 Agent；任务窗口可在原范围内主动补派独立子 Agent，但必须经过结构化回传、父窗口读证和质量闸门，不能牺牲最终质量。强制绑定 Codex 保存项目，只有运行时返回正确项目归属与真实任务 ID 后才登记 C03。Use when 中央要派发一个或一批任务、放行后续依赖波次、复用旧窗口、创建或补派一级子 Agent、修复新任务掉进“最近”而非项目分组、登记真实运行结果或汇总子 Agent 回传。
+description: 在 Boss 对单项任务或中央启动图作出范围化批准且 C05 占用验收通过后，按并行波次准备和批量派发 Codex 任务窗口及最多 3 个一级子 Agent；任务窗口可在原范围内主动补派独立子 Agent，但必须经过结构化回传、父窗口读证和质量闸门，不能牺牲最终质量。强制绑定 Codex 保存项目与 gpt-5.6-terra，只有运行时返回正确项目归属、真实任务 ID 和模型控制回执后才登记 C03。Use when 中央要派发一个或一批任务、放行后续依赖波次、复用旧窗口、创建或补派一级子 Agent、修复新任务掉进“最近”而非项目分组、登记真实运行结果或汇总子 Agent 回传。
 ---
 
 # 任务窗口与一级子 Agent 调度
@@ -15,10 +15,10 @@ description: 在 Boss 对单项任务或中央启动图作出范围化批准且 
 
 1. `prepare` 验证 C04、C05、C03、Boss 批准和恢复状态，只生成不可覆盖派发单。
 2. 派发单固定任务身份：总账/任务包使用 `任务ID｜业务名称`，Codex 窗口使用 `任务ID｜业务名称｜G代际`。
-3. Codex 运行时按派发单的完整标题创建新任务、发送到旧任务或创建一级子 Agent。
-4. 只有所有要求的运行时对象都成功、标题/任务 ID/代际完全匹配并返回真实 ID 后，`confirm` 才登记窗口和子 Agent，并把任务从 `READY` 推进为 `IN_PROGRESS`。
-5. 部分创建、标题不符或确认失败不得更新总账；报告 `TASK_IDENTITY_MISMATCH / NEEDS_REVIEW`，运行时应关闭本轮孤立对象或交 C08 冻结处理。
-6. 如果当前 Codex 表面不能自动创建或复用任务，`export-fallback` 只生成可复制任务包交 Boss 手工建窗；真实 ID 回传前不得确认派发成功。
+3. Codex 运行时按派发单的完整标题创建新任务、发送到旧任务或创建一级子 Agent。新任务必须调用原生 `create_thread` 且明确传入 `model: "gpt-5.6-terra"`；复用旧窗口必须调用原生 `send_message_to_thread` 且明确传入同一 `model`；一级子 Agent 必须用原生 `spawn_agent` 且明确传入同一 `model`。只在提示词里写“请使用 Terra”不算派发。
+4. 只有所有要求的运行时对象都成功、标题/任务 ID/代际完全匹配、返回真实 ID，并回传模型控制记录后，`confirm` 才登记窗口和子 Agent，并把任务从 `READY` 推进为 `IN_PROGRESS`。模型控制记录必须是 `model=gpt-5.6-terra`，且方法分别为 `NATIVE_CREATE_THREAD_MODEL_PARAMETER`、`NATIVE_SEND_MESSAGE_MODEL_OVERRIDE` 或 `NATIVE_SPAWN_AGENT_MODEL_PARAMETER`。
+5. Sol、Luna、缺少模型控制记录、模型方法不匹配或部分创建，都不得更新总账；报告 `C10_RUNTIME_MODEL_MUST_BE_TERRA / NEEDS_REVIEW`。已产生的孤立对象应交 C08 冻结或收回，不能冒充 Terra 窗口。
+6. 如果当前 Codex 表面不能自动创建任务，`export-fallback` 只生成可复制任务包交 Boss 手工建窗；Boss 必须先在模型菜单选择 **5.6 Terra** 并保留可核对证据，随后只能以 `MANUAL_UI_TERRA_SELECTION_EVIDENCE` 完成 C10 确认。没有该手工包与证据，手工窗口不得登记。
 
 ## 窗口两任务上限
 
@@ -49,6 +49,14 @@ description: 在 Boss 对单项任务或中央启动图作出范围化批准且 
 7. 项目或目录仍不匹配时，不写 C03、不推进任务，报告 `PROJECT_ASSOCIATION_MISMATCH / NEEDS_REVIEW`。
 
 “同一项目”指 Codex 左栏归入同一个项目。Git 并行任务仍使用不同 worktree 物理目录，这是本地文件隔离，不是跑到另一个项目。
+
+## Terra 模型门禁
+
+1. `windowAction.model` 与每个 `subAgents[].model` 固定为 `gpt-5.6-terra`；没有“按用户当前默认模型”的回退。
+2. 创建、复用和补派均必须走对应的原生模型参数，不能靠任务窗口在聊天中自行切换。
+3. C10 只会把已记录 `model`、`runtimeModel` 和 `modelEnforcement` 的 Terra 窗口写入工程总账。旧版或手工直登、但没有这三项证据的窗口为 `UNVERIFIED`，不得作为第二项任务的复用窗口。
+4. 新窗口如未成功指定 Terra，中央保持任务 `READY`；不得以“先用 Sol 做、之后再换”为理由开始施工。复用窗口如没有 Terra 证据，C05 改选新窗口或等待明确裁定。
+5. 模型不是业务验收质量的替代品。Terra 只保证派工的一致模型；C06 独立验收、Boss 最终裁定、对象占用和真实读回规则不变。
 
 ## 子 Agent：主动提速，但父窗口独自对质量负责
 
@@ -96,5 +104,6 @@ description: 在 Boss 对单项任务或中央启动图作出范围化批准且 
 - 任务卡出现在“最近”或自定义目录，不等于已正确归入项目。
 - 仅有标准 worktree 路径也不等于项目归属成功；应用回读的 `projectId` 为空仍须修复或硬停。
 - 可复制任务包也不等于运行时已成功，不得伪造任务或 Agent ID。
+- 任务卡底部当前显示 Sol、或没有 Terra 模型控制记录，均不等于已按任务包派发；不得开始施工或向中央发送“已开始”。
 - 任务窗口不得绕过任务包、对象占用和硬停条件。
 - 失联后保留占用并转 C08，不自动重派。

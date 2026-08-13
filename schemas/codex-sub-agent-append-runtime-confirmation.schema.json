@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-sub-agent-append-runtime-confirmation.schema.json",
+  "title": "C10 in-scope sub-agent append runtime confirmation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["appendConfirmationSchemaVersion", "recordType", "appendId", "dispatchId", "windowId", "subAgents"],
+  "properties": {
+    "appendConfirmationSchemaVersion": { "const": "0.16.0" },
+    "recordType": { "const": "C10_SUB_AGENT_APPEND_RUNTIME_CONFIRMATION" },
+    "appendId": { "type": "string" },
+    "dispatchId": { "type": "string" },
+    "windowId": { "type": "string" },
+    "subAgents": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["subAgentId", "status", "runtimeAgentRef", "modelControl"],
+        "properties": {
+          "subAgentId": { "type": "string" },
+          "status": { "const": "CREATED" },
+          "runtimeAgentRef": { "type": "string" },
+          "modelControl": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["model", "method", "evidenceRef"],
+            "properties": {
+              "model": { "const": "gpt-5.6-terra" },
+              "method": { "const": "NATIVE_SPAWN_AGENT_MODEL_PARAMETER" },
+              "evidenceRef": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -48,6 +48,12 @@ RESOURCE_CLASSES = {
     "PRODUCTION_SWITCH", "FACT_SOURCE", "ACCOUNT", "EXTERNAL_ENTRY",
     "TEST_SCOPE", "LOG_SCOPE", "ROLLBACK_SCOPE",
 }
+TASK_RUNTIME_MODEL = "gpt-5.6-terra"
+TERRA_MODEL_ENFORCEMENT_METHODS = {
+    "NATIVE_CREATE_THREAD_MODEL_PARAMETER",
+    "NATIVE_SEND_MESSAGE_MODEL_OVERRIDE",
+    "MANUAL_UI_TERRA_SELECTION_EVIDENCE",
+}
 
 
 class OccupancyError(Exception):
@@ -80,6 +86,20 @@ def require_reference_list(value: Any, error: str, allow_empty: bool = False) ->
     if len(normalized) != len(set(normalized)):
         raise OccupancyError(error)
     return normalized
+
+
+def terra_model_is_enforced(window: Dict[str, Any]) -> bool:
+    """A label in the ledger is insufficient; reuse needs recorded model-selection evidence."""
+    control = window.get("modelEnforcement")
+    return (
+        window.get("model") == TASK_RUNTIME_MODEL
+        and window.get("runtimeModel") == TASK_RUNTIME_MODEL
+        and isinstance(control, dict)
+        and control.get("model") == TASK_RUNTIME_MODEL
+        and control.get("method") in TERRA_MODEL_ENFORCEMENT_METHODS
+        and isinstance(control.get("evidenceRef"), str)
+        and bool(control["evidenceRef"].strip())
+    )
 
 
 def decision_directory(data_root: Path, project_id: str, review_id: str) -> Path:
@@ -286,7 +306,9 @@ def resolve_window(package: Dict[str, Any], ledger: Dict[str, Any], review: Dict
     task_id = review["taskId"]
     current_matching = sorted(
         window_id for window_id, window in ledger["windows"].items()
-        if window_current_task_id(window) == task_id and window.get("status") == "REGISTERED"
+        if window_current_task_id(window) == task_id
+        and window.get("status") == "REGISTERED"
+        and terra_model_is_enforced(window)
     )
     reusable = []
     for window_id, window in ledger["windows"].items():
@@ -302,7 +324,7 @@ def resolve_window(package: Dict[str, Any], ledger: Dict[str, Any], review: Dict
         )
         if (
             count == 1
-            and window.get("model") == "gpt-5.6-terra"
+            and terra_model_is_enforced(window)
             and last_task.get("status") == "DONE"
             and (explicitly_available or legacy_available)
         ):
@@ -698,7 +720,7 @@ def evaluate(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
                         raise OccupancyError("C05_REUSABLE_WINDOW_DISAPPEARED")
                     explicit_available = window.get("status") == "AVAILABLE_FOR_REUSE" and window_current_task_id(window) is None
                     legacy_available = "assignmentHistory" not in window and window.get("status") == "REGISTERED" and after["tasks"].get(window.get("taskId"), {}).get("status") == "DONE"
-                    if window_assignment_count(window) != 1 or not (explicit_available or legacy_available):
+                    if window_assignment_count(window) != 1 or not (explicit_available or legacy_available) or not terra_model_is_enforced(window):
                         raise OccupancyError("C05_WINDOW_REUSE_SLOT_NO_LONGER_AVAILABLE")
                     window["status"] = "RESERVED_FOR_REUSE"
                     window["currentTaskId"] = None

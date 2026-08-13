@@ -6,13 +6,13 @@
   "additionalProperties": false,
   "required": ["confirmationSchemaVersion", "recordType", "dispatchId", "taskWindow", "subAgents"],
   "properties": {
-    "confirmationSchemaVersion": { "const": "0.15.0" },
+    "confirmationSchemaVersion": { "const": "0.16.0" },
     "recordType": { "const": "C10_RUNTIME_CONFIRMATION" },
     "dispatchId": { "type": "string" },
     "taskWindow": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["status", "taskId", "runtimeTitle", "generation", "windowId", "runtimeThreadRef", "runtimeProjectId", "runtimeCwd", "environmentType", "associationMethod", "associationHandoffRefs"],
+      "required": ["status", "taskId", "runtimeTitle", "generation", "windowId", "runtimeThreadRef", "runtimeProjectId", "runtimeCwd", "environmentType", "associationMethod", "associationHandoffRefs", "modelControl"],
       "properties": {
         "status": { "enum": ["CREATED", "REUSED"] },
         "taskId": { "type": "string" },
@@ -29,7 +29,8 @@
           "maxItems": 2,
           "uniqueItems": true,
           "items": { "type": "string" }
-        }
+        },
+        "modelControl": { "$ref": "#/$defs/windowModelControl" }
       },
       "allOf": [
         {
@@ -39,6 +40,42 @@
         }
       ]
     },
-    "subAgents": { "type": "array", "maxItems": 3 }
+    "subAgents": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["subAgentId", "status", "runtimeAgentRef", "modelControl"],
+        "properties": {
+          "subAgentId": { "type": "string" },
+          "status": { "const": "CREATED" },
+          "runtimeAgentRef": { "type": "string" },
+          "modelControl": { "$ref": "#/$defs/subAgentModelControl" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "windowModelControl": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "method", "evidenceRef"],
+      "properties": {
+        "model": { "const": "gpt-5.6-terra" },
+        "method": { "enum": ["NATIVE_CREATE_THREAD_MODEL_PARAMETER", "NATIVE_SEND_MESSAGE_MODEL_OVERRIDE", "MANUAL_UI_TERRA_SELECTION_EVIDENCE"] },
+        "evidenceRef": { "type": "string", "minLength": 1 }
+      }
+    },
+    "subAgentModelControl": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "method", "evidenceRef"],
+      "properties": {
+        "model": { "const": "gpt-5.6-terra" },
+        "method": { "const": "NATIVE_SPAWN_AGENT_MODEL_PARAMETER" },
+        "evidenceRef": { "type": "string", "minLength": 1 }
+      }
+    }
   }
 }
