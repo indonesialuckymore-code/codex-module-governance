@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "0.12.0",
+  "schemaVersion": "0.19.0",
   "recordType": "C09_CORE_CAPABILITY_REGISTRY",
   "canonicalCentralSkill": "central-construction-controller",
   "capabilities": [
@@ -85,6 +85,13 @@
       "role": "INTERFACE",
       "skill": "codex-governance-gateway",
       "script": "natural_language_gateway.py",
+      "status": "READY"
+    },
+    {
+      "stage": "C14",
+      "role": "EXECUTOR",
+      "skill": "task-communication-bridge",
+      "script": "task_communication_bridge.py",
       "status": "READY"
     }
   ],

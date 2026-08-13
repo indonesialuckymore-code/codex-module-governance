@@ -1,7 +1,7 @@
 {
   "name": "codex-module-governance",
-  "version": "0.18.0",
-  "description": "Private Codex governance with receipt-backed automatic return inbox, single-slot independent validation, automatic successor dispatch, and quality-gated proactive sub-agent delegation.",
+  "version": "0.19.0",
+  "description": "Private Codex governance with receipt-backed bidirectional task communication, automatic return inbox, single-slot independent validation, automatic successor dispatch, and quality-gated proactive sub-agent delegation.",
   "author": {
     "name": "QIANYI"
   },
@@ -11,10 +11,10 @@
   "interface": {
     "displayName": "Codex 模块治理",
     "shortDescription": "私有多任务施工治理、建档与工程总账。",
-    "longDescription": "先由唯一总设计师形成全项目施工大纲，再由 Codex 唯一中央一次理清任务、依赖和并行波次；任务窗口以可验证回执自动回传，中央只接收摘要并一次只派一个隔离验收槽；合法 DONE 后自动续派，每个任务窗口最多承接两项串行任务，并以质量闸门控制主动子 Agent 协作。",
+    "longDescription": "先由唯一总设计师形成全项目施工大纲，再由 Codex 唯一中央一次理清任务、依赖和并行波次；中央与任务窗口以原生任务消息和可验证回执双向通信，任务窗口只把摘要送入中央单槽验收；合法 DONE 后自动续派，每个任务窗口最多承接两项串行任务，并以质量闸门控制主动子 Agent 协作。",
     "developerName": "QIANYI",
     "category": "Productivity",
-    "capabilities": ["Reusable construction-outline planning", "One-pass central execution map", "Receipt-backed automatic return inbox", "Single-slot independent validation", "Automatic successor dispatch", "Two-task sequential window lifecycle", "Quality-gated proactive sub-agent delegation", "Stable task identity", "Logical central and adjudication roles", "Durable task event inbox", "Planned role handover", "Scoped batch approval", "Dependency-wave dispatch", "Saved-project task binding", "Boss natural-language governance gateway", "Single central governance router", "Two-phase task-window dispatch", "First-level sub-agent control", "External Skill registry and adapters", "Verified module ledger", "Atomic occupancy review", "Independent validation", "Boss-controlled adjudication", "Disconnection recovery control"],
-    "defaultPrompt": "读取完整冻结大纲和最新总账，一次输出全部任务、Boss 决策、依赖与并行波次；批准后持续自动放行合格任务。任务窗口应主动判断是否需要子 Agent，以回传票据自动入箱；中央只接收验收摘要，必须保留父窗口质量闸门和全部最终验收。"
+    "capabilities": ["Reusable construction-outline planning", "One-pass central execution map", "Receipt-backed bidirectional task communication", "Receipt-backed automatic return inbox", "Single-slot independent validation", "Automatic successor dispatch", "Two-task sequential window lifecycle", "Quality-gated proactive sub-agent delegation", "Stable task identity", "Logical central and adjudication roles", "Durable task event inbox", "Planned role handover", "Scoped batch approval", "Dependency-wave dispatch", "Saved-project task binding", "Boss natural-language governance gateway", "Single central governance router", "Two-phase task-window dispatch", "First-level sub-agent control", "External Skill registry and adapters", "Verified module ledger", "Atomic occupancy review", "Independent validation", "Boss-controlled adjudication", "Disconnection recovery control"],
+    "defaultPrompt": "读取完整冻结大纲和最新总账，一次输出全部任务、Boss 决策、依赖与并行波次；批准后持续自动放行合格任务。中央与任务窗口的消息必须经 C14 原生投递和收件确认，任务窗口只以回传票据送入单槽验收；保留父窗口质量闸门和全部最终验收。"
   }
 }

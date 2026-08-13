@@ -1,0 +1,4 @@
+interface:
+  display_name: "任务双向通信桥"
+  short_description: "确认中央与任务窗口之间的真实消息送达和回执"
+  default_prompt: "使用 $task-communication-bridge 以持久票据和 Codex 原生消息完成中央与任务窗口的双向通信，并核对送达、确认与结果回执。"

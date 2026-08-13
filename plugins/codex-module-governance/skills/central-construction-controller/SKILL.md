@@ -44,7 +44,7 @@ description: 作为 Codex 模块唯一中央，读取冻结施工大纲后一次
 
 1. 识别 Boss 的业务意图和项目。
 2. 检查 `config/core-capability-registry.json`，确认只有一个 `CENTRAL`。
-3. 除新项目初始化外，先由 C03 验证工程总账，再由 C08 验证当前角色路由并读取未确认事件；发现失联冻结则无条件转 C08。对 `TASK_HANDBACK_QUEUED`，中央只处理 `returnTicketId` 和摘要：自动登记完成信号、一次只预留一个隔离验收槽，不读取施工原文。
+3. 除新项目初始化外，先由 C03 验证工程总账，再由 C08 验证当前角色路由并读取未确认事件；发现失联冻结则无条件转 C08。每次被 C14 原生消息唤醒时，先运行 C14 `list-incoming → acknowledge`；对 `TASK_HANDBACK_QUEUED`，中央只处理 `returnTicketId` 和摘要：自动登记完成信号、一次只预留一个隔离验收槽，不读取施工原文。没有 C14 `MESSAGE_ACKNOWLEDGED` 的聊天提醒只能视为待查，不得说已收到。
 4. 每次中央启动、被唤醒或完成换代激活时，都从获批启动图和 C03 实时状态重新计算一次全部可开工任务；不能只依赖聊天提醒或内存中的上一条 `successorDispatch`。这样即使中央在 `DONE` 后中断，新中央也能补做尚未派出的合格任务。
 5. 单项治理请求只选择一个主能力槽位；执行已批准启动图时允许中央按图连续调用 C03/C04/C05/C10，但详细状态仍只写 C03。
 6. 写入类请求必须有 Boss 明确批准；已批准启动图中的任务可复用其范围化批准，范围外写入仍须另行批准。
@@ -55,7 +55,7 @@ description: 作为 Codex 模块唯一中央，读取冻结施工大纲后一次
 
 Boss 在中央启动图批准时，可同时批准一项 `AUTO_QUEUE_AND_VALIDATE_WITHIN_APPROVED_SCOPE` 回传政策。它只覆盖已批准范围内的“送入独立验收”，不覆盖范围变更、风险例外或最终 `DONE`。
 
-1. 任务窗口只能提交 C06 回传包给 C08 `submit-return`。没有 `returnTicketId + eventId + handbackDigest + deliveryReceiptId + TASK_EVENT_QUEUED`，一律是本窗口文字回复，不算回传。
+1. 任务窗口只能提交 C06 回传包给 C08 `submit-return`。没有 `returnTicketId + eventId + handbackDigest + deliveryReceiptId + TASK_EVENT_QUEUED`，一律是本窗口文字回复，不算回传。取得该回执后仍须经过 C14 原生消息投递和中央 `MESSAGE_ACKNOWLEDGED`，才能称中央已收到；C08 票据是事实源，C14 只负责把事实送到当前中央。
 2. 中央被唤醒时自动对有效票据执行 `admit-return`：写入 C03 完成信号并确认票据。中央界面只保留任务、票据、摘要、状态和回执，不打开施工证据正文。
 3. 中央自动调用 `reserve-next-return`。全项目最多一个验收槽；有在验收票据时，其他已入箱票据保持排队，不抢占中央上下文。
 4. 为该票据新开一个隔离独立验收窗口，默认 `gpt-5.6-sol`；它只能运行 C06，不能派工、改施工范围、改 C09 或宣布 `DONE`。
@@ -75,6 +75,7 @@ Boss 在中央启动图批准时，可同时批准一项 `AUTO_QUEUE_AND_VALIDAT
 | 验收回传、申请 DONE | C06 `independent-handover-validator` | 独立读回，Boss 最终批准 |
 | 请求中央后台意见 | C07 `adjudication-request-organizer` | 使用项目唯一裁定窗口；完整讨论留在裁定窗口，中央只收影响摘要 |
 | 任务窗口或中央失联、中央/裁定计划换代 | C08 `disconnection-recovery-controller` | 冻结恢复、逻辑角色交接、持久事件箱和受控释放 |
+| 中央与任务窗口互相没有收到消息、需要确认投递或重试 | C14 `task-communication-bridge` | 原生任务消息、送达回执、收件确认和换代重路由 |
 | 真实派发窗口或子 Agent | C10 `task-window-dispatch-controller` | 两段式派发与真实运行确认 |
 | 固定、替换或处理缺失外部 Skill | C11 `external-skill-adapter-controller` | 来源、版本、许可证、权限、替代和降级 |
 
@@ -96,7 +97,7 @@ Boss 在中央启动图批准时，可同时批准一项 `AUTO_QUEUE_AND_VALIDAT
 - Git 任务在磁盘上使用隔离 worktree，但在 Codex 左栏必须归入同一个保存项目；“同一项目”不等于多个窗口共用同一个物理目录。
 - 创建后立即回读任务的 `projectId` 和工作目录；与启动图不符时不得登记为派发成功，转 `PROJECT_ASSOCIATION_MISMATCH / NEEDS_REVIEW`。
 - 创建后还要回读任务 ID、完整标题和代际；任何不一致转 `TASK_IDENTITY_MISMATCH / NEEDS_REVIEW`，不得凭相似名称猜任务。
-- 任务状态先写入 C08 私有事件箱，再通知 `CURRENT_CENTRAL`；聊天送达不是状态事实源。
+- 任务状态先写入 C08 私有事件箱，再通过 C14 向 `CURRENT_CENTRAL` 发送原生消息并取得收件确认；聊天送达不是状态事实源，C14 也不改变 C03 状态。
 
 ## 裁定合同
 

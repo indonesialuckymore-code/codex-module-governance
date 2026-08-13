@@ -20,6 +20,7 @@ from task_window_dispatch_controller import DispatchError, prepare as prepare_di
 
 
 SCHEMA_VERSION = "0.12.0"
+REGISTRY_SCHEMA_VERSION = "0.19.0"
 CENTRAL_SKILL = "central-construction-controller"
 CENTRAL_MODEL = "gpt-5.6-sol"
 TASK_MODEL = "gpt-5.6-terra"
@@ -43,6 +44,7 @@ EXPECTED = {
     "C10": ("EXECUTOR", "task-window-dispatch-controller", "task_window_dispatch_controller.py"),
     "C11": ("EXECUTOR", "external-skill-adapter-controller", "external_skill_adapter_controller.py"),
     "C12": ("INTERFACE", "codex-governance-gateway", "natural_language_gateway.py"),
+    "C14": ("EXECUTOR", "task-communication-bridge", "task_communication_bridge.py"),
 }
 
 ROUTES = {
@@ -61,6 +63,7 @@ ROUTES = {
     "TAKEOVER_CONTROL": ("C08", "disconnection-recovery-controller", "VERIFY_BOSS_AUTHORIZED_TAKEOVER"),
     "RECORD_RECOVERY_DECISION": ("C08", "disconnection-recovery-controller", "RECORD_RECOVERY_DECISION"),
     "RELEASE_OCCUPANCY": ("C08", "disconnection-recovery-controller", "VERIFY_CONTROLLED_OCCUPANCY_RELEASE"),
+    "CHECK_TASK_COMMUNICATION": ("C14", "task-communication-bridge", "READ_OR_RECONCILE_MESSAGE_RECEIPTS"),
     "REGISTER_EXTERNAL_SKILL": ("C11", "external-skill-adapter-controller", "ASSESS_OR_ACTIVATE_EXTERNAL_SKILL_SLOT"),
     "RESOLVE_EXTERNAL_SKILL": ("C11", "external-skill-adapter-controller", "RESOLVE_ACTIVE_SKILL_OR_SAFE_FALLBACK"),
 }
@@ -82,6 +85,7 @@ CONTEXT_REQUIREMENTS = {
     "RELEASE_OCCUPANCY": "recoveryCaseId",
     "DISPATCH_TASK_WINDOW": "packageId",
     "DISPATCH_SUB_AGENT": "windowId",
+    "CHECK_TASK_COMMUNICATION": "messageId",
 }
 
 
@@ -192,7 +196,7 @@ def validate_execution_map(value: Dict[str, Any], project_id: str) -> Dict[str, 
 
 def validate_registry(registry: Dict[str, Any], check_files: bool = True) -> Dict[str, Any]:
     required = {"schemaVersion", "recordType", "canonicalCentralSkill", "capabilities", "pendingCapabilities"}
-    if set(registry) != required or registry.get("schemaVersion") != SCHEMA_VERSION or registry.get("recordType") != "C09_CORE_CAPABILITY_REGISTRY":
+    if set(registry) != required or registry.get("schemaVersion") != REGISTRY_SCHEMA_VERSION or registry.get("recordType") != "C09_CORE_CAPABILITY_REGISTRY":
         raise CentralRoutingError("C09_CAPABILITY_REGISTRY_SCHEMA_UNSUPPORTED")
     if registry.get("canonicalCentralSkill") != CENTRAL_SKILL or not isinstance(registry.get("capabilities"), list):
         raise CentralRoutingError("C09_CANONICAL_CENTRAL_INVALID")
@@ -252,7 +256,7 @@ def validate_request(request: Dict[str, Any]) -> Dict[str, Any]:
     if request.get("executionMode") == "APPLY" and (auth.get("status") != "APPROVED" or auth_ref is None):
         raise CentralRoutingError("C09_APPLY_REQUIRES_EXPLICIT_BOSS_AUTHORIZATION")
     context = request.get("contextRefs")
-    context_keys = {"taskId", "packageId", "validationId", "recoveryCaseId", "windowId"}
+    context_keys = {"taskId", "packageId", "validationId", "recoveryCaseId", "windowId", "messageId"}
     if not isinstance(context, dict) or set(context) != context_keys:
         raise CentralRoutingError("C09_CONTEXT_REFS_INVALID")
     for key, value in context.items():

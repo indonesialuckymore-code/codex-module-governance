@@ -14,7 +14,7 @@
   -> 封存 C06 回传包
   -> C08 submit-return
   -> 回传票据 + TASK_EVENT_QUEUED 投递回执
-  -> 当前中央（仅票据、摘要、状态）
+  -> C14 原生消息 + 当前中央确认（仅票据、摘要、状态）
   -> 自动登记完成信号
   -> 单槽隔离验收窗口（一次 1 项）
   -> C06 验收决定
@@ -28,8 +28,8 @@
 |---|---|---|
 | `LOCAL_REPLY_ONLY` | 只有窗口聊天文字，没有持久票据 | 否 |
 | `OUTBOX_PENDING` | 回传包已封存，但投递未完成 | 否 |
-| `QUEUED` | 票据、事件、摘要哈希与投递回执一致 | 是，已进入中央收件箱 |
-| `ACKNOWLEDGED` | 中央已取得队列索引 | 是，但尚未验收 |
+| `QUEUED` | 票据、事件、摘要哈希与 C08 投递回执一致 | 已进入逻辑中央收件箱，但不等于当前中央聊天已收到 |
+| `ACKNOWLEDGED` | 中央已取得队列索引且 C14 已确认 | 是，但尚未验收 |
 | `ADMITTED` | 中央已登记 C03 完成信号 | 是，待独立验收 |
 | `VALIDATING` | 唯一验收槽正在处理 | 是，验收中 |
 | `VALIDATION_RECORDED` | 中央已收到验收结论与回执 | 是，等待例外处理或 Boss 最终批准 |
@@ -44,7 +44,7 @@ Boss 可以在中央启动图批准时同时批准 `AUTO_QUEUE_AND_VALIDATE_WITH
 
 ## 验收办法
 
-1. 在任务窗口提交回传时，必须看到 `TASK_EVENT_QUEUED`、`returnTicketId`、`eventId`、`handbackDigest` 和 `deliveryReceiptId`。
+1. 在任务窗口提交回传时，必须看到 `TASK_EVENT_QUEUED`、`returnTicketId`、`eventId`、`handbackDigest` 和 `deliveryReceiptId`，随后取得 C14 `DELIVERED` 与中央 `MESSAGE_ACKNOWLEDGED`。
 2. 到中央窗口检查，只应看到任务、票据、摘要和状态，不应出现任务窗口施工原文。
 3. 同时提交两张回传票据：第一张应进入 `VALIDATING`，第二张保持 `ADMITTED`；不得并发创建第二个验收窗口。
 4. 没有投递回执时，要求任务窗口显示 `LOCAL_REPLY_ONLY` 或 `OUTBOX_PENDING`，不得允许它声称已回传。
@@ -52,5 +52,6 @@ Boss 可以在中央启动图批准时同时批准 `AUTO_QUEUE_AND_VALIDATE_WITH
 
 ## 仍需注意
 
-- 本版提供持久队列、回执和单槽门禁；Codex 客户端能否自动创建隔离验收窗口仍取决于当时的任务创建能力。无法自动建窗时，中央只能生成该票据的隔离验收任务，不能假装已开始。
+- C08 只负责持久队列、回执和单槽门禁；C14 负责当前中央/任务窗口的原生消息送达与收件确认。没有 C14 确认，不能把 C08 `QUEUED` 说成“中央已看到”。
+- Codex 客户端能否自动创建隔离验收窗口仍取决于当时的任务创建能力。无法自动建窗时，中央只能生成该票据的隔离验收任务，不能假装已开始。
 - 旧 `0.7.0` 回传包不会静默升级。运行中项目应由 Boss 选择受控结束旧协议，或重新生成 `0.8.0` 回传包和新票据。

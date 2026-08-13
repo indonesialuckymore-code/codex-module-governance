@@ -62,7 +62,7 @@ def setup_project_card_only(root, project=PROJECT):
 
 
 def request(intent, mode="READ_ONLY", project=PROJECT, approved=False, **refs):
-    context = {"taskId": None, "packageId": None, "validationId": None, "recoveryCaseId": None, "windowId": None}
+    context = {"taskId": None, "packageId": None, "validationId": None, "recoveryCaseId": None, "windowId": None, "messageId": None}
     context.update(refs)
     return {
         "requestSchemaVersion": "0.12.0",
@@ -90,6 +90,7 @@ class C09Tests(unittest.TestCase):
             self.assertEqual(output["centralEntryCount"], 1)
             self.assertEqual(output["canonicalCentralSkill"], "central-construction-controller")
             self.assertIn("C00", output["readyStages"])
+            self.assertIn("C14", output["readyStages"])
             self.assertEqual(output["models"], {"central": "gpt-5.6-sol", "taskWindow": "gpt-5.6-terra", "subAgent": "gpt-5.6-terra"})
             self.assertEqual(output["subAgentPolicy"], {"maxConcurrentFirstLevel": 3, "allowGrandchildren": False})
             self.assertEqual(output["windowPolicy"], {"maxSequentialAssignments": 2, "allowConcurrentAssignments": False, "centralChoosesReuse": True})
@@ -231,6 +232,15 @@ class C09Tests(unittest.TestCase):
                 with self.subTest(intent=intent):
                     code, output = route(root, request(intent), f"{intent}.json")
                     self.assertEqual(code, 0, output); self.assertEqual(output["targetStage"], "C11")
+
+    def test_task_communication_routes_to_c14_without_changing_task_state(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "private-data"; setup_project(root)
+            code, output = route(root, request("CHECK_TASK_COMMUNICATION", messageId="message-c09-001"))
+            self.assertEqual(code, 0, output)
+            self.assertEqual(output["targetStage"], "C14")
+            self.assertEqual(output["targetSkill"], "task-communication-bridge")
+            self.assertFalse(output["boundaries"]["writePerformed"])
 
     def test_recovery_freeze_overrides_normal_routing(self):
         with tempfile.TemporaryDirectory() as temporary:

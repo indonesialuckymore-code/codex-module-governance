@@ -85,9 +85,9 @@ description: 在 Boss 对单项任务或中央启动图作出范围化批准且 
 
 - 任务窗口始终把事件目标写成 `CURRENT_CENTRAL`，不得保存某一代中央聊天 ID 作为永久收件人。
 - 进度、阻塞、裁定和补派仍先写 `IN_PROGRESS`、`BLOCKED_FOR_DECISION`、`DECISION_APPLIED` 或 `SUB_AGENT_APPEND_REQUEST` 私有事件；补派事件必须引用私有 `C10_SUB_AGENT_APPEND_REQUEST` 文件，中央读回后才可执行 `prepare-append`。
-- 施工回传不得只写 `READY_FOR_VALIDATION` 或发送“已回传”文字。先封存 `C06_TASK_WINDOW_HANDBACK`，再调用 C08 `submit-return`。只有返回同时含 `returnTicketId`、`eventId`、`handbackDigest`、`deliveryReceiptId` 和 `TASK_EVENT_QUEUED` 的回执，才能说“已进入中央收件箱”。
-- 缺少任一回执时只能报告 `LOCAL_REPLY_ONLY` 或 `OUTBOX_PENDING`，不得说中央已收到、不得请求 `DONE`。可以调用 `reconcile-return` 修复中断投递，不能用聊天补发替代。
-- 聊天提醒失败不代表票据丢失；当前中央按回传票据自动登记并送入单槽独立验收，旧中央无权确认。任务窗口不得把施工原文粘给中央。
+- 施工回传不得只写 `READY_FOR_VALIDATION` 或发送“已回传”文字。先封存 `C06_TASK_WINDOW_HANDBACK`，再调用 C08 `submit-return`。只有返回同时含 `returnTicketId`、`eventId`、`handbackDigest`、`deliveryReceiptId` 和 `TASK_EVENT_QUEUED` 的回执，才能说“已进入持久中央收件箱”。
+- 接着必须调用 C14：`enqueue-task-to-central → prepare-delivery → Codex 原生 send_message_to_thread → record-delivery`。只有当前中央以 C14 `MESSAGE_ACKNOWLEDGED` 确认，才能说“中央已收到”；C14 消息正文只能发票据指针，任务窗口不得把施工原文粘给中央。
+- 缺少 C08 回执时只能报告 `LOCAL_REPLY_ONLY` 或 `OUTBOX_PENDING`；缺 C14 原生投递回执时是 `QUEUED`，缺中央确认时是 `DELIVERED`。可以重试 C14，不得用聊天文字补发替代。
 
 ## 永久边界
 

@@ -25,7 +25,7 @@ SENSITIVE_PATTERN = re.compile(
     r"密钥|密码|令牌|验证码)"
 )
 
-CONTEXT_KEYS = ("taskId", "packageId", "validationId", "recoveryCaseId", "windowId")
+CONTEXT_KEYS = ("taskId", "packageId", "validationId", "recoveryCaseId", "windowId", "messageId")
 CONTEXT_REQUIREMENTS = {
     "GENERATE_TASK_PACKAGE": "taskId",
     "REQUEST_TASK_CANCELLATION": "taskId",
@@ -39,6 +39,7 @@ CONTEXT_REQUIREMENTS = {
     "RELEASE_OCCUPANCY": "recoveryCaseId",
     "DISPATCH_TASK_WINDOW": "packageId",
     "DISPATCH_SUB_AGENT": "windowId",
+    "CHECK_TASK_COMMUNICATION": "messageId",
 }
 
 # Put specific intents before broad intents. A request matching multiple independent
@@ -50,6 +51,7 @@ INTENT_PATTERNS: List[Tuple[str, Tuple[str, ...]]] = [
     ("GENERATE_TASK_PACKAGE", (r"(?:生成|准备|出|制作).*任务包", r"任务包.*(?:生成|准备|制作)")),
     ("CHECK_OCCUPANCY", (r"(?:检查|判断|核对).*(?:占用|冲突)", r"(?:新开|沿用|复用).*窗口", r"窗口.*(?:新开|沿用|复用)")),
     ("VALIDATE_HANDBACK", (r"验收.*回传", r"回传.*验收", r"独立复核", r"任务完成了", r"完成信号")),
+    ("CHECK_TASK_COMMUNICATION", (r"中央.*没收到", r"回传.*没收到", r"消息.*没送到", r"通信.*回执")),
     ("RECORD_BOSS_ADJUDICATION", (r"(?:记录|发送|返回).*(?:我的决定|裁定结果)", r"(?:我的决定|裁定结果).*(?:任务窗口|原窗口)")),
     ("REQUEST_ADVISORY", (r"中央后台", r"顾问意见", r"不能裁定", r"无法裁定", r"需要建议")),
     ("RELEASE_OCCUPANCY", (r"释放.*占用", r"占用.*释放")),
@@ -163,6 +165,7 @@ def candidate_directories(data_root: Path, project_id: str, category: str) -> Li
         "packageId": data_root / "task-packages" / project_id / "drafts",
         "validationId": data_root / "handover-validations" / project_id,
         "recoveryCaseId": data_root / "recovery-cases" / project_id,
+        "messageId": data_root / "task-communication" / project_id / "messages",
     }
     root = roots[category]
     if not root.is_dir():
@@ -212,6 +215,7 @@ def question_for(reference: str) -> str:
         "validationId": "验收编号",
         "recoveryCaseId": "恢复事件编号",
         "windowId": "任务窗口编号",
+        "messageId": "通信消息编号",
     }
     return f"请告诉我要处理的{names[reference]}。"
 
@@ -277,6 +281,7 @@ def interpret(data_root: Path, utterance: str, args: argparse.Namespace) -> Dict
         "validationId": args.validation_id,
         "recoveryCaseId": args.recovery_case_id,
         "windowId": args.window_id,
+        "messageId": args.message_id,
     }
     context, inferred = infer_context(data_root, project_id, intent, supplied)
     required = CONTEXT_REQUIREMENTS.get(intent)
@@ -355,6 +360,7 @@ def parse_args() -> argparse.Namespace:
     interpret_parser.add_argument("--validation-id")
     interpret_parser.add_argument("--recovery-case-id")
     interpret_parser.add_argument("--window-id")
+    interpret_parser.add_argument("--message-id")
     interpret_parser.add_argument("--authorization-ref")
     commands.add_parser("examples")
     return parser.parse_args()

@@ -145,6 +145,14 @@ class C12Tests(unittest.TestCase):
             self.assertEqual(output["routingDecision"]["targetStage"], "C07")
             self.assertEqual(output["executionMode"], "PREPARE")
 
+    def test_communication_question_routes_to_c14_with_a_message_identifier(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "private"; setup(root)
+            code, output = gateway(root, "中央没收到这个回传", "--message-id", "message-c12-001")
+            self.assertEqual(code, 0, output)
+            self.assertEqual(output["intent"], "CHECK_TASK_COMMUNICATION")
+            self.assertEqual(output["routingDecision"]["targetStage"], "C14")
+
     def test_initialize_ledger_routes_to_c03(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "private"
