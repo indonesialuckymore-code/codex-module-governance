@@ -62,10 +62,9 @@ def main():
         "independent-handover-validator": "C06",
         "adjudication-request-organizer": "C07",
         "disconnection-recovery-controller": "C08",
-        "central-construction-controller": "C09",
+        "central-workbench": "C09/C12",
         "task-window-dispatch-controller": "C10",
         "external-skill-adapter-controller": "C11",
-        "codex-governance-gateway": "C12",
         "task-communication-bridge": "C14",
     }
     for skill_name, stage in skills.items():
@@ -80,12 +79,16 @@ def main():
         if not re.search(r"^description:\s*\S", frontmatter, re.MULTILINE):
             fail(f"{stage} Skill description is missing")
 
-    for skill_name, stage in {"construction-outline-planner": "C00", "engineering-ledger-manager": "C03", "task-package-generator": "C04", "occupancy-conflict-checker": "C05", "independent-handover-validator": "C06", "adjudication-request-organizer": "C07", "disconnection-recovery-controller": "C08", "central-construction-controller": "C09", "task-window-dispatch-controller": "C10", "external-skill-adapter-controller": "C11", "codex-governance-gateway": "C12", "task-communication-bridge": "C14"}.items():
+    for skill_name, stage in {"construction-outline-planner": "C00", "engineering-ledger-manager": "C03", "task-package-generator": "C04", "occupancy-conflict-checker": "C05", "independent-handover-validator": "C06", "adjudication-request-organizer": "C07", "disconnection-recovery-controller": "C08", "central-workbench": "C09/C12", "task-window-dispatch-controller": "C10", "external-skill-adapter-controller": "C11", "task-communication-bridge": "C14"}.items():
         agent_manifest = plugin_root / "skills" / skill_name / "agents" / "openai.yaml"
         agent_contents = agent_manifest.read_text(encoding="utf-8")
         for required_line in ("interface:", "display_name:", "short_description:", "default_prompt:"):
             if required_line not in agent_contents:
                 fail(f"{stage} Skill agent metadata is missing {required_line}")
+
+    for retired_visible_entry in ("central-construction-controller", "codex-governance-gateway"):
+        if (plugin_root / "skills" / retired_visible_entry / "SKILL.md").exists():
+            fail(f"retired visible central entry remains discoverable: {retired_visible_entry}")
 
     for path in plugin_root.rglob("*"):
         if path.is_file() and "[TODO:" in path.read_text(encoding="utf-8", errors="ignore"):

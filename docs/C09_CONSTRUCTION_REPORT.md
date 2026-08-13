@@ -4,6 +4,8 @@
 
 `DONE`（产品能力验收通过；不代表 C10 派发能力存在）
 
+> 入口收敛说明（v0.20）：本报告中的 `central-construction-controller` 是 C09 内部协议名；Boss 在 `/` 菜单只使用“中央工作台” (`central-workbench`)。协议身份、总账和派发链不迁移。
+
 ## 新增
 
 - 唯一中央 Skill 的产品源与 Codex 展示信息；

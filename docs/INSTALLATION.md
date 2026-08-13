@@ -5,7 +5,7 @@
 前提：电脑已安装 Codex CLI，GitHub 账号已获准访问私有仓库 `indonesialuckymore-code/codex-module-governance`。
 
 ```bash
-codex plugin marketplace add indonesialuckymore-code/codex-module-governance --ref v0.19.0
+codex plugin marketplace add indonesialuckymore-code/codex-module-governance --ref v0.20.0
 codex plugin add codex-module-governance@qianyi-codex-governance
 ```
 
@@ -13,7 +13,7 @@ codex plugin add codex-module-governance@qianyi-codex-governance
 
 > 初始化 Codex 模块施工控制台。先检查依赖和重复建设，不要施工。
 
-也可以显式调用 `$codex-governance-gateway`。插件先让用户选择仓库外私有数据目录；不会把工程总账或业务资料写进 GitHub 仓库。
+也可以显式调用 `$central-workbench`。这是 Boss 唯一的中央入口；C09 中央控制与 C12 自然语言解析保留为内部协议，不会出现在 `/` 菜单供 Boss 二选一。插件先让用户选择仓库外私有数据目录；不会把工程总账或业务资料写进 GitHub 仓库。
 
 ## 本人本地试用后续开发版
 
@@ -24,7 +24,7 @@ codex plugin marketplace add <本地仓库路径>
 codex plugin add codex-module-governance@qianyi-codex-governance
 ```
 
-安装后必须新开 Codex 任务，再从 `/` 菜单选择“施工大纲规划”或“中央处理器”。把冻结大纲交给中央后，中央应一次显示全部任务、待拍板事项、并行波次和前置关系；若仍逐任务反复询问，说明加载的不是当前施工版。正式分享给其他用户时仍应固定 Git tag。
+安装后必须新开 Codex 任务，再从 `/` 菜单选择“施工大纲规划”或“中央工作台”。把冻结大纲交给中央后，中央应一次显示全部任务、待拍板事项、并行波次和前置关系；若仍逐任务反复询问，说明加载的不是当前施工版。正式分享给其他用户时仍应固定 Git tag。
 
 ## 升级
 
@@ -41,7 +41,7 @@ codex plugin add codex-module-governance@qianyi-codex-governance
 
 ## 回退
 
-推荐按升级步骤把 Marketplace 固定回 `v0.16.0`（上一稳定版）或其他已知可用 tag 后重新安装。若使用 C13 隔离验证器留下的备份，则运行：
+推荐按升级步骤把 Marketplace 固定回 `v0.19.0`（上一稳定版）或其他已知可用 tag 后重新安装。若使用 C13 隔离验证器留下的备份，则运行：
 
 ```bash
 python3 scripts/c13-release-validator.py rollback \

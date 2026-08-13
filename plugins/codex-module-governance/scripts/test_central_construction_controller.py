@@ -89,6 +89,7 @@ class C09Tests(unittest.TestCase):
             self.assertEqual(code, 0, output)
             self.assertEqual(output["centralEntryCount"], 1)
             self.assertEqual(output["canonicalCentralSkill"], "central-construction-controller")
+            self.assertEqual(output["bossEntrySkill"], "central-workbench")
             self.assertIn("C00", output["readyStages"])
             self.assertIn("C14", output["readyStages"])
             self.assertEqual(output["models"], {"central": "gpt-5.6-sol", "taskWindow": "gpt-5.6-terra", "subAgent": "gpt-5.6-terra"})
@@ -129,10 +130,14 @@ class C09Tests(unittest.TestCase):
         self.assertIn("policy: CODEX_ONLY", template)
 
     def test_central_requires_one_pass_execution_map_and_saved_project_dispatch(self):
-        central_root = central.PLUGIN_SKILLS / "central-construction-controller"
-        skill = (central_root / "SKILL.md").read_text(encoding="utf-8")
-        execution_map = (central_root / "references" / "project-execution-map.md").read_text(encoding="utf-8")
-        self.assertIn("所有 Boss 决策集中成一个编号清单", skill)
+        workbench_root = central.PLUGIN_SKILLS / "central-workbench"
+        protocol_root = central.PLUGIN_SKILLS / "central-construction-controller"
+        skill = (workbench_root / "SKILL.md").read_text(encoding="utf-8")
+        execution_map = (protocol_root / "references" / "project-execution-map.md").read_text(encoding="utf-8")
+        self.assertFalse((protocol_root / "SKILL.md").exists())
+        self.assertFalse((central.PLUGIN_SKILLS / "codex-governance-gateway" / "SKILL.md").exists())
+        self.assertIn("Boss 唯一需要选择", skill)
+        self.assertIn("一次输出：全部任务", skill)
         self.assertIn("第一波合格任务立即批量派发", skill)
         self.assertIn("project + worktree", skill)
         self.assertIn("authorizationScope", execution_map)

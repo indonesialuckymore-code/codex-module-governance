@@ -1,0 +1,4 @@
+interface:
+  display_name: "中央工作台"
+  short_description: "唯一入口：规划、派发、验收、回传与中央换代"
+  default_prompt: "使用 $central-workbench 读取施工大纲和最新总账，集中列出任务、待拍板事项、依赖与并行波次。"

@@ -4,7 +4,7 @@
 
 ## 当前阶段
 
-当前私有稳定版为 `0.19.0`（Git 标签 `v0.19.0`）；它在中央启动图、稳定任务身份和角色连续性之上，新增“原生消息送达并由对方确认才算已收到”的双向通信桥、自动收件箱、一次只处理一项的独立验收槽、`DONE` 后自动续派、“每窗口最多两项串行任务”硬门禁，以及不降低验收标准的主动子 Agent 协作。
+当前 Git 私有稳定版为 `0.20.0`（标签 `v0.20.0`）。Boss 的中央入口已收敛为唯一的“中央工作台”，而 C09 中央控制与 C12 自然语言解析继续作为内部协议。它不迁移工程总账、不新建第二套任务状态，也不改变既有派发、回传和验收链。
 
 - Codex 插件清单与本仓库 marketplace；
 - C00 从当前任务已有内容续接、逐项向 Boss 澄清、冻结大纲并生成中央交接摘要；
@@ -76,4 +76,4 @@
 
 ## 安装入口
 
-先按 [安装说明](docs/INSTALLATION.md) 从固定稳定标签 `v0.19.0` 注册本人 GitHub Marketplace，再安装 `codex-module-governance@qianyi-codex-governance`。私有仓库用户必须先获得 GitHub 访问权限；安装或升级后需要新开 Codex 任务加载新版能力。
+先按 [安装说明](docs/INSTALLATION.md) 从固定稳定标签 `v0.20.0` 注册本人 GitHub Marketplace，再安装 `codex-module-governance@qianyi-codex-governance`。私有仓库用户必须先获得 GitHub 访问权限；安装或升级后需要新开 Codex 任务加载新版能力。

@@ -1,4 +1,0 @@
-interface:
-  display_name: "中央处理器"
-  short_description: "集中规划、自动续派、摘要收件箱与单槽独立验收"
-  default_prompt: "使用 $central-construction-controller 读取完整冻结大纲和最新总账，一次性给我全部任务、拍板事项、并行波次和前置；批准后自动续派合格任务，并将回传票据自动送入单槽独立验收，中央只接收摘要与结论。"

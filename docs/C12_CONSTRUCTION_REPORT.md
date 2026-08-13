@@ -4,7 +4,7 @@
 
 ## 本次新增
 
-- `codex-governance-gateway`：Boss 面向的自然语言 Skill。
+- C12 自然语言解析协议；自 v0.20 起由 Boss 唯一可见入口 `central-workbench` 调用，不再单独出现在菜单中。
 - 无状态自然语言解析器：只输出口语摘要和 C09 标准请求，不保存原始口语或第二套状态。
 - `READ_ONLY`、`PREPARE`、`APPLY` 三种模式，以及明确对象批准门。
 - 单动作识别、唯一候选自动补齐、多个候选追问、敏感内容拒绝回显。
@@ -12,7 +12,7 @@
 
 ## 防止双中央
 
-C12 在能力登记中标记为 `INTERFACE`，不是 `CENTRAL`。它不读取后自行改账、不保存路由历史、不直接调用 C02–C11 执行器，只把标准请求交给 C09。能力登记仍只有一个 `CENTRAL`：`central-construction-controller`。
+C12 在能力登记中标记为 `INTERFACE`，不是 `CENTRAL`。它不读取后自行改账、不保存路由历史、不直接调用 C02–C11 执行器，只把标准请求交给 C09。能力登记仍只有一个 `CENTRAL`：内部协议 `central-construction-controller`；Boss 只看见 `central-workbench`。
 
 ## 验收结论
 

@@ -22,6 +22,8 @@ from task_window_dispatch_controller import DispatchError, prepare as prepare_di
 SCHEMA_VERSION = "0.12.0"
 REGISTRY_SCHEMA_VERSION = "0.19.0"
 CENTRAL_SKILL = "central-construction-controller"
+BOSS_ENTRY_SKILL = "central-workbench"
+INTERNAL_PROTOCOL_SKILLS = {CENTRAL_SKILL, "codex-governance-gateway"}
 CENTRAL_MODEL = "gpt-5.6-sol"
 TASK_MODEL = "gpt-5.6-terra"
 REFERENCE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
@@ -213,7 +215,8 @@ def validate_registry(registry: Dict[str, Any], check_files: bool = True) -> Dic
         if set(entry) != {"stage", "role", "skill", "script", "status"} or (entry.get("role"), entry.get("skill"), entry.get("script"), entry.get("status")) != (role, skill, script, "READY"):
             raise CentralRoutingError(f"C09_{stage}_CAPABILITY_CONTRACT_INVALID")
         if check_files:
-            if not (PLUGIN_SKILLS / skill / "SKILL.md").is_file():
+            documented_skill = BOSS_ENTRY_SKILL if skill in INTERNAL_PROTOCOL_SKILLS else skill
+            if not (PLUGIN_SKILLS / documented_skill / "SKILL.md").is_file():
                 raise CentralRoutingError(f"C09_{stage}_CAPABILITY_FILE_MISSING")
             if script is not None and not (PLUGIN_SCRIPTS / script).is_file():
                 raise CentralRoutingError(f"C09_{stage}_CAPABILITY_FILE_MISSING")
@@ -355,6 +358,7 @@ def status(registry: Dict[str, Any]) -> Dict[str, Any]:
         "recordType": "C09_CENTRAL_INTEGRATION_STATUS",
         "status": "READY",
         "canonicalCentralSkill": CENTRAL_SKILL,
+        "bossEntrySkill": BOSS_ENTRY_SKILL,
         "centralEntryCount": 1,
         "readyStages": list(EXPECTED),
         "pendingStages": [],
