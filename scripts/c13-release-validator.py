@@ -16,7 +16,7 @@ from typing import Any
 
 PLUGIN = "codex-module-governance"
 MARKETPLACE = "qianyi-codex-governance"
-CURRENT_VERSION = "0.18.0"
+CURRENT_VERSION = "0.19.0"
 REQUIRED_SKILLS = {
     "construction-outline-planner",
     "new-project-initializer",
@@ -30,6 +30,7 @@ REQUIRED_SKILLS = {
     "task-window-dispatch-controller",
     "external-skill-adapter-controller",
     "codex-governance-gateway",
+    "task-communication-bridge",
 }
 EXCLUDED_PARTS = {".git", "__pycache__", ".DS_Store"}
 

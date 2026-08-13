@@ -5,7 +5,7 @@
 前提：电脑已安装 Codex CLI，GitHub 账号已获准访问私有仓库 `indonesialuckymore-code/codex-module-governance`。
 
 ```bash
-codex plugin marketplace add indonesialuckymore-code/codex-module-governance --ref v0.16.0
+codex plugin marketplace add indonesialuckymore-code/codex-module-governance --ref v0.19.0
 codex plugin add codex-module-governance@qianyi-codex-governance
 ```
 
@@ -41,7 +41,7 @@ codex plugin add codex-module-governance@qianyi-codex-governance
 
 ## 回退
 
-推荐按升级步骤把 Marketplace 固定回 `v0.16.0` 或其他已知可用 tag 后重新安装。若使用 C13 隔离验证器留下的备份，则运行：
+推荐按升级步骤把 Marketplace 固定回 `v0.16.0`（上一稳定版）或其他已知可用 tag 后重新安装。若使用 C13 隔离验证器留下的备份，则运行：
 
 ```bash
 python3 scripts/c13-release-validator.py rollback \
