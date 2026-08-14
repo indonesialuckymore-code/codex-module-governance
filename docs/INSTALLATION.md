@@ -5,7 +5,7 @@
 前提：电脑已安装 Codex CLI，GitHub 账号已获准访问私有仓库 `indonesialuckymore-code/codex-module-governance`。
 
 ```bash
-codex plugin marketplace add indonesialuckymore-code/codex-module-governance --ref v0.21.0
+codex plugin marketplace add indonesialuckymore-code/codex-module-governance --ref v0.22.0
 codex plugin add codex-module-governance@qianyi-codex-governance
 ```
 
@@ -41,7 +41,7 @@ codex plugin add codex-module-governance@qianyi-codex-governance
 
 ## 回退
 
-推荐按升级步骤把 Marketplace 固定回 `v0.20.0`（上一稳定版）或其他已知可用 tag 后重新安装。若使用 C13 隔离验证器留下的备份，则运行：
+推荐按升级步骤把 Marketplace 固定回 `v0.21.0`（上一稳定版）或其他已知可用 tag 后重新安装。若使用 C13 隔离验证器留下的备份，则运行：
 
 ```bash
 python3 scripts/c13-release-validator.py rollback \
@@ -63,9 +63,17 @@ python3 scripts/c13-release-validator.py rollback \
 8. 原任务窗口需要顾问意见时，C07 只把建议交 Boss；Boss 决定后才生成回原窗口的裁定包，且不自动执行。
 9. 窗口或中央失联时，C08 冻结现场并保留占用；新中央经 Boss 授权后只恢复治理控制，不能自动恢复业务施工。
 10. C09 首次接收大纲时一次生成中央启动图；Boss 集中回答决策并批准后，图中相同范围不再逐任务重复批准。
-11. C10 按启动图波次和绿黄红门禁准备派发单；新任务必须绑定 Codex 保存项目，Git 默认标准 worktree，并由原生建窗调用明确指定 `gpt-5.6-terra`。复用窗口和一级子 Agent 也必须通过原生调用明确指定 Terra。若 worktree 回读项目 ID 为空，对同一任务先交接到项目根目录再交接回来；只有最终核对正确项目归属、标准目录、真实任务 ID 和 Terra 模型控制记录后，才登记 C03 并进入 `IN_PROGRESS`。
+11. C10 按启动图波次和绿黄红门禁准备派发单；新任务必须绑定 Codex 保存项目，Git 默认标准 worktree，并由原生建窗调用明确指定 `gpt-5.6-terra`。复用窗口和一级子 Agent 也必须通过原生调用明确指定 Terra。任务还必须使用 `WORKTREE_SCOPED` 工作区受限权限并回传权限证据；完整访问不得登记。若 worktree 回读项目 ID 为空，对同一任务先交接到项目根目录再交接回来；只有最终核对正确项目归属、标准目录、真实任务 ID、Terra 和权限控制记录后，才登记 C03 并进入 `IN_PROGRESS`。
 12. C11 登记外部 Skill 的固定来源、版本、许可证和权限；不自动安装。
 13. C12 接收 Boss 业务语言，区分只看、准备和批准执行，再把标准请求交给 C09 唯一中央。
-14. 平台不能自动建窗时，C10 `export-fallback` 只生成可复制任务包；Boss 手动开窗前先在模型菜单选择 **5.6 Terra** 并保留证据。在真实任务 ID 与该证据回传前，任务不会被误记为 `IN_PROGRESS`。
+14. 平台不能自动建窗时，C10 `export-fallback` 只生成可复制任务包；Boss 手动开窗前先在模型菜单选择 **5.6 Terra**，把权限设为工作区受限并关闭完整访问，同时保留两项证据。在真实任务 ID 与两项证据回传前，任务不会被误记为 `IN_PROGRESS`。
+
+## v0.22 权限与原生任务设置
+
+- 本版本不会静默修改用户全局 Codex 权限。派发前应关闭“完整访问权限”，使用工作区权限或经批准的 `qianyi-task-terra` Profile。
+- 若当前 Codex 版本尚未支持权限 Profile，可用兼容的 `workspace-write` 读回或界面证据；这只是运行兼容，不放宽 C05 对共享业务对象的占用检查。
+- 自动审核不等于无限授权。启用自动审核时仍应使用交互式批准策略；全局 `approval_policy=never` 不能被当作已通过权限审查。
+- 新建、复用和监控任务会使用原生任务工具；任务标题、项目分组、置顶和归档只是方便 Boss 查看，C03/C08/C14 回执仍决定真实状态。
+- 升级插件后必须新开中央任务；旧任务不会自动换模型、换权限或加载新版 Skill。
 
 项目启动卡不包含任务、窗口、证据或业务数据。C03 总账只保存私有的结构化施工状态和不透明引用；C04 任务包和 C05 占用请求只保存去敏施工合同、对象键及交接引用，不包含真实业务对象。安装完成只说明治理产品可加载，不等于任何真实业务链已上线或验收。

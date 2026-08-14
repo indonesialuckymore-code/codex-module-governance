@@ -108,6 +108,33 @@ def main():
         fail("bundled central capability registry differs from the product source")
     if manifest.get("repository") != "https://github.com/indonesialuckymore-code/codex-module-governance":
         fail("plugin repository metadata is invalid")
+    if manifest.get("version") != "0.22.0":
+        fail("plugin version must match the v0.22.0 native-runtime release")
+    module_config = json.loads((repo_root / "config" / "module-config.example.json").read_text(encoding="utf-8"))
+    permissions = module_config.get("runtimePermissions", {})
+    native_runtime = module_config.get("nativeRuntime", {})
+    if (
+        module_config.get("schemaVersion") != "0.22.0"
+        or permissions.get("taskWindowClass") != "WORKTREE_SCOPED"
+        or permissions.get("forbidDangerFullAccess") is not True
+        or permissions.get("requireRuntimeEvidence") is not True
+    ):
+        fail("bounded runtime permission contract is missing")
+    expected_native = {
+        "createThreadTool": "codex_app__create_thread",
+        "sendMessageTool": "codex_app__send_message_to_thread",
+        "readThreadTool": "codex_app__read_thread",
+        "waitThreadsTool": "codex_app__wait_threads",
+        "forkThreadTool": "codex_app__fork_thread",
+        "handoffThreadTool": "codex_app__handoff_thread",
+        "setTitleTool": "codex_app__set_thread_title",
+        "setPinnedTool": "codex_app__set_thread_pinned",
+        "setArchivedTool": "codex_app__set_thread_archived",
+    }
+    if any(native_runtime.get(key) != value for key, value in expected_native.items()):
+        fail("native task lifecycle contract is incomplete")
+    if native_runtime.get("maxMonitoringBatch") != 8 or native_runtime.get("uiProjectionIsStateSource") is not False:
+        fail("native task monitoring or UI-state boundary is invalid")
     print("Plugin manifest, marketplace, and C00-C12/C14 Skill contract preflight passed.")
 
 

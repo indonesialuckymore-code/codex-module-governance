@@ -31,6 +31,12 @@ def terra_window_enforcement(evidence_ref="terra-model-proof-001"):
             "method": "NATIVE_CREATE_THREAD_MODEL_PARAMETER",
             "evidenceRef": evidence_ref,
         },
+        "permissionEnforcement": {
+            "permissionClass": "WORKTREE_SCOPED",
+            "profile": ":workspace",
+            "method": "PERMISSION_PROFILE_READBACK",
+            "evidenceRef": evidence_ref,
+        },
     }
 
 
@@ -280,7 +286,7 @@ class OccupancyConflictCheckerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             data_root = Path(temporary) / "private-data"
             setup_project(data_root)
-            code, output = c03(data_root, "register-window", "--window-id", "window-existing", "--task-id", TASK_ID, "--context-mode", "NEW", "--runtime-model-evidence-ref", "manual-terra-window-existing")
+            code, output = c03(data_root, "register-window", "--window-id", "window-existing", "--task-id", TASK_ID, "--context-mode", "NEW", "--runtime-model-evidence-ref", "manual-terra-window-existing", "--runtime-permission-profile", ":workspace", "--runtime-permission-evidence-ref", "manual-permission-window-existing")
             self.assertEqual(code, 0, output)
             review = create_review(data_root)
             code, output = self.command(data_root, review)
@@ -298,6 +304,14 @@ class OccupancyConflictCheckerTests(unittest.TestCase):
             code, output = self.command(data_root, review)
             self.assertEqual(code, 0, output)
             self.assertEqual(output["windowDecision"]["status"], "OPEN_NEW_WINDOW")
+
+    def test_terra_window_with_full_or_missing_permission_is_not_reused(self):
+        ledger = {
+            "tasks": {"C-OLD": {"taskId": "C-OLD", "status": "DONE"}, TASK_ID: {"taskId": TASK_ID, "status": "PLANNED"}},
+            "windows": {"window-unsafe": {"windowId": "window-unsafe", "taskId": "C-OLD", "currentTaskId": None, "model": "gpt-5.6-terra", "runtimeModel": "gpt-5.6-terra", "modelEnforcement": {"model": "gpt-5.6-terra", "method": "NATIVE_CREATE_THREAD_MODEL_PARAMETER", "evidenceRef": "terra-proof-unsafe"}, "status": "AVAILABLE_FOR_REUSE", "assignmentCount": 1, "assignmentHistory": [{"assignmentNumber": 1, "taskId": "C-OLD"}]}},
+        }
+        review = {"reviewId": REVIEW_ID, "taskId": TASK_ID, "windowReview": {"mode": "AUTO", "candidateWindowId": None, "contextCompatibility": "COMPATIBLE"}}
+        self.assertEqual(resolve_window({}, ledger, review)["status"], "OPEN_NEW_WINDOW")
 
     def test_available_window_gets_only_second_assignment_and_retired_window_is_refused(self):
         ledger = {

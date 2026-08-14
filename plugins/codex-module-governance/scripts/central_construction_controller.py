@@ -145,7 +145,7 @@ def write_exclusive(path: Path, payload: Dict[str, Any]) -> None:
 
 def validate_execution_map(value: Dict[str, Any], project_id: str) -> Dict[str, Any]:
     required = {"executionMapSchemaVersion", "recordType", "planId", "projectId", "authorization", "executionPlan"}
-    if set(value) != required or value.get("executionMapSchemaVersion") != "0.16.0" or value.get("recordType") != "C09_APPROVED_EXECUTION_MAP" or value.get("projectId") != project_id:
+    if set(value) != required or value.get("executionMapSchemaVersion") != "0.17.0" or value.get("recordType") != "C09_APPROVED_EXECUTION_MAP" or value.get("projectId") != project_id:
         raise CentralRoutingError("C09_EXECUTION_MAP_SCHEMA_UNSUPPORTED")
     plan_id = require_reference(value.get("planId"), "C09_EXECUTION_MAP_ID_INVALID")
     authorization = value.get("authorization")
@@ -570,7 +570,7 @@ def continue_successors(args: argparse.Namespace, registry: Dict[str, Any]) -> D
     revision = len(existing_batches) + 1
     target = successor_batch_dir(data_root, project_id, validation_id) / f"successor-batch-r{revision:04d}.json"
     artifact = {
-        "schemaVersion": "0.16.0",
+        "schemaVersion": "0.17.0",
         "recordType": "C09_SUCCESSOR_DISPATCH_BATCH",
         "projectId": project_id,
         "validationId": validation_id,

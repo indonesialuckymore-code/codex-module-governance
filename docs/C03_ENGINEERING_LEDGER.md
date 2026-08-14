@@ -21,7 +21,8 @@ C03 是 Codex 模块的唯一详细施工账本。它记录 Codex 自己的任�
 3. 同一个完成信号第二次到达时，只回报“已接收”，不会再次推进任务。
 4. 两个不同责任人声明同一对象时，账本保留两份声明，标记 `CONFLICT` 和硬停；它不冒充外部系统的写前锁。
 5. `DONE` 被 C03 明确拒绝，必须等待 C06 独立验收和 Boss 批准。
-6. C03 的低层 `register-window` 只用于恢复/手工证据登记：不带 Terra 模型证据的窗口会记为 `UNVERIFIED`，不得被 C05/C10 复用。正常派发必须经 C10 的原生模型参数确认。
+6. C03 的低层 `register-window` 只用于恢复/手工证据登记：不带 Terra 模型证据和 `WORKTREE_SCOPED` 权限证据的窗口会记为 `UNVERIFIED`，不得被 C05/C10 复用。正常派发必须经 C10 的原生模型与权限确认。
+7. `runtimeThreadRef`、`runtimeTitle`、`runtimeProjectId`、`modelEnforcement` 和 `permissionEnforcement` 是原生运行投影的可审计引用；Codex 侧栏显示本身不能反向修改账本状态。
 
 ## 私有目录结构
 

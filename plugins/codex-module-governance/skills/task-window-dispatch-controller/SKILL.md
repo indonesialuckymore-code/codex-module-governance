@@ -1,6 +1,6 @@
 ---
 name: task-window-dispatch-controller
-description: 在 Boss 对单项任务或中央启动图作出范围化批准且 C05 占用验收通过后，按并行波次准备和批量派发 Codex 任务窗口及最多 3 个一级子 Agent；任务窗口可在原范围内主动补派独立子 Agent，但必须经过结构化回传、父窗口读证和质量闸门，不能牺牲最终质量。强制绑定 Codex 保存项目与 gpt-5.6-terra，只有运行时返回正确项目归属、真实任务 ID 和模型控制回执后才登记 C03。Use when 中央要派发一个或一批任务、放行后续依赖波次、复用旧窗口、创建或补派一级子 Agent、修复新任务掉进“最近”而非项目分组、登记真实运行结果或汇总子 Agent 回传。
+description: 在 Boss 对单项任务或中央启动图作出范围化批准且 C05 占用验收通过后，按并行波次准备和批量派发 Codex 任务窗口及最多 3 个一级子 Agent；任务窗口可在原范围内主动补派独立子 Agent，但必须经过结构化回传、父窗口读证和质量闸门，不能牺牲最终质量。强制绑定 Codex 保存项目、gpt-5.6-terra 和工作区受限权限，只有运行时返回正确项目归属、真实任务 ID、模型与权限控制回执后才登记 C03。Use when 中央要派发一个或一批任务、放行后续依赖波次、复用旧窗口、创建或补派一级子 Agent、修复新任务掉进“最近”而非项目分组、登记真实运行结果或汇总子 Agent 回传。
 ---
 
 # 任务窗口与一级子 Agent 调度
@@ -16,9 +16,17 @@ description: 在 Boss 对单项任务或中央启动图作出范围化批准且 
 1. `prepare` 验证 C04、C05、C03、Boss 批准和恢复状态，只生成不可覆盖派发单。
 2. 派发单固定任务身份：总账/任务包使用 `任务ID｜业务名称`，Codex 窗口使用 `任务ID｜业务名称｜G代际`。
 3. Codex 运行时按派发单的完整标题创建新任务、发送到旧任务或创建一级子 Agent。新任务必须调用原生 `create_thread` 且明确传入 `model: "gpt-5.6-terra"`；复用旧窗口必须调用原生 `send_message_to_thread` 且明确传入同一 `model`；一级子 Agent 必须用原生 `spawn_agent` 且明确传入同一 `model`。只在提示词里写“请使用 Terra”不算派发。
-4. 只有所有要求的运行时对象都成功、标题/任务 ID/代际完全匹配、返回真实 ID，并回传模型控制记录后，`confirm` 才登记窗口和子 Agent，并把任务从 `READY` 推进为 `IN_PROGRESS`。模型控制记录必须是 `model=gpt-5.6-terra`，且方法分别为 `NATIVE_CREATE_THREAD_MODEL_PARAMETER`、`NATIVE_SEND_MESSAGE_MODEL_OVERRIDE` 或 `NATIVE_SPAWN_AGENT_MODEL_PARAMETER`。
-5. Sol、Luna、缺少模型控制记录、模型方法不匹配或部分创建，都不得更新总账；报告 `C10_RUNTIME_MODEL_MUST_BE_TERRA / NEEDS_REVIEW`。已产生的孤立对象应交 C08 冻结或收回，不能冒充 Terra 窗口。
-6. 如果当前 Codex 表面不能自动创建任务，`export-fallback` 只生成可复制任务包交 Boss 手工建窗；Boss 必须先在模型菜单选择 **5.6 Terra** 并保留可核对证据，随后只能以 `MANUAL_UI_TERRA_SELECTION_EVIDENCE` 完成 C10 确认。没有该手工包与证据，手工窗口不得登记。
+4. 只有所有要求的运行时对象都成功、标题/任务 ID/代际完全匹配、返回真实 ID，并同时回传模型控制和权限控制记录后，`confirm` 才登记窗口和子 Agent，并把任务从 `READY` 推进为 `IN_PROGRESS`。权限必须为 `WORKTREE_SCOPED`，允许 `:workspace`、`qianyi-task-terra` 或兼容旧运行时的 `workspace-write`；完整访问一律拒绝。
+5. Sol、Luna、缺少模型/权限控制记录、方法不匹配、`danger-full-access` 或部分创建，都不得更新总账；报告对应的 `C10_* / NEEDS_REVIEW`。已产生的孤立对象应交 C08 冻结或收回，不能冒充合格窗口。
+6. 如果当前 Codex 表面不能自动创建任务，`export-fallback` 只生成可复制任务包交 Boss 手工建窗；Boss 必须先在模型菜单选择 **5.6 Terra**，把权限设为工作区受限并关闭完整访问，保留两项证据，随后分别以 `MANUAL_UI_TERRA_SELECTION_EVIDENCE` 和 `MANUAL_UI_PERMISSION_EVIDENCE` 完成 C10 确认。没有该手工包与证据，手工窗口不得登记。
+
+## 权限门禁
+
+1. Terra 管“由什么模型施工”，权限门禁管“它可以碰到哪里”；两者缺一不可。
+2. 任务窗口必须是 `WORKTREE_SCOPED`。`danger-full-access`、`full-access`、缺证据或只有提示词承诺均禁止进入 `IN_PROGRESS`。
+3. 一级子 Agent 默认继承父任务窗口的受限权限；回执必须引用父窗口运行身份，且 profile 完全一致。若运行时能提供独立读回，也可用独立权限回执。
+4. 旧窗口即使有 Terra 凭据，只要没有权限凭据，就不得承接第二项任务；允许完成当前任务，但下一项应新开合格窗口。
+5. Codex 权限 Profile 仍属运行时能力；C10 只验收真实读回/界面证据，不把配置文件文本当成已生效事实。
 
 ## 窗口两任务上限
 
@@ -57,6 +65,13 @@ description: 在 Boss 对单项任务或中央启动图作出范围化批准且 
 3. C10 只会把已记录 `model`、`runtimeModel` 和 `modelEnforcement` 的 Terra 窗口写入工程总账。旧版或手工直登、但没有这三项证据的窗口为 `UNVERIFIED`，不得作为第二项任务的复用窗口。
 4. 新窗口如未成功指定 Terra，中央保持任务 `READY`；不得以“先用 Sol 做、之后再换”为理由开始施工。复用窗口如没有 Terra 证据，C05 改选新窗口或等待明确裁定。
 5. 模型不是业务验收质量的替代品。Terra 只保证派工的一致模型；C06 独立验收、Boss 最终裁定、对象占用和真实读回规则不变。
+
+## 原生任务动作
+
+- 新开任务用 `codex_app__create_thread`；复用用 `codex_app__send_message_to_thread`；两者都必须传 Terra 并回读任务。
+- 第二次承接后用 `codex_app__set_thread_title` 改成新的完整标题并回读；标题只是界面投影，不是任务状态。
+- 中央用 `codex_app__wait_threads` 按最多 8 个一组等待，不逐个轮询；完成后仍须读取 C08/C14 票据。
+- 任务窗口不置顶；当前中央和当前裁定可置顶。只有 C06 + Boss 已 `DONE` 且窗口已 `RETIRED` 才允许归档。
 
 ## 子 Agent：主动提速，但父窗口独自对质量负责
 

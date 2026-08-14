@@ -30,7 +30,7 @@ from occupancy_conflict_checker import OccupancyError, verify_decision_data
 from task_package_generator import TaskPackageError, load_package, verify_package
 
 
-SCHEMA_VERSION = "0.16.0"
+SCHEMA_VERSION = "0.17.0"
 ROOT = Path("dispatches")
 REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
 WINDOW_ID = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{2,127}$")
@@ -40,6 +40,17 @@ WINDOW_CREATE_MODEL_METHOD = "NATIVE_CREATE_THREAD_MODEL_PARAMETER"
 WINDOW_REUSE_MODEL_METHOD = "NATIVE_SEND_MESSAGE_MODEL_OVERRIDE"
 MANUAL_WINDOW_MODEL_METHOD = "MANUAL_UI_TERRA_SELECTION_EVIDENCE"
 SUB_AGENT_MODEL_METHOD = "NATIVE_SPAWN_AGENT_MODEL_PARAMETER"
+TASK_PERMISSION_CLASS = "WORKTREE_SCOPED"
+ALLOWED_TASK_PERMISSION_PROFILES = {":workspace", "qianyi-task-terra", "workspace-write"}
+WINDOW_PERMISSION_METHODS = {
+    "PERMISSION_PROFILE_READBACK",
+    "LEGACY_WORKSPACE_SANDBOX_READBACK",
+    "MANUAL_UI_PERMISSION_EVIDENCE",
+}
+SUB_AGENT_PERMISSION_METHODS = {
+    "INHERITED_FROM_PARENT_WINDOW",
+    "SUB_AGENT_PERMISSION_READBACK",
+}
 
 
 class DispatchError(Exception):
@@ -77,6 +88,28 @@ def validate_model_control(raw: Any, allowed_methods: set[str], error: str) -> D
     }
 
 
+def validate_permission_control(raw: Any, allowed_methods: set[str], error: str) -> Dict[str, str]:
+    """Require bounded workspace permission evidence; full access is never eligible."""
+    value = exact(raw, {"permissionClass", "profile", "method", "evidenceRef"}, error)
+    permission_class = str(value["permissionClass"]).strip().upper()
+    profile = str(value["profile"]).strip()
+    method = str(value["method"]).strip().upper()
+    if permission_class != TASK_PERMISSION_CLASS:
+        raise DispatchError("C10_RUNTIME_PERMISSION_MUST_BE_WORKTREE_SCOPED")
+    if profile.lower() in {":danger-full-access", "danger-full-access", "full-access"}:
+        raise DispatchError("C10_DANGER_FULL_ACCESS_FORBIDDEN")
+    if profile not in ALLOWED_TASK_PERMISSION_PROFILES:
+        raise DispatchError("C10_RUNTIME_PERMISSION_PROFILE_NOT_ALLOWED")
+    if method not in allowed_methods:
+        raise DispatchError(error)
+    return {
+        "permissionClass": TASK_PERMISSION_CLASS,
+        "profile": profile,
+        "method": method,
+        "evidenceRef": require_ref(value["evidenceRef"], error),
+    }
+
+
 def terra_model_is_enforced(record: Dict[str, Any]) -> bool:
     """Only runtime/model-selection evidence makes a window eligible for reuse."""
     control = record.get("modelEnforcement")
@@ -90,6 +123,19 @@ def terra_model_is_enforced(record: Dict[str, Any]) -> bool:
             WINDOW_REUSE_MODEL_METHOD,
             MANUAL_WINDOW_MODEL_METHOD,
         }
+        and isinstance(control.get("evidenceRef"), str)
+        and bool(control["evidenceRef"].strip())
+    )
+
+
+def bounded_permission_is_enforced(record: Dict[str, Any]) -> bool:
+    """Only bounded permission evidence makes an existing window reusable."""
+    control = record.get("permissionEnforcement")
+    return (
+        isinstance(control, dict)
+        and control.get("permissionClass") == TASK_PERMISSION_CLASS
+        and control.get("profile") in ALLOWED_TASK_PERMISSION_PROFILES
+        and control.get("method") in WINDOW_PERMISSION_METHODS
         and isinstance(control.get("evidenceRef"), str)
         and bool(control["evidenceRef"].strip())
     )
@@ -326,7 +372,7 @@ def next_task_generation(ledger: Dict[str, Any], task_id: str) -> int:
 
 
 def window_ready_for_second_assignment(window: Dict[str, Any], ledger: Dict[str, Any], task_id: str, reservation_id: Optional[str]) -> bool:
-    if not terra_model_is_enforced(window):
+    if not terra_model_is_enforced(window) or not bounded_permission_is_enforced(window):
         return False
     if window_assignment_count(window) != 1:
         return False
@@ -416,22 +462,37 @@ def prepare(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         "runtimeProject": request["runtimeProject"],
         "runtimeTarget": {"type": "project", "projectId": request["runtimeProject"]["codexProjectId"], "environment": {"type": environment_type}},
         "projectAssociationProtocol": association_protocol,
-        "windowAction": {"action": "CREATE_TASK" if window["status"] == "OPEN_NEW_WINDOW" else "SEND_TO_EXISTING_TASK", "windowId": window.get("windowId"), "model": TASK_RUNTIME_MODEL, "modelEnforcement": {"requiredModel": TASK_RUNTIME_MODEL, "requiredMethod": WINDOW_CREATE_MODEL_METHOD if window["status"] == "OPEN_NEW_WINDOW" else WINDOW_REUSE_MODEL_METHOD, "manualFallbackMethod": MANUAL_WINDOW_MODEL_METHOD if window["status"] == "OPEN_NEW_WINDOW" else None}, "contextMode": "NEW" if window["status"] == "OPEN_NEW_WINDOW" else "REUSED", "generation": generation, "runtimeTitle": runtime_title, "assignmentNumber": assignment_number, "maxAssignments": MAX_TASKS_PER_WINDOW, "reuseType": reuse_type, "reuseReservationId": window.get("reuseReservationId"), "previousTaskId": previous_task_id, "renameRequired": bool(previous_task_id)},
-        "subAgents": [{**item, "model": TASK_RUNTIME_MODEL, "modelEnforcement": {"requiredModel": TASK_RUNTIME_MODEL, "requiredMethod": SUB_AGENT_MODEL_METHOD}, "parent": "TASK_WINDOW"} for item in request["subAgents"]],
+        "windowAction": {"action": "CREATE_TASK" if window["status"] == "OPEN_NEW_WINDOW" else "SEND_TO_EXISTING_TASK", "windowId": window.get("windowId"), "model": TASK_RUNTIME_MODEL, "modelEnforcement": {"requiredModel": TASK_RUNTIME_MODEL, "requiredMethod": WINDOW_CREATE_MODEL_METHOD if window["status"] == "OPEN_NEW_WINDOW" else WINDOW_REUSE_MODEL_METHOD, "manualFallbackMethod": MANUAL_WINDOW_MODEL_METHOD if window["status"] == "OPEN_NEW_WINDOW" else None}, "permissionEnforcement": {"requiredClass": TASK_PERMISSION_CLASS, "allowedProfiles": sorted(ALLOWED_TASK_PERMISSION_PROFILES), "allowedMethods": sorted(WINDOW_PERMISSION_METHODS), "dangerFullAccessForbidden": True, "evidenceRequired": True}, "contextMode": "NEW" if window["status"] == "OPEN_NEW_WINDOW" else "REUSED", "generation": generation, "runtimeTitle": runtime_title, "assignmentNumber": assignment_number, "maxAssignments": MAX_TASKS_PER_WINDOW, "reuseType": reuse_type, "reuseReservationId": window.get("reuseReservationId"), "previousTaskId": previous_task_id, "renameRequired": bool(previous_task_id)},
+        "subAgents": [{**item, "model": TASK_RUNTIME_MODEL, "modelEnforcement": {"requiredModel": TASK_RUNTIME_MODEL, "requiredMethod": SUB_AGENT_MODEL_METHOD}, "permissionEnforcement": {"requiredClass": TASK_PERMISSION_CLASS, "allowedProfiles": sorted(ALLOWED_TASK_PERMISSION_PROFILES), "allowedMethods": sorted(SUB_AGENT_PERMISSION_METHODS), "dangerFullAccessForbidden": True, "evidenceRequired": True}, "parent": "TASK_WINDOW"} for item in request["subAgents"]],
+        "nativeRuntime": {
+            "windowOperation": {
+                "tool": "codex_app__create_thread" if window["status"] == "OPEN_NEW_WINDOW" else "codex_app__send_message_to_thread",
+                "requiredModel": TASK_RUNTIME_MODEL,
+                "requiredProjectId": request["runtimeProject"]["codexProjectId"],
+                "requiredEnvironment": request["runtimeProject"]["environment"],
+                "requiredTitle": runtime_title,
+            },
+            "readbackTool": "codex_app__read_thread",
+            "renameTool": "codex_app__set_thread_title" if previous_task_id else None,
+            "monitorTool": "codex_app__wait_threads",
+            "maxMonitoringBatch": 8,
+            "subAgentTool": "collaboration.spawn_agent",
+            "uiProjectionIsNotTaskState": True,
+        },
         "taskPackage": {key: package[key] for key in ("displayName", "taskIdentity", "task", "requiredReading", "realTimeChecks", "allowedActions", "forbiddenActions", "preflightSnapshot", "executionSequence", "acceptance", "hardStops", "rollbackPlan", "deliverables", "handbackRule")},
-        "boundary": {"runtimeCallPerformed": False, "ledgerUpdated": False, "businessWritePerformed": False, "requiresAllRuntimeResultsBeforeConfirm": True, "requiresTerraModelEnforcement": True, "completionReturnsToParentWindow": True},
+        "boundary": {"runtimeCallPerformed": False, "ledgerUpdated": False, "businessWritePerformed": False, "requiresAllRuntimeResultsBeforeConfirm": True, "requiresTerraModelEnforcement": True, "requiresBoundedPermissionEnforcement": True, "dangerFullAccessForbidden": True, "completionReturnsToParentWindow": True},
     }
     with dispatch_lock(root, project_id):
         if target.exists(): raise DispatchError("C10_DISPATCH_PLAN_RACE_DETECTED")
         write_exclusive(target, plan)
-    return {"status": "READY_FOR_RUNTIME_DISPATCH", "dispatchId": request["dispatchId"], "trafficLight": light, "taskIdentity": task_identity, "windowAction": plan["windowAction"], "runtimeTarget": plan["runtimeTarget"], "projectAssociationProtocol": association_protocol, "authorizationScope": plan["authorizationScope"], "subAgentCount": len(plan["subAgents"]), "writePerformed": True, "dispatchPerformed": False, "businessWritePerformed": False}, 0
+    return {"status": "READY_FOR_RUNTIME_DISPATCH", "dispatchId": request["dispatchId"], "trafficLight": light, "taskIdentity": task_identity, "windowAction": plan["windowAction"], "runtimeTarget": plan["runtimeTarget"], "nativeRuntime": plan["nativeRuntime"], "projectAssociationProtocol": association_protocol, "authorizationScope": plan["authorizationScope"], "subAgentCount": len(plan["subAgents"]), "writePerformed": True, "dispatchPerformed": False, "businessWritePerformed": False}, 0
 
 
 def validate_confirmation(raw: Dict[str, Any], dispatch_id: str, plan: Dict[str, Any]) -> Dict[str, Any]:
     value = exact(raw, {"confirmationSchemaVersion", "recordType", "dispatchId", "taskWindow", "subAgents"}, "C10_CONFIRMATION_SCHEMA_UNSUPPORTED")
     if value["confirmationSchemaVersion"] != SCHEMA_VERSION or value["recordType"] != "C10_RUNTIME_CONFIRMATION" or value["dispatchId"] != dispatch_id:
         raise DispatchError("C10_CONFIRMATION_SCHEMA_UNSUPPORTED")
-    window = exact(value["taskWindow"], {"status", "taskId", "runtimeTitle", "generation", "windowId", "runtimeThreadRef", "runtimeProjectId", "runtimeCwd", "environmentType", "associationMethod", "associationHandoffRefs", "modelControl"}, "C10_WINDOW_CONFIRMATION_INVALID")
+    window = exact(value["taskWindow"], {"status", "taskId", "runtimeTitle", "generation", "windowId", "runtimeThreadRef", "runtimeProjectId", "runtimeCwd", "environmentType", "associationMethod", "associationHandoffRefs", "modelControl", "permissionControl"}, "C10_WINDOW_CONFIRMATION_INVALID")
     expected = "CREATED" if plan["windowAction"]["action"] == "CREATE_TASK" else "REUSED"
     if window["status"] != expected: raise DispatchError("C10_WINDOW_RUNTIME_NOT_CONFIRMED")
     if (
@@ -447,6 +508,9 @@ def validate_confirmation(raw: Dict[str, Any], dispatch_id: str, plan: Dict[str,
     model_control = validate_model_control(window["modelControl"], allowed_window_methods, "C10_WINDOW_MODEL_CONTROL_INVALID")
     if model_control["method"] != MANUAL_WINDOW_MODEL_METHOD and model_control["evidenceRef"] != runtime_ref:
         raise DispatchError("C10_MODEL_CONTROL_RECEIPT_MISMATCH")
+    permission_control = validate_permission_control(window["permissionControl"], WINDOW_PERMISSION_METHODS, "C10_WINDOW_PERMISSION_CONTROL_INVALID")
+    if permission_control["method"] != "MANUAL_UI_PERMISSION_EVIDENCE" and permission_control["evidenceRef"] != runtime_ref:
+        raise DispatchError("C10_PERMISSION_CONTROL_RECEIPT_MISMATCH")
     association_method = str(window["associationMethod"]).strip().upper()
     if association_method not in {"DIRECT", "LOCAL_HANDOFF_ROUNDTRIP"}:
         raise DispatchError("C10_PROJECT_ASSOCIATION_METHOD_INVALID")
@@ -482,16 +546,22 @@ def validate_confirmation(raw: Dict[str, Any], dispatch_id: str, plan: Dict[str,
     if not isinstance(agents, list) or len(agents) != len(plan["subAgents"]): raise DispatchError("C10_SUB_AGENT_CONFIRMATION_COUNT_MISMATCH")
     expected_agents = {x["subAgentId"]: x for x in plan["subAgents"]}; normalized = []
     for raw_agent in agents:
-        agent = exact(raw_agent, {"subAgentId", "status", "runtimeAgentRef", "modelControl"}, "C10_SUB_AGENT_CONFIRMATION_INVALID")
+        agent = exact(raw_agent, {"subAgentId", "status", "runtimeAgentRef", "modelControl", "permissionControl"}, "C10_SUB_AGENT_CONFIRMATION_INVALID")
         agent_id = require_ref(agent["subAgentId"], "C10_SUB_AGENT_ID_INVALID", WINDOW_ID)
         if agent_id not in expected_agents or agent["status"] != "CREATED": raise DispatchError("C10_SUB_AGENT_RUNTIME_NOT_CONFIRMED")
         agent_runtime_ref = require_ref(agent["runtimeAgentRef"], "C10_RUNTIME_AGENT_REF_INVALID")
         agent_model_control = validate_model_control(agent["modelControl"], {SUB_AGENT_MODEL_METHOD}, "C10_SUB_AGENT_MODEL_CONTROL_INVALID")
         if agent_model_control["evidenceRef"] != agent_runtime_ref:
             raise DispatchError("C10_MODEL_CONTROL_RECEIPT_MISMATCH")
-        normalized.append({"subAgentId": agent_id, "runtimeAgentRef": agent_runtime_ref, "modelControl": agent_model_control})
+        agent_permission_control = validate_permission_control(agent["permissionControl"], SUB_AGENT_PERMISSION_METHODS, "C10_SUB_AGENT_PERMISSION_CONTROL_INVALID")
+        expected_permission_ref = runtime_ref if agent_permission_control["method"] == "INHERITED_FROM_PARENT_WINDOW" else agent_runtime_ref
+        if agent_permission_control["evidenceRef"] != expected_permission_ref:
+            raise DispatchError("C10_PERMISSION_CONTROL_RECEIPT_MISMATCH")
+        if agent_permission_control["profile"] != permission_control["profile"] and agent_permission_control["method"] == "INHERITED_FROM_PARENT_WINDOW":
+            raise DispatchError("C10_SUB_AGENT_PERMISSION_INHERITANCE_MISMATCH")
+        normalized.append({"subAgentId": agent_id, "runtimeAgentRef": agent_runtime_ref, "modelControl": agent_model_control, "permissionControl": agent_permission_control})
     if len({x["subAgentId"] for x in normalized}) != len(normalized): raise DispatchError("C10_DUPLICATE_SUB_AGENT_CONFIRMATION")
-    return {"taskId": window["taskId"], "runtimeTitle": window["runtimeTitle"], "generation": window["generation"], "windowId": window_id, "runtimeThreadRef": runtime_ref, "runtimeProjectId": runtime_project["codexProjectId"], "runtimeCwd": str(runtime_cwd), "environmentType": environment_type, "associationMethod": association_method, "associationHandoffRefs": handoff_refs, "modelControl": model_control, "agents": normalized}
+    return {"taskId": window["taskId"], "runtimeTitle": window["runtimeTitle"], "generation": window["generation"], "windowId": window_id, "runtimeThreadRef": runtime_ref, "runtimeProjectId": runtime_project["codexProjectId"], "runtimeCwd": str(runtime_cwd), "environmentType": environment_type, "associationMethod": association_method, "associationHandoffRefs": handoff_refs, "modelControl": model_control, "permissionControl": permission_control, "agents": normalized}
 
 
 def confirm(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
@@ -505,6 +575,11 @@ def confirm(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         and not fallback_path(root, project_id, dispatch_id).is_file()
     ):
         raise DispatchError("C10_MANUAL_TERRA_EVIDENCE_REQUIRES_FALLBACK_PACKAGE")
+    if (
+        confirmation["permissionControl"]["method"] == "MANUAL_UI_PERMISSION_EVIDENCE"
+        and not fallback_path(root, project_id, dispatch_id).is_file()
+    ):
+        raise DispatchError("C10_MANUAL_PERMISSION_EVIDENCE_REQUIRES_FALLBACK_PACKAGE")
     target = confirmation_path(root, project_id, dispatch_id)
     if target.exists():
         existing = read_json(target, "C10_EXISTING_CONFIRMATION_INVALID")
@@ -522,6 +597,8 @@ def confirm(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             existing_window = before["windows"][confirmation["windowId"]]
             if not terra_model_is_enforced(existing_window):
                 raise DispatchError("C10_REUSED_WINDOW_TERRA_ENFORCEMENT_UNVERIFIED")
+            if not bounded_permission_is_enforced(existing_window):
+                raise DispatchError("C10_REUSED_WINDOW_PERMISSION_ENFORCEMENT_UNVERIFIED")
             if plan["windowAction"].get("reuseType") == "CURRENT_ASSIGNMENT":
                 if window_current_task_id(existing_window) != plan["taskId"]:
                     raise DispatchError("C10_TASK_IDENTITY_MISMATCH")
@@ -537,7 +614,7 @@ def confirm(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             assigned_at = utc_now()
             if plan["windowAction"]["action"] == "CREATE_TASK":
                 assignment = {"assignmentNumber": 1, "taskId": plan["taskId"], "canonicalTitle": plan["taskIdentity"]["canonicalTitle"], "generation": confirmation["generation"], "runtimeTitle": confirmation["runtimeTitle"], "contextMode": "NEW", "dispatchId": dispatch_id, "assignedAt": assigned_at, "completedAt": None, "status": "ACTIVE"}
-                after["windows"][confirmation["windowId"]] = {"windowId": confirmation["windowId"], "taskId": plan["taskId"], "currentTaskId": plan["taskId"], "canonicalTitle": plan["taskIdentity"]["canonicalTitle"], "generation": confirmation["generation"], "runtimeTitle": confirmation["runtimeTitle"], "model": TASK_RUNTIME_MODEL, "runtimeModel": TASK_RUNTIME_MODEL, "modelEnforcement": {**confirmation["modelControl"], "confirmedAt": assigned_at}, "contextMode": "NEW", "status": "REGISTERED", "maxAssignments": MAX_TASKS_PER_WINDOW, "assignmentCount": 1, "assignmentHistory": [assignment], "runtimeThreadRef": confirmation["runtimeThreadRef"], "runtimeProjectId": confirmation["runtimeProjectId"], "environmentType": confirmation["environmentType"], "associationMethod": confirmation["associationMethod"], "dispatchId": dispatch_id, "registeredAt": assigned_at}
+                after["windows"][confirmation["windowId"]] = {"windowId": confirmation["windowId"], "taskId": plan["taskId"], "currentTaskId": plan["taskId"], "canonicalTitle": plan["taskIdentity"]["canonicalTitle"], "generation": confirmation["generation"], "runtimeTitle": confirmation["runtimeTitle"], "model": TASK_RUNTIME_MODEL, "runtimeModel": TASK_RUNTIME_MODEL, "modelEnforcement": {**confirmation["modelControl"], "confirmedAt": assigned_at}, "permissionEnforcement": {**confirmation["permissionControl"], "confirmedAt": assigned_at}, "contextMode": "NEW", "status": "REGISTERED", "maxAssignments": MAX_TASKS_PER_WINDOW, "assignmentCount": 1, "assignmentHistory": [assignment], "runtimeThreadRef": confirmation["runtimeThreadRef"], "runtimeProjectId": confirmation["runtimeProjectId"], "environmentType": confirmation["environmentType"], "associationMethod": confirmation["associationMethod"], "dispatchId": dispatch_id, "registeredAt": assigned_at}
             else:
                 target_window = after["windows"][confirmation["windowId"]]
                 if plan["windowAction"].get("reuseType") == "CURRENT_ASSIGNMENT":
@@ -565,6 +642,7 @@ def confirm(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
                 target_window["model"] = TASK_RUNTIME_MODEL
                 target_window["runtimeModel"] = TASK_RUNTIME_MODEL
                 target_window["modelEnforcement"] = {**confirmation["modelControl"], "confirmedAt": assigned_at}
+                target_window["permissionEnforcement"] = {**confirmation["permissionControl"], "confirmedAt": assigned_at}
                 target_window["dispatchId"] = dispatch_id
             for agent_id, agent_runtime_data in agent_runtime.items():
                 if agent_id in after["subAgents"]: raise DispatchError("C10_SUB_AGENT_ID_ALREADY_REGISTERED")
@@ -573,16 +651,16 @@ def confirm(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
                     "subAgentId": agent_id, "windowId": confirmation["windowId"], "taskId": plan["taskId"],
                     "role": spec["role"], "scope": spec["scope"], "delegationReason": spec["delegationReason"],
                     "executionMode": spec["executionMode"], "model": TASK_RUNTIME_MODEL, "runtimeModel": TASK_RUNTIME_MODEL,
-                    "modelEnforcement": {**agent_runtime_data["modelControl"], "confirmedAt": assigned_at}, "level": 1,
+                    "modelEnforcement": {**agent_runtime_data["modelControl"], "confirmedAt": assigned_at}, "permissionEnforcement": {**agent_runtime_data["permissionControl"], "confirmedAt": assigned_at}, "level": 1,
                     "status": "REGISTERED", "runtimeAgentRef": agent_runtime_data["runtimeAgentRef"], "dispatchId": dispatch_id,
                     "registeredAt": utc_now(),
                 }
             target_task = after["tasks"][plan["taskId"]]; target_task["status"] = "IN_PROGRESS"
             target_task["history"].append({"at": utc_now(), "event": "C10_RUNTIME_DISPATCH_CONFIRMED", "dispatchId": dispatch_id, "windowId": confirmation["windowId"], "from": "READY", "to": "IN_PROGRESS", "by": CENTRAL_WRITER})
         result = commit_mutation(root, project_id, before, CENTRAL_WRITER, "C10_CONFIRM_RUNTIME_DISPATCH", {"dispatchId": dispatch_id, "taskId": plan["taskId"], "windowId": confirmation["windowId"], "subAgentCount": len(confirmation["agents"])}, mutate)
-        artifact = {"schemaVersion": SCHEMA_VERSION, "recordType": "C10_DISPATCH_CONFIRMATION", "dispatchId": dispatch_id, "confirmedAt": utc_now(), "projectId": project_id, "taskId": plan["taskId"], "taskIdentity": plan["taskIdentity"], "windowId": confirmation["windowId"], "windowAssignment": {"assignmentNumber": plan["windowAction"]["assignmentNumber"], "maxAssignments": MAX_TASKS_PER_WINDOW, "isFinalAllowedAssignment": plan["windowAction"]["assignmentNumber"] == MAX_TASKS_PER_WINDOW}, "runtimeThreadRef": confirmation["runtimeThreadRef"], "runtimeProjectId": confirmation["runtimeProjectId"], "runtimeCwd": confirmation["runtimeCwd"], "environmentType": confirmation["environmentType"], "associationMethod": confirmation["associationMethod"], "associationHandoffRefs": confirmation["associationHandoffRefs"], "model": TASK_RUNTIME_MODEL, "modelEnforcement": confirmation["modelControl"], "authorizationScope": plan["authorizationScope"], "subAgents": confirmation["agents"], "sourceConfirmationDigest": confirmation_digest, "ledgerReceiptId": result["receiptId"], "boundary": {"runtimeConfirmed": True, "projectAssociationVerified": True, "terraModelEnforced": True, "taskStatus": "IN_PROGRESS", "businessWritePerformed": False, "completionMustReturnToParentWindow": True, "parentQualityGateRequiredIfSubAgentsUsed": bool(confirmation["agents"])}}
+        artifact = {"schemaVersion": SCHEMA_VERSION, "recordType": "C10_DISPATCH_CONFIRMATION", "dispatchId": dispatch_id, "confirmedAt": utc_now(), "projectId": project_id, "taskId": plan["taskId"], "taskIdentity": plan["taskIdentity"], "windowId": confirmation["windowId"], "windowAssignment": {"assignmentNumber": plan["windowAction"]["assignmentNumber"], "maxAssignments": MAX_TASKS_PER_WINDOW, "isFinalAllowedAssignment": plan["windowAction"]["assignmentNumber"] == MAX_TASKS_PER_WINDOW}, "runtimeThreadRef": confirmation["runtimeThreadRef"], "runtimeProjectId": confirmation["runtimeProjectId"], "runtimeCwd": confirmation["runtimeCwd"], "environmentType": confirmation["environmentType"], "associationMethod": confirmation["associationMethod"], "associationHandoffRefs": confirmation["associationHandoffRefs"], "model": TASK_RUNTIME_MODEL, "modelEnforcement": confirmation["modelControl"], "permissionEnforcement": confirmation["permissionControl"], "authorizationScope": plan["authorizationScope"], "subAgents": confirmation["agents"], "sourceConfirmationDigest": confirmation_digest, "ledgerReceiptId": result["receiptId"], "boundary": {"runtimeConfirmed": True, "projectAssociationVerified": True, "terraModelEnforced": True, "boundedPermissionEnforced": True, "dangerFullAccessForbidden": True, "taskStatus": "IN_PROGRESS", "businessWritePerformed": False, "completionMustReturnToParentWindow": True, "parentQualityGateRequiredIfSubAgentsUsed": bool(confirmation["agents"])}}
         write_exclusive(target, artifact)
-    return {"status": "RUNTIME_DISPATCH_CONFIRMED", "dispatchId": dispatch_id, "windowId": confirmation["windowId"], "model": TASK_RUNTIME_MODEL, "modelEnforcement": confirmation["modelControl"]["method"], "assignmentNumber": plan["windowAction"]["assignmentNumber"], "maxAssignments": MAX_TASKS_PER_WINDOW, "associationMethod": confirmation["associationMethod"], "subAgentCount": len(confirmation["agents"]), "taskStatus": "IN_PROGRESS", "ledgerReceiptId": result["receiptId"], "writePerformed": True, "dispatchPerformed": True, "businessWritePerformed": False}, 0
+    return {"status": "RUNTIME_DISPATCH_CONFIRMED", "dispatchId": dispatch_id, "windowId": confirmation["windowId"], "model": TASK_RUNTIME_MODEL, "modelEnforcement": confirmation["modelControl"]["method"], "permissionClass": TASK_PERMISSION_CLASS, "permissionProfile": confirmation["permissionControl"]["profile"], "assignmentNumber": plan["windowAction"]["assignmentNumber"], "maxAssignments": MAX_TASKS_PER_WINDOW, "associationMethod": confirmation["associationMethod"], "subAgentCount": len(confirmation["agents"]), "taskStatus": "IN_PROGRESS", "ledgerReceiptId": result["receiptId"], "writePerformed": True, "dispatchPerformed": True, "businessWritePerformed": False}, 0
 
 
 def task_window_agents(ledger: Dict[str, Any], window_id: str, task_id: str) -> Dict[str, Dict[str, Any]]:
@@ -641,6 +719,8 @@ def prepare_append(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             raise DispatchError("C10_APPEND_REQUIRES_LIVE_TASK_WINDOW")
         if not terra_model_is_enforced(window):
             raise DispatchError("C10_APPEND_REQUIRES_TERRA_ENFORCED_WINDOW")
+        if not bounded_permission_is_enforced(window):
+            raise DispatchError("C10_APPEND_REQUIRES_PERMISSION_ENFORCED_WINDOW")
         existing_agents = task_window_agents(ledger, request["windowId"], request["taskId"])
         if len(existing_agents) + len(request["subAgents"]) > 3:
             raise DispatchError("C10_FIRST_LEVEL_SUB_AGENT_LIMIT_EXCEEDED")
@@ -649,10 +729,12 @@ def prepare_append(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         plan = {
             "schemaVersion": SCHEMA_VERSION, "recordType": "C10_SUB_AGENT_APPEND_PLAN", "appendId": request["appendId"],
             "dispatchId": dispatch_id, "projectId": project_id, "taskId": request["taskId"], "windowId": request["windowId"],
+            "parentRuntimeThreadRef": confirmation["runtimeThreadRef"],
+            "parentPermissionProfile": confirmation["permissionEnforcement"]["profile"],
             "createdAt": utc_now(), "status": "PENDING_RUNTIME_CONFIRMATION", "trigger": request["trigger"],
-            "subAgents": [{**agent, "model": TASK_RUNTIME_MODEL, "modelEnforcement": {"requiredModel": TASK_RUNTIME_MODEL, "requiredMethod": SUB_AGENT_MODEL_METHOD}, "parent": "TASK_WINDOW"} for agent in request["subAgents"]],
+            "subAgents": [{**agent, "model": TASK_RUNTIME_MODEL, "modelEnforcement": {"requiredModel": TASK_RUNTIME_MODEL, "requiredMethod": SUB_AGENT_MODEL_METHOD}, "permissionEnforcement": {"requiredClass": TASK_PERMISSION_CLASS, "allowedProfiles": sorted(ALLOWED_TASK_PERMISSION_PROFILES), "allowedMethods": sorted(SUB_AGENT_PERMISSION_METHODS), "dangerFullAccessForbidden": True, "evidenceRequired": True}, "parent": "TASK_WINDOW"} for agent in request["subAgents"]],
             "source": {"requestDigest": request_digest, "dispatchConfirmationDigest": canonical_digest(confirmation), "ledgerRevision": ledger["revision"], "ledgerDigest": canonical_digest(ledger)},
-            "boundary": {"withinApprovedScope": True, "sharedWriteRisk": False, "businessWritePerformed": False, "requiresTerraModelEnforcement": True, "requiresParentQualityGate": True, "completionReturnsToParentWindow": True},
+            "boundary": {"withinApprovedScope": True, "sharedWriteRisk": False, "businessWritePerformed": False, "requiresTerraModelEnforcement": True, "requiresBoundedPermissionEnforcement": True, "dangerFullAccessForbidden": True, "requiresParentQualityGate": True, "completionReturnsToParentWindow": True},
         }
         write_exclusive(target, plan)
     return {"status": "READY_FOR_RUNTIME_SUB_AGENT_APPEND", "dispatchId": dispatch_id, "appendId": request["appendId"], "windowId": request["windowId"], "subAgentCount": len(request["subAgents"]), "writePerformed": True, "dispatchPerformed": False, "businessWritePerformed": False}, 0
@@ -667,14 +749,19 @@ def validate_append_confirmation(raw: Dict[str, Any], append_id: str, dispatch_i
         raise DispatchError("C10_SUB_AGENT_CONFIRMATION_COUNT_MISMATCH")
     expected = {agent["subAgentId"] for agent in plan["subAgents"]}; normalized = []
     for raw_agent in agents:
-        agent = exact(raw_agent, {"subAgentId", "status", "runtimeAgentRef", "modelControl"}, "C10_SUB_AGENT_CONFIRMATION_INVALID")
+        agent = exact(raw_agent, {"subAgentId", "status", "runtimeAgentRef", "modelControl", "permissionControl"}, "C10_SUB_AGENT_CONFIRMATION_INVALID")
         agent_id = require_ref(agent["subAgentId"], "C10_SUB_AGENT_ID_INVALID", WINDOW_ID)
         if agent_id not in expected or agent["status"] != "CREATED": raise DispatchError("C10_SUB_AGENT_RUNTIME_NOT_CONFIRMED")
         runtime_agent_ref = require_ref(agent["runtimeAgentRef"], "C10_RUNTIME_AGENT_REF_INVALID")
         agent_model_control = validate_model_control(agent["modelControl"], {SUB_AGENT_MODEL_METHOD}, "C10_SUB_AGENT_MODEL_CONTROL_INVALID")
         if agent_model_control["evidenceRef"] != runtime_agent_ref:
             raise DispatchError("C10_MODEL_CONTROL_RECEIPT_MISMATCH")
-        normalized.append({"subAgentId": agent_id, "runtimeAgentRef": runtime_agent_ref, "modelControl": agent_model_control})
+        agent_permission_control = validate_permission_control(agent["permissionControl"], SUB_AGENT_PERMISSION_METHODS, "C10_SUB_AGENT_PERMISSION_CONTROL_INVALID")
+        if agent_permission_control["method"] != "INHERITED_FROM_PARENT_WINDOW" or agent_permission_control["evidenceRef"] != plan["parentRuntimeThreadRef"]:
+            raise DispatchError("C10_PERMISSION_CONTROL_RECEIPT_MISMATCH")
+        if agent_permission_control["profile"] != plan["parentPermissionProfile"]:
+            raise DispatchError("C10_SUB_AGENT_PERMISSION_INHERITANCE_MISMATCH")
+        normalized.append({"subAgentId": agent_id, "runtimeAgentRef": runtime_agent_ref, "modelControl": agent_model_control, "permissionControl": agent_permission_control})
     if len({agent["subAgentId"] for agent in normalized}) != len(normalized): raise DispatchError("C10_DUPLICATE_SUB_AGENT_CONFIRMATION")
     return {"windowId": plan["windowId"], "agents": normalized}
 
@@ -700,6 +787,8 @@ def confirm_append(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             raise DispatchError("C10_APPEND_REQUIRES_LIVE_TASK_WINDOW")
         if not terra_model_is_enforced(window):
             raise DispatchError("C10_APPEND_REQUIRES_TERRA_ENFORCED_WINDOW")
+        if not bounded_permission_is_enforced(window):
+            raise DispatchError("C10_APPEND_REQUIRES_PERMISSION_ENFORCED_WINDOW")
         existing_agents = task_window_agents(before, plan["windowId"], plan["taskId"])
         if len(existing_agents) + len(confirmation["agents"]) > 3: raise DispatchError("C10_FIRST_LEVEL_SUB_AGENT_LIMIT_EXCEEDED")
         if set(existing_agents).intersection({agent["subAgentId"] for agent in confirmation["agents"]}): raise DispatchError("C10_SUB_AGENT_ID_ALREADY_REGISTERED")
@@ -710,12 +799,12 @@ def confirm_append(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
                 after["subAgents"][item["subAgentId"]] = {
                     "subAgentId": item["subAgentId"], "windowId": plan["windowId"], "taskId": plan["taskId"], "role": spec["role"],
                     "scope": spec["scope"], "delegationReason": spec["delegationReason"], "executionMode": spec["executionMode"],
-                    "model": TASK_RUNTIME_MODEL, "runtimeModel": TASK_RUNTIME_MODEL, "modelEnforcement": {**item["modelControl"], "confirmedAt": utc_now()}, "level": 1, "status": "REGISTERED", "runtimeAgentRef": item["runtimeAgentRef"],
+                    "model": TASK_RUNTIME_MODEL, "runtimeModel": TASK_RUNTIME_MODEL, "modelEnforcement": {**item["modelControl"], "confirmedAt": utc_now()}, "permissionEnforcement": {**item["permissionControl"], "confirmedAt": utc_now()}, "level": 1, "status": "REGISTERED", "runtimeAgentRef": item["runtimeAgentRef"],
                     "dispatchId": dispatch_id, "appendId": append_id, "registeredAt": utc_now(),
                 }
             after["tasks"][plan["taskId"]]["history"].append({"at": utc_now(), "event": "C10_SUB_AGENT_APPEND_CONFIRMED", "dispatchId": dispatch_id, "appendId": append_id, "windowId": plan["windowId"], "to": "IN_PROGRESS", "by": CENTRAL_WRITER})
         result = commit_mutation(root, project_id, before, CENTRAL_WRITER, "C10_CONFIRM_SUB_AGENT_APPEND", {"dispatchId": dispatch_id, "appendId": append_id, "taskId": plan["taskId"], "windowId": plan["windowId"], "subAgentCount": len(confirmation["agents"])}, mutate)
-        artifact = {"schemaVersion": SCHEMA_VERSION, "recordType": "C10_SUB_AGENT_APPEND_CONFIRMATION", "appendId": append_id, "dispatchId": dispatch_id, "projectId": project_id, "taskId": plan["taskId"], "windowId": plan["windowId"], "confirmedAt": utc_now(), "model": TASK_RUNTIME_MODEL, "subAgents": confirmation["agents"], "sourceConfirmationDigest": confirmation_digest, "ledgerReceiptId": result["receiptId"], "boundary": {"runtimeConfirmed": True, "terraModelEnforced": True, "businessWritePerformed": False, "parentQualityGateRequired": True}}
+        artifact = {"schemaVersion": SCHEMA_VERSION, "recordType": "C10_SUB_AGENT_APPEND_CONFIRMATION", "appendId": append_id, "dispatchId": dispatch_id, "projectId": project_id, "taskId": plan["taskId"], "windowId": plan["windowId"], "confirmedAt": utc_now(), "model": TASK_RUNTIME_MODEL, "subAgents": confirmation["agents"], "sourceConfirmationDigest": confirmation_digest, "ledgerReceiptId": result["receiptId"], "boundary": {"runtimeConfirmed": True, "terraModelEnforced": True, "boundedPermissionEnforced": True, "dangerFullAccessForbidden": True, "businessWritePerformed": False, "parentQualityGateRequired": True}}
         write_exclusive(target, artifact)
     return {"status": "SUB_AGENT_APPEND_CONFIRMED", "dispatchId": dispatch_id, "appendId": append_id, "windowId": plan["windowId"], "subAgentCount": len(confirmation["agents"]), "ledgerReceiptId": result["receiptId"], "writePerformed": True, "dispatchPerformed": True, "businessWritePerformed": False}, 0
 
@@ -757,6 +846,13 @@ def export_fallback(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             "allowedManualMethod": MANUAL_WINDOW_MODEL_METHOD,
             "evidenceRequiredBeforeC10Confirm": True,
         },
+        "permissionEnforcement": {
+            "requiredClass": TASK_PERMISSION_CLASS,
+            "allowedProfiles": sorted(ALLOWED_TASK_PERMISSION_PROFILES),
+            "dangerFullAccessForbidden": True,
+            "allowedManualMethod": "MANUAL_UI_PERMISSION_EVIDENCE",
+            "evidenceRequiredBeforeC10Confirm": True,
+        },
         "runtimeTarget": plan["runtimeTarget"],
         "projectAssociationProtocol": plan["projectAssociationProtocol"],
         "windowActionRequested": plan["windowAction"],
@@ -766,6 +862,7 @@ def export_fallback(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             "请在派发单指定的 Codex 保存项目中按以下已批准任务包执行，不要另建自定义任务目录。"
             "在发送第一条任务指令前，必须在模型菜单明确选择 5.6 Terra；若菜单不能选择 Terra，立即停止，不要用 Sol 或其他模型代替。"
             "保留该选择的可核对证据引用，确认时只能填写 MANUAL_UI_TERRA_SELECTION_EVIDENCE。"
+            "同时把任务权限设为工作区受限模式；完整访问或 danger-full-access 必须停止，确认时填写 MANUAL_UI_PERMISSION_EVIDENCE。"
             "创建后必须回读项目归属；若 Git worktree 的项目 ID 为空，先原生交接到保存项目根目录，再交接回同一 worktree 并重新回读。"
             "先复述目标、边界、写入占用和硬停条件；"
             "不得扩大范围，不得自行宣布 DONE。任务包：\n"
@@ -781,6 +878,9 @@ def export_fallback(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             "businessWritePerformed": False,
             "terraModelEnforced": False,
             "manualTerraEvidenceRequired": True,
+            "boundedPermissionEnforced": False,
+            "manualPermissionEvidenceRequired": True,
+            "dangerFullAccessForbidden": True,
             "requiresNormalC10ConfirmationAfterManualCreation": True,
         },
     }

@@ -49,6 +49,13 @@ RESOURCE_CLASSES = {
     "TEST_SCOPE", "LOG_SCOPE", "ROLLBACK_SCOPE",
 }
 TASK_RUNTIME_MODEL = "gpt-5.6-terra"
+TASK_PERMISSION_CLASS = "WORKTREE_SCOPED"
+ALLOWED_TASK_PERMISSION_PROFILES = {":workspace", "qianyi-task-terra", "workspace-write"}
+WINDOW_PERMISSION_METHODS = {
+    "PERMISSION_PROFILE_READBACK",
+    "LEGACY_WORKSPACE_SANDBOX_READBACK",
+    "MANUAL_UI_PERMISSION_EVIDENCE",
+}
 TERRA_MODEL_ENFORCEMENT_METHODS = {
     "NATIVE_CREATE_THREAD_MODEL_PARAMETER",
     "NATIVE_SEND_MESSAGE_MODEL_OVERRIDE",
@@ -97,6 +104,18 @@ def terra_model_is_enforced(window: Dict[str, Any]) -> bool:
         and isinstance(control, dict)
         and control.get("model") == TASK_RUNTIME_MODEL
         and control.get("method") in TERRA_MODEL_ENFORCEMENT_METHODS
+        and isinstance(control.get("evidenceRef"), str)
+        and bool(control["evidenceRef"].strip())
+    )
+
+
+def bounded_permission_is_enforced(window: Dict[str, Any]) -> bool:
+    control = window.get("permissionEnforcement")
+    return (
+        isinstance(control, dict)
+        and control.get("permissionClass") == TASK_PERMISSION_CLASS
+        and control.get("profile") in ALLOWED_TASK_PERMISSION_PROFILES
+        and control.get("method") in WINDOW_PERMISSION_METHODS
         and isinstance(control.get("evidenceRef"), str)
         and bool(control["evidenceRef"].strip())
     )
@@ -309,6 +328,7 @@ def resolve_window(package: Dict[str, Any], ledger: Dict[str, Any], review: Dict
         if window_current_task_id(window) == task_id
         and window.get("status") == "REGISTERED"
         and terra_model_is_enforced(window)
+        and bounded_permission_is_enforced(window)
     )
     reusable = []
     for window_id, window in ledger["windows"].items():
@@ -325,6 +345,7 @@ def resolve_window(package: Dict[str, Any], ledger: Dict[str, Any], review: Dict
         if (
             count == 1
             and terra_model_is_enforced(window)
+            and bounded_permission_is_enforced(window)
             and last_task.get("status") == "DONE"
             and (explicitly_available or legacy_available)
         ):
@@ -720,7 +741,7 @@ def evaluate(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
                         raise OccupancyError("C05_REUSABLE_WINDOW_DISAPPEARED")
                     explicit_available = window.get("status") == "AVAILABLE_FOR_REUSE" and window_current_task_id(window) is None
                     legacy_available = "assignmentHistory" not in window and window.get("status") == "REGISTERED" and after["tasks"].get(window.get("taskId"), {}).get("status") == "DONE"
-                    if window_assignment_count(window) != 1 or not (explicit_available or legacy_available) or not terra_model_is_enforced(window):
+                    if window_assignment_count(window) != 1 or not (explicit_available or legacy_available) or not terra_model_is_enforced(window) or not bounded_permission_is_enforced(window):
                         raise OccupancyError("C05_WINDOW_REUSE_SLOT_NO_LONGER_AVAILABLE")
                     window["status"] = "RESERVED_FOR_REUSE"
                     window["currentTaskId"] = None

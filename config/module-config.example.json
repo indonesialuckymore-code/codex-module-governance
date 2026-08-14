@@ -1,6 +1,6 @@
 {
   "$schema": "../schemas/module-config.schema.json",
-  "schemaVersion": "0.15.0",
+  "schemaVersion": "0.22.0",
   "module": {
     "id": "replace-with-module-id",
     "displayName": "Codex 模块"
@@ -9,6 +9,28 @@
     "central": "gpt-5.6-sol",
     "taskWindow": "gpt-5.6-terra",
     "subAgent": "gpt-5.6-terra"
+  },
+  "runtimePermissions": {
+    "taskWindowClass": "WORKTREE_SCOPED",
+    "subAgentClass": "WORKTREE_SCOPED",
+    "allowedTaskProfiles": [":workspace", "qianyi-task-terra", "workspace-write"],
+    "forbidDangerFullAccess": true,
+    "requireRuntimeEvidence": true,
+    "allowManualUiEvidence": true,
+    "autoReviewRequiresInteractiveApproval": true
+  },
+  "nativeRuntime": {
+    "createThreadTool": "codex_app__create_thread",
+    "sendMessageTool": "codex_app__send_message_to_thread",
+    "readThreadTool": "codex_app__read_thread",
+    "waitThreadsTool": "codex_app__wait_threads",
+    "forkThreadTool": "codex_app__fork_thread",
+    "handoffThreadTool": "codex_app__handoff_thread",
+    "setTitleTool": "codex_app__set_thread_title",
+    "setPinnedTool": "codex_app__set_thread_pinned",
+    "setArchivedTool": "codex_app__set_thread_archived",
+    "maxMonitoringBatch": 8,
+    "uiProjectionIsStateSource": false
   },
   "subAgentPolicy": {
     "maxConcurrentFirstLevel": 3,

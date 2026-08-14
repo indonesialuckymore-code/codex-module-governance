@@ -98,7 +98,7 @@ Boss 批准后的运行版必须保存为私有 JSON，并符合 `schemas/codex-
 
 ```json
 {
-  "executionMapSchemaVersion": "0.16.0",
+  "executionMapSchemaVersion": "0.17.0",
   "recordType": "C09_APPROVED_EXECUTION_MAP",
   "planId": "central-plan-001",
   "projectId": "example-project",

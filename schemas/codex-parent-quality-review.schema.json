@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["qualityReviewSchemaVersion", "recordType", "qualityReviewId", "dispatchId", "projectId", "taskId", "windowId", "subAgentReturns", "acceptanceCoverage", "conflictResolutions", "parentReadbackEvidenceRefs", "scopeCheck", "unifiedStatus", "unresolvedRefs", "recommendedParentAction"],
   "properties": {
-    "qualityReviewSchemaVersion": { "const": "0.16.0" },
+    "qualityReviewSchemaVersion": { "const": "0.17.0" },
     "recordType": { "const": "C10_PARENT_QUALITY_REVIEW" },
     "qualityReviewId": { "type": "string" },
     "dispatchId": { "type": "string" },

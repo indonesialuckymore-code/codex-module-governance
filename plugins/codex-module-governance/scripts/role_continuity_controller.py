@@ -176,6 +176,10 @@ def return_validation_path(data_root: Path, project_id: str, ticket_id: str) -> 
     return return_ticket_root(data_root, project_id, ticket_id) / "receipt-000004-validation-result.json"
 
 
+def return_validation_abort_path(data_root: Path, project_id: str, ticket_id: str) -> Path:
+    return return_ticket_root(data_root, project_id, ticket_id) / "receipt-000004-validation-aborted.json"
+
+
 def return_policy_path(data_root: Path, project_id: str, policy_id: str) -> Path:
     return return_root(data_root, project_id) / "policies" / f"{policy_id}.json"
 
@@ -620,6 +624,41 @@ def read_return_delivery(data_root: Path, project_id: str, ticket_id: str) -> Di
     return {"submission": submission, "delivery": delivery, "event": event}
 
 
+def read_return_validation_abort(data_root: Path, project_id: str, ticket_id: str) -> Dict[str, Any]:
+    ticket_id = return_ticket_ref(ticket_id, "C08C_RETURN_TICKET_ID_INVALID")
+    abort = read_json(return_validation_abort_path(data_root, project_id, ticket_id), "C08C_RETURN_VALIDATION_ABORT_NOT_FOUND")
+    required = {
+        "returnSchemaVersion", "recordType", "createdAt", "projectId", "returnTicketId", "taskId", "handbackId",
+        "validatorThreadRef", "centralThreadRef", "bossAuthorizationRef", "reasonRef", "reservationDigest", "boundary",
+    }
+    expected_boundary = {
+        "validationReservationAborted": True, "validationResultRecorded": False, "returnEvidencePreserved": True,
+        "taskStatusChanged": False, "businessWritePerformed": False,
+    }
+    if set(abort) != required or abort.get("returnSchemaVersion") != RETURN_SCHEMA_VERSION or abort.get("recordType") != "C08_RETURN_VALIDATION_ABORT" or abort.get("projectId") != project_id or abort.get("returnTicketId") != ticket_id or abort.get("boundary") != expected_boundary:
+        raise ContinuityError("C08C_RETURN_VALIDATION_ABORT_INVALID")
+    reservation = read_json(return_reservation_path(data_root, project_id, ticket_id), "C08C_RETURN_VALIDATION_ABORT_RESERVATION_MISSING")
+    if (
+        abort.get("reservationDigest") != canonical_digest(reservation)
+        or abort.get("taskId") != reservation.get("taskId")
+        or abort.get("handbackId") != reservation.get("handbackId")
+        or abort.get("validatorThreadRef") != reservation.get("validatorThreadRef")
+        or return_validation_path(data_root, project_id, ticket_id).exists()
+    ):
+        raise ContinuityError("C08C_RETURN_VALIDATION_ABORT_INVALID")
+    ref(abort.get("centralThreadRef"), "C08C_RETURN_VALIDATION_ABORT_INVALID")
+    ref(abort.get("bossAuthorizationRef"), "C08C_RETURN_VALIDATION_ABORT_INVALID")
+    ref(abort.get("reasonRef"), "C08C_RETURN_VALIDATION_ABORT_INVALID")
+    return abort
+
+
+def return_validation_aborted(data_root: Path, project_id: str, ticket_id: str) -> bool:
+    if not return_validation_abort_path(data_root, project_id, ticket_id).exists():
+        return False
+    read_return_validation_abort(data_root, project_id, ticket_id)
+    return True
+
+
 def return_ticket_state(data_root: Path, project_id: str, ticket_id: str) -> str:
     try:
         read_return_submission(data_root, project_id, ticket_id)
@@ -635,6 +674,8 @@ def return_ticket_state(data_root: Path, project_id: str, ticket_id: str) -> str
         return "ACKNOWLEDGED" if acknowledgement.exists() else "QUEUED"
     if not return_reservation_path(data_root, project_id, ticket_id).exists():
         return "ADMITTED"
+    if return_validation_aborted(data_root, project_id, ticket_id):
+        return "VALIDATION_ABORTED"
     if not return_validation_path(data_root, project_id, ticket_id).exists():
         return "VALIDATING"
     return "VALIDATION_RECORDED"
@@ -829,11 +870,16 @@ def reserve_next_return(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     current_thread_ref = ref(args.current_thread_ref, "C08C_THREAD_REF_INVALID"); validator_thread_ref = ref(args.validator_thread_ref, "C08C_VALIDATOR_THREAD_REF_INVALID")
     routing = verify_routing(data_root, project_id); current_role(routing, "CURRENT_CENTRAL", current_thread_ref)
     with continuity_lock(data_root, project_id):
-        active = [ticket_id for ticket_id in pending_return_ticket_ids(data_root, project_id) if return_reservation_path(data_root, project_id, ticket_id).exists() and not return_validation_path(data_root, project_id, ticket_id).exists()]
+        active = [
+            ticket_id for ticket_id in pending_return_ticket_ids(data_root, project_id)
+            if return_reservation_path(data_root, project_id, ticket_id).exists()
+            and not return_validation_path(data_root, project_id, ticket_id).exists()
+            and not return_validation_aborted(data_root, project_id, ticket_id)
+        ]
         if active:
             return {"status": "VALIDATION_SLOT_BUSY", "maxConcurrentValidations": 1, "activeReturnTicketId": active[0], "writePerformed": False}, 0
         for ticket_id in pending_return_ticket_ids(data_root, project_id):
-            if not return_admission_path(data_root, project_id, ticket_id).exists() or return_validation_path(data_root, project_id, ticket_id).exists():
+            if not return_admission_path(data_root, project_id, ticket_id).exists() or return_validation_path(data_root, project_id, ticket_id).exists() or return_validation_aborted(data_root, project_id, ticket_id):
                 continue
             delivery = read_return_delivery(data_root, project_id, ticket_id); submission = delivery["submission"]
             reservation = {
@@ -930,6 +976,8 @@ def verify_all(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         read_return_submission(data_root, project_id, ticket_id)
         if return_delivery_path(data_root, project_id, ticket_id).exists():
             read_return_delivery(data_root, project_id, ticket_id)
+        if return_validation_abort_path(data_root, project_id, ticket_id).exists():
+            read_return_validation_abort(data_root, project_id, ticket_id)
     return {"status": "C08_ROLE_CONTINUITY_VERIFIED", "projectId": project_id, "routingRevision": routing["revision"], "centralGeneration": routing["roles"]["CURRENT_CENTRAL"]["generation"], "adjudicationGeneration": routing["roles"]["CURRENT_ADJUDICATION"]["generation"] if routing["roles"]["CURRENT_ADJUDICATION"] else None, "pendingEventCount": len(pending_event_ids(data_root, project_id)), "returnTicketCount": len(return_tickets), "writePerformed": False}, 0
 
 

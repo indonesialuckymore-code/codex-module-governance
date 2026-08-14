@@ -25,6 +25,9 @@ CENTRAL_WRITER = "codex-module-central"
 MAX_TASKS_PER_WINDOW = 2
 TASK_RUNTIME_MODEL = "gpt-5.6-terra"
 MANUAL_WINDOW_MODEL_METHOD = "MANUAL_UI_TERRA_SELECTION_EVIDENCE"
+TASK_PERMISSION_CLASS = "WORKTREE_SCOPED"
+ALLOWED_TASK_PERMISSION_PROFILES = {":workspace", "qianyi-task-terra", "workspace-write"}
+MANUAL_WINDOW_PERMISSION_METHOD = "MANUAL_UI_PERMISSION_EVIDENCE"
 LEDGERS_DIRECTORY = Path("module-ledgers")
 LEDGER_FILENAME = "ledger.json"
 RECEIPTS_DIRECTORY = "receipts"
@@ -497,6 +500,15 @@ def register_window(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     model_evidence_ref = None
     if args.runtime_model_evidence_ref is not None:
         model_evidence_ref = require_opaque_reference(args.runtime_model_evidence_ref, "WINDOW_RUNTIME_MODEL_EVIDENCE_INVALID")
+    permission_profile = args.runtime_permission_profile
+    permission_evidence_ref = args.runtime_permission_evidence_ref
+    if (permission_profile is None) != (permission_evidence_ref is None):
+        raise LedgerError("WINDOW_RUNTIME_PERMISSION_EVIDENCE_INCOMPLETE")
+    if permission_profile is not None:
+        permission_profile = require_text(permission_profile, "WINDOW_RUNTIME_PERMISSION_PROFILE_INVALID", 80)
+        if permission_profile not in ALLOWED_TASK_PERMISSION_PROFILES:
+            raise LedgerError("WINDOW_RUNTIME_PERMISSION_PROFILE_INVALID")
+        permission_evidence_ref = require_opaque_reference(permission_evidence_ref, "WINDOW_RUNTIME_PERMISSION_EVIDENCE_INVALID")
 
     def mutate(ledger: Dict[str, Any]) -> None:
         if window_id in ledger["windows"]:
@@ -549,9 +561,17 @@ def register_window(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
                     "confirmedAt": utc_now(),
                 },
             })
+        if permission_profile is not None:
+            window["permissionEnforcement"] = {
+                "permissionClass": TASK_PERMISSION_CLASS,
+                "profile": permission_profile,
+                "method": MANUAL_WINDOW_PERMISSION_METHOD,
+                "evidenceRef": permission_evidence_ref,
+                "confirmedAt": utc_now(),
+            }
         ledger["windows"][window_id] = window
 
-    return mutate_ledger(args, "REGISTER_TASK_WINDOW", {"windowId": window_id, "taskId": task_id, "model": TASK_RUNTIME_MODEL if model_evidence_ref is not None else "UNVERIFIED", "modelEvidenceRecorded": model_evidence_ref is not None}, mutate)
+    return mutate_ledger(args, "REGISTER_TASK_WINDOW", {"windowId": window_id, "taskId": task_id, "model": TASK_RUNTIME_MODEL if model_evidence_ref is not None else "UNVERIFIED", "modelEvidenceRecorded": model_evidence_ref is not None, "permissionClass": TASK_PERMISSION_CLASS if permission_profile is not None else "UNVERIFIED", "permissionEvidenceRecorded": permission_profile is not None}, mutate)
 
 
 def register_sub_agent(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
@@ -751,6 +771,8 @@ def parse_args() -> argparse.Namespace:
     window.add_argument("--task-id", required=True)
     window.add_argument("--context-mode", required=True)
     window.add_argument("--runtime-model-evidence-ref")
+    window.add_argument("--runtime-permission-profile")
+    window.add_argument("--runtime-permission-evidence-ref")
 
     sub_agent = commands.add_parser("register-sub-agent")
     sub_agent.add_argument("--sub-agent-id", required=True)

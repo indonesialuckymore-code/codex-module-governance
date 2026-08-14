@@ -48,3 +48,5 @@
 | ADR-041 | 施工回传采用 C08 持久票据收件箱；中央只接收摘要，全项目一次只保留一个隔离 C06 验收槽。 | 聊天文字不构成回传；`returnTicketId + TASK_EVENT_QUEUED` 是最低投递证明。Boss 可一次批准范围内自动送验，但 `DONE` 仍须独立验收后由 Boss 最终批准。 |
 | ADR-042 | C14 是中央与任务窗口的唯一原生消息执行层；C08/C03 仍分别是回传事实源和唯一详细任务状态源。 | 消息状态与任务状态分离：`QUEUED → DELIVERED → ACKNOWLEDGED → APPLIED/REFUSED/BLOCKED`。消息正文只传私有票据指针；换代前未确认的消息重新解析 `CURRENT_CENTRAL`，不得向旧中央盲发。 |
 | ADR-043 | C10 任务窗口与一级子 Agent 强制使用 `gpt-5.6-terra`，并保存原生模型参数或人工选择证据。 | 新建使用 `create_thread(model=Terra)`，复用使用 `send_message_to_thread(model=Terra)`，子 Agent 使用 `spawn_agent(model=Terra)`；Sol/其他模型或缺少模型控制记录不得进入 `IN_PROGRESS`，旧无凭据窗口不得复用。 |
+| ADR-044 | Terra 模型门与 `WORKTREE_SCOPED` 权限门是并列的运行前提。 | `:danger-full-access`、缺权限证据或仅有文字承诺不得进入 `IN_PROGRESS`；一级子 Agent 继承父窗口受限权限。旧窗口可完成当前任务，但无权限凭据时不得承接第二项。 |
+| ADR-045 | Codex 原生任务清单、批量等待、fork/handoff、标题、置顶和归档只投影治理状态，不成为新事实源。 | C03 仍是唯一详细任务状态，C08 管角色连续性和事件箱，C14 管消息送达/确认；界面显示不能倒推 `IN_PROGRESS`、`DONE` 或交接成功。 |

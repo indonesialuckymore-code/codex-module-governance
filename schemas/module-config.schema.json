@@ -4,9 +4,9 @@
   "title": "Codex Module Governance configuration",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "module", "models", "subAgentPolicy", "storage", "projectInitialization", "ledger", "occupancy", "validation", "adjudication", "recovery", "centralIntegration", "dispatch", "externalSkills", "naturalLanguageGateway", "publishing"],
+  "required": ["schemaVersion", "module", "models", "runtimePermissions", "nativeRuntime", "subAgentPolicy", "storage", "projectInitialization", "ledger", "occupancy", "validation", "adjudication", "recovery", "centralIntegration", "dispatch", "externalSkills", "naturalLanguageGateway", "publishing"],
   "properties": {
-    "schemaVersion": { "const": "0.15.0" },
+    "schemaVersion": { "const": "0.22.0" },
     "module": {
       "type": "object",
       "additionalProperties": false,
@@ -24,6 +24,49 @@
         "central": { "const": "gpt-5.6-sol" },
         "taskWindow": { "const": "gpt-5.6-terra" },
         "subAgent": { "const": "gpt-5.6-terra" }
+      }
+    },
+    "runtimePermissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["taskWindowClass", "subAgentClass", "allowedTaskProfiles", "forbidDangerFullAccess", "requireRuntimeEvidence", "allowManualUiEvidence", "autoReviewRequiresInteractiveApproval"],
+      "properties": {
+        "taskWindowClass": { "const": "WORKTREE_SCOPED" },
+        "subAgentClass": { "const": "WORKTREE_SCOPED" },
+        "allowedTaskProfiles": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": { "enum": [":workspace", "qianyi-task-terra", "workspace-write"] },
+          "allOf": [
+            { "contains": { "const": ":workspace" } },
+            { "contains": { "const": "qianyi-task-terra" } },
+            { "contains": { "const": "workspace-write" } }
+          ]
+        },
+        "forbidDangerFullAccess": { "const": true },
+        "requireRuntimeEvidence": { "const": true },
+        "allowManualUiEvidence": { "const": true },
+        "autoReviewRequiresInteractiveApproval": { "const": true }
+      }
+    },
+    "nativeRuntime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["createThreadTool", "sendMessageTool", "readThreadTool", "waitThreadsTool", "forkThreadTool", "handoffThreadTool", "setTitleTool", "setPinnedTool", "setArchivedTool", "maxMonitoringBatch", "uiProjectionIsStateSource"],
+      "properties": {
+        "createThreadTool": { "const": "codex_app__create_thread" },
+        "sendMessageTool": { "const": "codex_app__send_message_to_thread" },
+        "readThreadTool": { "const": "codex_app__read_thread" },
+        "waitThreadsTool": { "const": "codex_app__wait_threads" },
+        "forkThreadTool": { "const": "codex_app__fork_thread" },
+        "handoffThreadTool": { "const": "codex_app__handoff_thread" },
+        "setTitleTool": { "const": "codex_app__set_thread_title" },
+        "setPinnedTool": { "const": "codex_app__set_thread_pinned" },
+        "setArchivedTool": { "const": "codex_app__set_thread_archived" },
+        "maxMonitoringBatch": { "const": 8 },
+        "uiProjectionIsStateSource": { "const": false }
       }
     },
     "subAgentPolicy": {

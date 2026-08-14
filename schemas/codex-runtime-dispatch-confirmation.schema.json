@@ -6,13 +6,13 @@
   "additionalProperties": false,
   "required": ["confirmationSchemaVersion", "recordType", "dispatchId", "taskWindow", "subAgents"],
   "properties": {
-    "confirmationSchemaVersion": { "const": "0.16.0" },
+    "confirmationSchemaVersion": { "const": "0.17.0" },
     "recordType": { "const": "C10_RUNTIME_CONFIRMATION" },
     "dispatchId": { "type": "string" },
     "taskWindow": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["status", "taskId", "runtimeTitle", "generation", "windowId", "runtimeThreadRef", "runtimeProjectId", "runtimeCwd", "environmentType", "associationMethod", "associationHandoffRefs", "modelControl"],
+      "required": ["status", "taskId", "runtimeTitle", "generation", "windowId", "runtimeThreadRef", "runtimeProjectId", "runtimeCwd", "environmentType", "associationMethod", "associationHandoffRefs", "modelControl", "permissionControl"],
       "properties": {
         "status": { "enum": ["CREATED", "REUSED"] },
         "taskId": { "type": "string" },
@@ -30,7 +30,8 @@
           "uniqueItems": true,
           "items": { "type": "string" }
         },
-        "modelControl": { "$ref": "#/$defs/windowModelControl" }
+        "modelControl": { "$ref": "#/$defs/windowModelControl" },
+        "permissionControl": { "$ref": "#/$defs/windowPermissionControl" }
       },
       "allOf": [
         {
@@ -46,12 +47,13 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["subAgentId", "status", "runtimeAgentRef", "modelControl"],
+        "required": ["subAgentId", "status", "runtimeAgentRef", "modelControl", "permissionControl"],
         "properties": {
           "subAgentId": { "type": "string" },
           "status": { "const": "CREATED" },
           "runtimeAgentRef": { "type": "string" },
-          "modelControl": { "$ref": "#/$defs/subAgentModelControl" }
+          "modelControl": { "$ref": "#/$defs/subAgentModelControl" },
+          "permissionControl": { "$ref": "#/$defs/subAgentPermissionControl" }
         }
       }
     }
@@ -74,6 +76,28 @@
       "properties": {
         "model": { "const": "gpt-5.6-terra" },
         "method": { "const": "NATIVE_SPAWN_AGENT_MODEL_PARAMETER" },
+        "evidenceRef": { "type": "string", "minLength": 1 }
+      }
+    },
+    "windowPermissionControl": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["permissionClass", "profile", "method", "evidenceRef"],
+      "properties": {
+        "permissionClass": { "const": "WORKTREE_SCOPED" },
+        "profile": { "enum": [":workspace", "qianyi-task-terra", "workspace-write"] },
+        "method": { "enum": ["PERMISSION_PROFILE_READBACK", "LEGACY_WORKSPACE_SANDBOX_READBACK", "MANUAL_UI_PERMISSION_EVIDENCE"] },
+        "evidenceRef": { "type": "string", "minLength": 1 }
+      }
+    },
+    "subAgentPermissionControl": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["permissionClass", "profile", "method", "evidenceRef"],
+      "properties": {
+        "permissionClass": { "const": "WORKTREE_SCOPED" },
+        "profile": { "enum": [":workspace", "qianyi-task-terra", "workspace-write"] },
+        "method": { "enum": ["INHERITED_FROM_PARENT_WINDOW", "SUB_AGENT_PERMISSION_READBACK"] },
         "evidenceRef": { "type": "string", "minLength": 1 }
       }
     }

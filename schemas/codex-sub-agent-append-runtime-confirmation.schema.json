@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["appendConfirmationSchemaVersion", "recordType", "appendId", "dispatchId", "windowId", "subAgents"],
   "properties": {
-    "appendConfirmationSchemaVersion": { "const": "0.16.0" },
+    "appendConfirmationSchemaVersion": { "const": "0.17.0" },
     "recordType": { "const": "C10_SUB_AGENT_APPEND_RUNTIME_CONFIRMATION" },
     "appendId": { "type": "string" },
     "dispatchId": { "type": "string" },
@@ -18,7 +18,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["subAgentId", "status", "runtimeAgentRef", "modelControl"],
+        "required": ["subAgentId", "status", "runtimeAgentRef", "modelControl", "permissionControl"],
         "properties": {
           "subAgentId": { "type": "string" },
           "status": { "const": "CREATED" },
@@ -30,6 +30,17 @@
             "properties": {
               "model": { "const": "gpt-5.6-terra" },
               "method": { "const": "NATIVE_SPAWN_AGENT_MODEL_PARAMETER" },
+              "evidenceRef": { "type": "string", "minLength": 1 }
+            }
+          },
+          "permissionControl": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["permissionClass", "profile", "method", "evidenceRef"],
+            "properties": {
+              "permissionClass": { "const": "WORKTREE_SCOPED" },
+              "profile": { "enum": [":workspace", "qianyi-task-terra", "workspace-write"] },
+              "method": { "enum": ["INHERITED_FROM_PARENT_WINDOW", "SUB_AGENT_PERMISSION_READBACK"] },
               "evidenceRef": { "type": "string", "minLength": 1 }
             }
           }

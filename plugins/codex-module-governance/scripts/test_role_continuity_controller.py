@@ -106,12 +106,12 @@ def event_payload(route_revision=1, event_id="event-c003-001", canonical_title="
     }
 
 
-def return_handback(ticket_id="return-ticket-c003-001", handback_id="handback-c003-001", completion_signal="completion-signal-c003-001"):
+def return_handback(ticket_id="return-ticket-c003-001", handback_id="handback-c003-001", completion_signal="completion-signal-c003-001", task_id=TASK, window_id=WINDOW):
     return {
         "handbackSchemaVersion": "0.8.0", "recordType": "C06_TASK_WINDOW_HANDBACK", "handbackId": handback_id,
         "returnTicketId": ticket_id, "routeRevisionSeen": 1, "projectId": PROJECT, "packageId": "package-c003-001",
-        "c05ReviewId": "c05-review-c003-001", "taskId": TASK, "windowId": WINDOW, "completionSignalId": completion_signal,
-        "submittedBy": {"type": "task-window", "id": WINDOW}, "bossHandbackAuthorization": {"status": "APPROVED", "reference": "boss-return-approval-c003"},
+        "c05ReviewId": "c05-review-c003-001", "taskId": task_id, "windowId": window_id, "completionSignalId": completion_signal,
+        "submittedBy": {"type": "task-window", "id": window_id}, "bossHandbackAuthorization": {"status": "APPROVED", "reference": "boss-return-approval-c003"},
         "executedScopeRefs": ["scope-c003-001"], "evidenceRefs": ["evidence-c003-001"], "testAndObjectRefs": ["test-c003-001"],
         "parentQualityReviewRefs": [], "unresolvedRefs": [], "residualRiskRefs": [],
     }
@@ -219,6 +219,48 @@ class RoleContinuityTests(unittest.TestCase):
             self.assertEqual(reserved["validatorModel"], "gpt-5.6-sol")
             code, busy = continuity(root, "reserve-next-return", "--current-thread-ref", "central-thread-g1", "--validator-thread-ref", "validator-thread-c003-002")
             self.assertEqual(code, 0, busy); self.assertEqual(busy["status"], "VALIDATION_SLOT_BUSY")
+
+    def test_valid_historical_validation_abort_releases_slot_and_is_not_reserved_again(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "private"; setup(root)
+            first_ticket = "return-ticket-c003-aborted"
+            first_handback = write(root / "continuity-inputs" / "return-aborted.json", return_handback(
+                ticket_id=first_ticket, handback_id="handback-c003-aborted", completion_signal="completion-signal-c003-aborted",
+            ))
+            self.assertEqual(continuity(root, "submit-return", "--handback", str(first_handback), writer=False)[0], 0)
+            self.assertEqual(continuity(root, "admit-return", "--return-ticket-id", first_ticket, "--current-thread-ref", "central-thread-g1", "--admission-ref", "central-admission-c003-aborted")[0], 0)
+            code, first_reservation = continuity(root, "reserve-next-return", "--current-thread-ref", "central-thread-g1", "--validator-thread-ref", "validator-thread-c003-aborted")
+            self.assertEqual(code, 0, first_reservation)
+            reservation_path = root / "return-inbox" / PROJECT / "tickets" / first_ticket / "receipt-000003-validation-reservation.json"
+            reservation = json.loads(reservation_path.read_text(encoding="utf-8"))
+            write(reservation_path.parent / "receipt-000004-validation-aborted.json", {
+                "returnSchemaVersion": "0.18.0", "recordType": "C08_RETURN_VALIDATION_ABORT", "createdAt": "2026-08-13T04:05:41Z",
+                "projectId": PROJECT, "returnTicketId": first_ticket, "taskId": TASK, "handbackId": "handback-c003-aborted",
+                "validatorThreadRef": "validator-thread-c003-aborted", "centralThreadRef": "central-thread-g2",
+                "bossAuthorizationRef": "boss-approved-validation-slot-release", "reasonRef": "superseded-return-ticket",
+                "reservationDigest": digest(reservation),
+                "boundary": {"validationReservationAborted": True, "validationResultRecorded": False, "returnEvidencePreserved": True, "taskStatusChanged": False, "businessWritePerformed": False},
+            })
+
+            second_task = "C-004"; second_window = "window-c004-g1"; second_ticket = "return-ticket-c004-next"
+            for command in [
+                ("add-task", "--task-id", second_task, "--title", "第二业务", "--business-goal", "Validate the next fictional return.", "--plan-ref", "plan-c004"),
+                ("register-window", "--window-id", second_window, "--task-id", second_task, "--context-mode", "NEW"),
+                ("transition-task", "--task-id", second_task, "--to-status", "READY", "--reason", "Ready."),
+                ("transition-task", "--task-id", second_task, "--to-status", "IN_PROGRESS", "--reason", "Started."),
+            ]:
+                code, output = c03(root, command[0], *command[1:]); self.assertEqual(code, 0, output)
+            second_handback = write(root / "continuity-inputs" / "return-next.json", return_handback(
+                ticket_id=second_ticket, handback_id="handback-c004-next", completion_signal="completion-signal-c004-next",
+                task_id=second_task, window_id=second_window,
+            ))
+            self.assertEqual(continuity(root, "submit-return", "--handback", str(second_handback), writer=False)[0], 0)
+            self.assertEqual(continuity(root, "admit-return", "--return-ticket-id", second_ticket, "--current-thread-ref", "central-thread-g1", "--admission-ref", "central-admission-c004-next")[0], 0)
+
+            code, next_reservation = continuity(root, "reserve-next-return", "--current-thread-ref", "central-thread-g1", "--validator-thread-ref", "validator-thread-c004-next")
+            self.assertEqual(code, 0, next_reservation)
+            self.assertEqual(next_reservation["status"], "RETURN_VALIDATION_RESERVED")
+            self.assertEqual(next_reservation["returnTicketId"], second_ticket)
 
     def test_auto_return_policy_remains_one_slot_and_preserves_boss_done_gate(self):
         with tempfile.TemporaryDirectory() as temp:
