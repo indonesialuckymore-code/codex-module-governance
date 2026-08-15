@@ -23,6 +23,12 @@ CASE = "recovery-c08-001"
 
 
 def invoke(script, arguments):
+    if script == C08 and "--caller-thread-ref" not in arguments:
+        command_index = next(index for index, value in enumerate(arguments) if value in {"freeze", "takeover", "decide", "release", "verify"})
+        arguments = [*arguments[:command_index], "--caller-thread-ref", "central-thread-g1", *arguments[command_index:]]
+    if script == c06_fixture.C06 and "--caller-thread-ref" not in arguments:
+        command_index = next(index for index, value in enumerate(arguments) if value in {"assess", "finalize", "verify"})
+        arguments = [*arguments[:command_index], "--caller-thread-ref", "central-thread-g1", *arguments[command_index:]]
     completed = subprocess.run([sys.executable, str(script), *arguments], check=False, capture_output=True, text=True)
     return completed.returncode, json.loads(completed.stdout)
 

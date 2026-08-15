@@ -22,7 +22,9 @@
 
 ```bash
 python3 plugins/codex-module-governance/scripts/central_construction_controller.py \
-  --data-root <私有数据目录> continue-successors \
+  --data-root <私有数据目录> \
+  --caller-thread-ref <CURRENT_CENTRAL原生任务ID> \
+  continue-successors \
   --project-id <项目ID> \
   --validation-id <刚完成任务的验收ID> \
   --execution-map <私有目录内的获批启动图JSON> \

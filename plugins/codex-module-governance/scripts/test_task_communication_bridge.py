@@ -61,7 +61,7 @@ def setup(root):
     ]:
         code, output = c03(root, command[0], *command[1:])
         if code != 0: raise AssertionError(output)
-    code, output = c08(root, "initialize", "--central-thread-ref", CENTRAL_1, "--runtime-project-id", "runtime-project-c14", "--execution-map-ref", "execution-map-c14")
+    code, output = c08(root, "initialize", "--calling-thread-ref", CENTRAL_1, "--central-thread-ref", CENTRAL_1, "--runtime-project-id", "runtime-project-c14", "--execution-map-ref", "execution-map-c14")
     if code != 0: raise AssertionError(output)
 
 

@@ -1,5 +1,7 @@
 # v0.22 Codex 原生运行优化回执
 
+> 本文保留 `0.22.0` 原始验收证据。`0.22.1` 已将任务权限收紧为 `:workspace`/`qianyi-task-terra` + 精确 `writableRoots` + `governanceDataRootAccess=DENIED`；当前规则以 [0.22.1 新项目启动修复回执](NEW_PROJECT_STARTUP_REPAIR_REPORT.md) 为准。
+
 ## 状态
 
 `DONE`（产品程序与隔离测试完成；真实业务项目需在新中央任务中做运行验收）

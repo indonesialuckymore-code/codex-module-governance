@@ -26,10 +26,11 @@ description: 把 Boss 与 Fable 5 已规划、已登记到 Codex 模块账本的
 
 ## 状态与边界
 
-- 输出状态固定为 `DRAFT_REQUIRES_BOSS_REVIEW`。
+- 输出状态固定为 `DRAFT_REQUIRES_BOSS_REVIEW`，表示 **C04 自身没有派发权**，不表示 Boss 必须对已在批准启动图中的相同范围再答一次“批准”。
 - 任务包写到仓库外的私有目录，并附带不可覆盖的生成回执。
 - `dispatchAllowed`、`taskWindowCreated`、`subAgentCreated`、`objectClaimCreated`、`testCreationAllowed` 和 `businessWriteAllowed` 始终为 `false`。
-- Boss 批准任务包后，仍须由 C05 检查对象占用与冲突；C04 不得把任务推进为 `READY` 或 `IN_PROGRESS`。
+- 若没有范围化启动图批准，Boss 必须先批准该任务范围。若启动图已准确包含它，C05 用同一 `scopeId + scopeDigest + bossApprovalRef` 满足审阅门，C10 必须再次核对同一引用；范围不变时不重复请示 Boss。
+- C04 不得把任务推进为 `READY` 或 `IN_PROGRESS`。任务窗口必须使用 C10 派发单内嵌的该任务合同，不得要求一个系统并未生成的“最终任务包路径”。
 
 ## 常用命令
 

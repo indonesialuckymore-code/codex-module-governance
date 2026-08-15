@@ -36,12 +36,20 @@
           "permissionControl": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["permissionClass", "profile", "method", "evidenceRef"],
+            "required": ["permissionClass", "profile", "method", "evidenceRef", "writableRoots", "governanceDataRootAccess"],
             "properties": {
               "permissionClass": { "const": "WORKTREE_SCOPED" },
-              "profile": { "enum": [":workspace", "qianyi-task-terra", "workspace-write"] },
+              "profile": { "enum": [":workspace", "qianyi-task-terra"] },
               "method": { "enum": ["INHERITED_FROM_PARENT_WINDOW", "SUB_AGENT_PERMISSION_READBACK"] },
-              "evidenceRef": { "type": "string", "minLength": 1 }
+              "evidenceRef": { "type": "string", "minLength": 1 },
+              "writableRoots": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 8,
+                "uniqueItems": true,
+                "items": { "type": "string", "pattern": "^/" }
+              },
+              "governanceDataRootAccess": { "const": "DENIED" }
             }
           }
         }

@@ -30,12 +30,18 @@ VALIDATION = "validation-c06-001"
 
 
 def invoke(script, arguments):
+    if script == C06 and "--caller-thread-ref" not in arguments:
+        command_index = next(index for index, value in enumerate(arguments) if value in {"assess", "finalize", "verify"})
+        arguments = [*arguments[:command_index], "--caller-thread-ref", "central-thread-g1", *arguments[command_index:]]
+    if script == C10 and "--caller-thread-ref" not in arguments:
+        command_index = next(index for index, value in enumerate(arguments) if value in {"prepare", "confirm", "export-fallback", "prepare-append", "confirm-append", "record-return", "record-parent-quality-review", "verify"})
+        arguments = [*arguments[:command_index], "--caller-thread-ref", "central-thread-g1", *arguments[command_index:]]
     completed = subprocess.run([sys.executable, str(script), *arguments], check=False, capture_output=True, text=True)
     return completed.returncode, json.loads(completed.stdout)
 
 
 def c03(root, command, *arguments):
-    return invoke(C03, ["--data-root", str(root), "--project-id", PROJECT, "--writer-id", "codex-module-central", command, *arguments])
+    return invoke(C03, ["--data-root", str(root), "--project-id", PROJECT, "--writer-id", "codex-module-central", "--caller-thread-ref", "central-thread-g1", command, *arguments])
 
 
 def c08(root, command, *arguments, writer=False):
@@ -108,13 +114,13 @@ def setup_ready_for_validation(root):
     if code != 0:
         raise AssertionError(output)
     for command in [
-        ["register-window", "--window-id", WINDOW, "--task-id", TASK, "--context-mode", "NEW", "--runtime-model-evidence-ref", "manual-terra-window-c06", "--runtime-permission-profile", ":workspace", "--runtime-permission-evidence-ref", "manual-permission-window-c06"],
+        ["register-window", "--window-id", WINDOW, "--task-id", TASK, "--context-mode", "NEW", "--runtime-model-evidence-ref", "manual-terra-window-c06", "--runtime-permission-profile", ":workspace", "--runtime-permission-evidence-ref", "manual-permission-window-c06", "--runtime-writable-root", "/tmp/.codex/worktrees/abcd/fictional-project", "--governance-data-root-access", "DENIED"],
         ["transition-task", "--task-id", TASK, "--to-status", "IN_PROGRESS", "--reason", "Fictional dispatch already occurred outside C06."],
     ]:
         code, output = c03(root, command[0], *command[1:])
         if code != 0:
             raise AssertionError(output)
-    code, output = c08(root, "initialize", "--central-thread-ref", "central-thread-g1", "--runtime-project-id", "runtime-project-c06", "--execution-map-ref", "execution-map-c06", writer=True)
+    code, output = c08(root, "initialize", "--calling-thread-ref", "central-thread-g1", "--central-thread-ref", "central-thread-g1", "--runtime-project-id", "runtime-project-c06", "--execution-map-ref", "execution-map-c06", writer=True)
     if code != 0:
         raise AssertionError(output)
 
@@ -172,7 +178,7 @@ def add_returned_sub_agent(root):
             "dispatchId": "dispatch-c06-001", "level": 1, "status": "RETURNED",
             "returnId": "return-c06-001", "runtimeAgentRef": "runtime-agent-c06-001",
         }
-    ledger_manager.commit_mutation(root, PROJECT, before, "codex-module-central", "TEST_ADD_RETURNED_SUB_AGENT", {"taskId": TASK}, mutate)
+    ledger_manager.commit_mutation(root, PROJECT, before, "codex-module-central", "TEST_ADD_RETURNED_SUB_AGENT", {"taskId": TASK}, mutate, caller_thread_ref="central-thread-g1")
 
 
 def write_parent_quality_review(root):
@@ -375,7 +381,7 @@ class IndependentHandoverValidatorTests(unittest.TestCase):
             })
             code, batch = invoke(C09, [
                 "--data-root", str(root), "continue-successors", "--project-id", PROJECT,
-                "--validation-id", VALIDATION, "--execution-map", str(execution_map_path), "--writer-id", "codex-module-central",
+                "--validation-id", VALIDATION, "--execution-map", str(execution_map_path), "--writer-id", "codex-module-central", "--caller-thread-ref", "central-thread-g1",
             ])
             self.assertEqual(code, 0, batch)
             self.assertEqual(batch["status"], "READY_FOR_BATCH_RUNTIME_DISPATCH")
@@ -390,7 +396,7 @@ class IndependentHandoverValidatorTests(unittest.TestCase):
             self.assertEqual(prepared_by_task[parallel_task]["windowAction"]["assignmentNumber"], 1)
             code, repeated = invoke(C09, [
                 "--data-root", str(root), "continue-successors", "--project-id", PROJECT,
-                "--validation-id", VALIDATION, "--execution-map", str(execution_map_path), "--writer-id", "codex-module-central",
+                "--validation-id", VALIDATION, "--execution-map", str(execution_map_path), "--writer-id", "codex-module-central", "--caller-thread-ref", "central-thread-g1",
             ])
             self.assertEqual(code, 0, repeated)
             self.assertEqual(repeated["status"], "IDEMPOTENT_SUCCESSOR_BATCH")
@@ -401,7 +407,7 @@ class IndependentHandoverValidatorTests(unittest.TestCase):
             write_json(blocked_occupancy_path, blocked_occupancy)
             code, resumed = invoke(C09, [
                 "--data-root", str(root), "continue-successors", "--project-id", PROJECT,
-                "--validation-id", VALIDATION, "--execution-map", str(execution_map_path), "--writer-id", "codex-module-central",
+                "--validation-id", VALIDATION, "--execution-map", str(execution_map_path), "--writer-id", "codex-module-central", "--caller-thread-ref", "central-thread-g1",
             ])
             self.assertEqual(code, 0, resumed)
             self.assertEqual(resumed["status"], "READY_FOR_BATCH_RUNTIME_DISPATCH")
@@ -414,7 +420,7 @@ class IndependentHandoverValidatorTests(unittest.TestCase):
             self.assertEqual(ledger["windows"][WINDOW]["reservedForTaskId"], second_task)
             confirmation = {
                 "confirmationSchemaVersion": "0.17.0", "recordType": "C10_RUNTIME_CONFIRMATION", "dispatchId": dispatch_id,
-                "taskWindow": {"status": "REUSED", "taskId": second_task, "runtimeTitle": "C-07｜Fictional second assignment｜G1", "generation": 1, "windowId": WINDOW, "runtimeThreadRef": "thread-c07-final", "runtimeProjectId": "codex-project-007", "runtimeCwd": "/tmp/.codex/worktrees/abcd/fictional-project", "environmentType": "WORKTREE", "associationMethod": "DIRECT", "associationHandoffRefs": [], "modelControl": {"model": "gpt-5.6-terra", "method": "NATIVE_SEND_MESSAGE_MODEL_OVERRIDE", "evidenceRef": "thread-c07-final"}, "permissionControl": {"permissionClass": "WORKTREE_SCOPED", "profile": ":workspace", "method": "PERMISSION_PROFILE_READBACK", "evidenceRef": "thread-c07-final"}},
+                "taskWindow": {"status": "REUSED", "taskId": second_task, "runtimeTitle": "C-07｜Fictional second assignment｜G1", "generation": 1, "windowId": WINDOW, "runtimeThreadRef": "thread-c07-final", "runtimeProjectId": "codex-project-007", "runtimeCwd": "/tmp/.codex/worktrees/abcd/fictional-project", "environmentType": "WORKTREE", "associationMethod": "EXISTING_REGISTERED_WINDOW", "associationHandoffRefs": [], "modelControl": {"model": "gpt-5.6-terra", "method": "NATIVE_SEND_MESSAGE_MODEL_OVERRIDE", "evidenceRef": "thread-c07-final"}, "permissionControl": {"permissionClass": "WORKTREE_SCOPED", "profile": ":workspace", "method": "PERMISSION_PROFILE_READBACK", "evidenceRef": "thread-c07-final", "writableRoots": ["/tmp/.codex/worktrees/abcd/fictional-project"], "governanceDataRootAccess": "DENIED"}},
                 "subAgents": [],
             }
             confirmation_path = write_json(root / "c10-inputs" / "confirmation-007.json", confirmation)

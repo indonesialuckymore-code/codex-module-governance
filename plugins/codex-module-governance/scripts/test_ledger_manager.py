@@ -39,10 +39,12 @@ def create_c02_project(data_root):
 
 
 class LedgerManagerTests(unittest.TestCase):
-    def command(self, data_root, command, *arguments, writer="codex-module-central"):
+    def command(self, data_root, command, *arguments, writer="codex-module-central", caller=None):
         base = ["--data-root", str(data_root), "--project-id", PROJECT_ID]
         if writer is not None:
             base.extend(["--writer-id", writer])
+        if caller is not None:
+            base.extend(["--caller-thread-ref", caller])
         return invoke(LEDGER_SCRIPT, [*base, command, *arguments])
 
     def initialize(self, data_root):
@@ -83,6 +85,72 @@ class LedgerManagerTests(unittest.TestCase):
             code, output = self.add_task(data_root, writer="fable-5-system-router")
             self.assertEqual(code, 2)
             self.assertEqual(output["reason"], "LEDGER_WRITER_NOT_AUTHORIZED")
+
+    def test_only_c08_current_central_thread_can_write_after_routing_activation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary) / "private-data"
+            self.initialize(data_root)
+            routing_directory = data_root / "role-continuity" / PROJECT_ID
+            routing_directory.mkdir(parents=True)
+            (routing_directory / "routing.json").write_text(json.dumps({
+                "recordType": "C08_ROLE_ROUTING",
+                "projectId": PROJECT_ID,
+                "roles": {
+                    "CURRENT_CENTRAL": {
+                        "status": "ACTIVE",
+                        "activeThreadRef": "thread-current-central",
+                    },
+                    "CURRENT_ADJUDICATION": None,
+                },
+            }), encoding="utf-8")
+
+            missing_code, missing_output = self.add_task(data_root, "C-08")
+            wrong_code, wrong_output = self.command(
+                data_root, "add-task",
+                "--task-id", "C-09", "--title", "Wrong central",
+                "--business-goal", "Must not mutate the ledger.",
+                "--plan-ref", "plan-ref-009",
+                caller="thread-bootstrap-launcher",
+            )
+            right_code, right_output = self.command(
+                data_root, "add-task",
+                "--task-id", "C-10", "--title", "Current central",
+                "--business-goal", "Authorized current central mutation.",
+                "--plan-ref", "plan-ref-010",
+                caller="thread-current-central",
+            )
+
+            self.assertEqual(missing_code, 2)
+            self.assertEqual(missing_output["reason"], "LEDGER_CALLER_THREAD_REQUIRED")
+            self.assertEqual(wrong_code, 2)
+            self.assertEqual(wrong_output["reason"], "LEDGER_CALLER_NOT_CURRENT_CENTRAL")
+            self.assertEqual(right_code, 0, right_output)
+            ledger = json.loads((data_root / "module-ledgers" / PROJECT_ID / "ledger.json").read_text(encoding="utf-8"))
+            self.assertEqual(ledger["revision"], 1)
+            self.assertEqual(set(ledger["tasks"]), {"C-10"})
+
+    def test_invalid_c08_routing_without_a_current_central_is_a_safe_refusal(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary) / "private-data"
+            self.initialize(data_root)
+            routing_directory = data_root / "role-continuity" / PROJECT_ID
+            routing_directory.mkdir(parents=True)
+            (routing_directory / "routing.json").write_text(json.dumps({
+                "recordType": "C08_ROLE_ROUTING",
+                "projectId": PROJECT_ID,
+                "roles": {"CURRENT_ADJUDICATION": None},
+            }), encoding="utf-8")
+
+            code, output = self.command(
+                data_root, "add-task",
+                "--task-id", "C-08", "--title", "Invalid routing",
+                "--business-goal", "Reject corrupt routing without crashing.",
+                "--plan-ref", "plan-ref-008",
+                caller="thread-current-central",
+            )
+
+            self.assertEqual(code, 2)
+            self.assertEqual(output["reason"], "C08_CURRENT_CENTRAL_ROUTING_INVALID")
 
     def test_completion_signal_is_idempotent_and_needs_review(self):
         with tempfile.TemporaryDirectory() as temporary:

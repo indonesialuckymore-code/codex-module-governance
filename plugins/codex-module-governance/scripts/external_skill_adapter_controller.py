@@ -167,7 +167,7 @@ def activate(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         next_registry = json.loads(json.dumps(registry)); next_registry["revision"] += 1; receipt_id = f"receipt-{next_registry['revision']:06d}-{req['requestId']}"; next_registry["slots"][req["slotId"]] = entry; next_registry["receiptIds"].append(receipt_id); next_registry["latestReceiptId"] = receipt_id
         def mutate(after: Dict[str, Any]) -> None:
             after["skills"][req["slotId"]] = {"slotId": req["slotId"], "skillId": req["skillId"], "sourceVersion": req["versionPin"]["value"], "classification": req["criticality"], "registryReceiptId": receipt_id, "protocol": PROTOCOL, "status": "ACTIVE", "registeredAt": utc_now()}
-        ledger_result = commit_mutation(root, project_id, before, CENTRAL_WRITER, "C11_ACTIVATE_EXTERNAL_SKILL", {"slotId": req["slotId"], "skillId": req["skillId"], "replacesSkillId": req["replacesSkillId"]}, mutate)
+        ledger_result = commit_mutation(root, project_id, before, CENTRAL_WRITER, "C11_ACTIVATE_EXTERNAL_SKILL", {"slotId": req["slotId"], "skillId": req["skillId"], "replacesSkillId": req["replacesSkillId"]}, mutate, caller_thread_ref=args.caller_thread_ref)
         receipt = {"schemaVersion": SCHEMA_VERSION, "recordType": "C11_IMMUTABLE_SKILL_REGISTRY_RECEIPT", "receiptId": receipt_id, "createdAt": utc_now(), "projectId": project_id, "operation": "ACTIVATE_OR_REPLACE", "beforeRegistryDigest": canonical_digest(registry), "afterRegistryDigest": canonical_digest(next_registry), "sourceRequestDigest": digest, "ledgerReceiptId": ledger_result["receiptId"], "afterRegistry": next_registry}
         write_exclusive(receipt_dir(root, project_id) / f"{receipt_id}.json", receipt); write_atomic(registry_path(root, project_id), next_registry)
     return {"status": "EXTERNAL_SKILL_ACTIVE", "slotId": req["slotId"], "skillId": req["skillId"], "replacedSkillId": req["replacesSkillId"], "registryReceiptId": receipt_id, "ledgerReceiptId": ledger_result["receiptId"], "protocol": PROTOCOL, "installationPerformed": False, "invocationPerformed": False, "ledgerUpdated": True, "writePerformed": True}, 0
@@ -190,7 +190,7 @@ def verify(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="C11 external Skill adapter controller"); roots = parser.add_mutually_exclusive_group(required=True); roots.add_argument("--data-root"); roots.add_argument("--config"); parser.add_argument("--project-id", required=True); parser.add_argument("--writer-id")
+    parser = argparse.ArgumentParser(description="C11 external Skill adapter controller"); roots = parser.add_mutually_exclusive_group(required=True); roots.add_argument("--data-root"); roots.add_argument("--config"); parser.add_argument("--project-id", required=True); parser.add_argument("--writer-id"); parser.add_argument("--caller-thread-ref")
     commands = parser.add_subparsers(dest="command", required=True); assess_p = commands.add_parser("assess"); assess_p.add_argument("--request", required=True); activate_p = commands.add_parser("activate"); activate_p.add_argument("--request", required=True); resolve_p = commands.add_parser("resolve"); resolve_p.add_argument("--slot-id", required=True); commands.add_parser("verify"); return parser.parse_args()
 
 

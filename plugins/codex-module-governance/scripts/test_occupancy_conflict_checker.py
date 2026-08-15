@@ -36,6 +36,8 @@ def terra_window_enforcement(evidence_ref="terra-model-proof-001"):
             "profile": ":workspace",
             "method": "PERMISSION_PROFILE_READBACK",
             "evidenceRef": evidence_ref,
+            "writableRoots": ["/tmp/.codex/worktrees/fixture/fictional-project"],
+            "governanceDataRootAccess": "DENIED",
         },
     }
 
@@ -286,7 +288,7 @@ class OccupancyConflictCheckerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             data_root = Path(temporary) / "private-data"
             setup_project(data_root)
-            code, output = c03(data_root, "register-window", "--window-id", "window-existing", "--task-id", TASK_ID, "--context-mode", "NEW", "--runtime-model-evidence-ref", "manual-terra-window-existing", "--runtime-permission-profile", ":workspace", "--runtime-permission-evidence-ref", "manual-permission-window-existing")
+            code, output = c03(data_root, "register-window", "--window-id", "window-existing", "--task-id", TASK_ID, "--context-mode", "NEW", "--runtime-model-evidence-ref", "manual-terra-window-existing", "--runtime-permission-profile", ":workspace", "--runtime-permission-evidence-ref", "manual-permission-window-existing", "--runtime-writable-root", "/tmp/.codex/worktrees/existing/fictional-project", "--governance-data-root-access", "DENIED")
             self.assertEqual(code, 0, output)
             review = create_review(data_root)
             code, output = self.command(data_root, review)

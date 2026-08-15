@@ -36,7 +36,7 @@ def digest(value):
 
 
 def c03(root, command, *args):
-    return invoke(C03, ["--data-root", str(root), "--project-id", PROJECT, "--writer-id", "codex-module-central", command, *args])
+    return invoke(C03, ["--data-root", str(root), "--project-id", PROJECT, "--writer-id", "codex-module-central", "--caller-thread-ref", "central-thread-g1", command, *args])
 
 
 def continuity(root, command, *args, writer=True):
@@ -61,7 +61,7 @@ def setup(root):
         code, output = c03(root, command[0], *command[1:])
         if code != 0:
             raise AssertionError(output)
-    code, output = continuity(root, "initialize", "--central-thread-ref", "central-thread-g1", "--runtime-project-id", "runtime-project-001", "--execution-map-ref", "execution-map-001")
+    code, output = continuity(root, "initialize", "--calling-thread-ref", "central-thread-g1", "--central-thread-ref", "central-thread-g1", "--runtime-project-id", "runtime-project-001", "--execution-map-ref", "execution-map-001")
     if code != 0:
         raise AssertionError(output)
 
@@ -118,6 +118,29 @@ def return_handback(ticket_id="return-ticket-c003-001", handback_id="handback-c0
 
 
 class RoleContinuityTests(unittest.TestCase):
+    def test_initial_central_must_be_the_calling_task_not_a_new_second_central(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "private"
+            code, output = invoke(C02, ["--data-root", str(root), "--project-id", PROJECT, "--display-name", "Continuity demo", "--scope-summary", "Fictional continuity only.", "--apply"])
+            self.assertEqual(code, 0, output)
+            for command in [
+                ("initialize", "--apply"),
+                ("add-task", "--task-id", TASK, "--title", "业务名称", "--business-goal", "Validate fictional continuity.", "--plan-ref", "plan-c003"),
+            ]:
+                code, output = c03(root, command[0], *command[1:])
+                self.assertEqual(code, 0, output)
+            code, output = continuity(
+                root,
+                "initialize",
+                "--calling-thread-ref", "bootstrap-launcher-thread",
+                "--central-thread-ref", "newly-created-second-central",
+                "--runtime-project-id", "runtime-project-001",
+                "--execution-map-ref", "execution-map-001",
+            )
+            self.assertEqual(code, 2)
+            self.assertEqual(output["reason"], "C08C_INITIAL_CENTRAL_MUST_BE_CALLING_THREAD")
+            self.assertFalse((root / "role-continuity" / PROJECT / "routing.json").exists())
+
     def test_first_adjudication_forks_central_and_later_has_one_current_role(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "private"; setup(root)

@@ -50,7 +50,7 @@ RESOURCE_CLASSES = {
 }
 TASK_RUNTIME_MODEL = "gpt-5.6-terra"
 TASK_PERMISSION_CLASS = "WORKTREE_SCOPED"
-ALLOWED_TASK_PERMISSION_PROFILES = {":workspace", "qianyi-task-terra", "workspace-write"}
+ALLOWED_TASK_PERMISSION_PROFILES = {":workspace", "qianyi-task-terra"}
 WINDOW_PERMISSION_METHODS = {
     "PERMISSION_PROFILE_READBACK",
     "LEGACY_WORKSPACE_SANDBOX_READBACK",
@@ -118,6 +118,9 @@ def bounded_permission_is_enforced(window: Dict[str, Any]) -> bool:
         and control.get("method") in WINDOW_PERMISSION_METHODS
         and isinstance(control.get("evidenceRef"), str)
         and bool(control["evidenceRef"].strip())
+        and control.get("governanceDataRootAccess") == "DENIED"
+        and isinstance(control.get("writableRoots"), list)
+        and bool(control["writableRoots"])
     )
 
 
@@ -759,6 +762,7 @@ def evaluate(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
                 data_root, project_id, before_ledger, writer_id, operation,
                 {"reviewId": review["reviewId"], "taskId": review["taskId"], "status": analysis["status"], "conflictCount": len(analysis["conflicts"])},
                 mutate,
+                caller_thread_ref=args.caller_thread_ref,
             )
             after_ledger = load_ledger(data_root, project_id)
         decision = build_decision(
@@ -797,6 +801,7 @@ def parse_args() -> argparse.Namespace:
     root_source.add_argument("--config", help="Private module config JSON containing storage.userDataRoot")
     parser.add_argument("--project-id", required=True)
     parser.add_argument("--writer-id", help=f"The only accepted writer is {CENTRAL_WRITER}")
+    parser.add_argument("--caller-thread-ref")
     commands = parser.add_subparsers(dest="command", required=True)
 
     evaluate_command = commands.add_parser("evaluate")

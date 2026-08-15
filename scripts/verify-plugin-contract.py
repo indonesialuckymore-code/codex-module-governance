@@ -108,16 +108,19 @@ def main():
         fail("bundled central capability registry differs from the product source")
     if manifest.get("repository") != "https://github.com/indonesialuckymore-code/codex-module-governance":
         fail("plugin repository metadata is invalid")
-    if manifest.get("version") != "0.22.0":
-        fail("plugin version must match the v0.22.0 native-runtime release")
+    if manifest.get("version") != "0.22.1":
+        fail("plugin version must match the v0.22.1 new-project repair candidate")
     module_config = json.loads((repo_root / "config" / "module-config.example.json").read_text(encoding="utf-8"))
     permissions = module_config.get("runtimePermissions", {})
     native_runtime = module_config.get("nativeRuntime", {})
     if (
-        module_config.get("schemaVersion") != "0.22.0"
+        module_config.get("schemaVersion") != "0.22.1"
         or permissions.get("taskWindowClass") != "WORKTREE_SCOPED"
         or permissions.get("forbidDangerFullAccess") is not True
         or permissions.get("requireRuntimeEvidence") is not True
+        or permissions.get("allowedTaskProfiles") != [":workspace", "qianyi-task-terra"]
+        or permissions.get("requireDeclaredWritableRoots") is not True
+        or permissions.get("denyGovernanceDataRootAccess") is not True
     ):
         fail("bounded runtime permission contract is missing")
     expected_native = {
@@ -135,6 +138,9 @@ def main():
         fail("native task lifecycle contract is incomplete")
     if native_runtime.get("maxMonitoringBatch") != 8 or native_runtime.get("uiProjectionIsStateSource") is not False:
         fail("native task monitoring or UI-state boundary is invalid")
+    dispatch = module_config.get("dispatch", {})
+    if dispatch.get("newGitTaskProjectBinding") != "LOCAL_BOOTSTRAP_TO_WORKTREE" or dispatch.get("rejectProjectlessTargets") is not True:
+        fail("new Git task project-binding contract is missing")
     print("Plugin manifest, marketplace, and C00-C12/C14 Skill contract preflight passed.")
 
 

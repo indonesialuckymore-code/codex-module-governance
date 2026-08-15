@@ -1,6 +1,6 @@
 {
   "name": "codex-module-governance",
-  "version": "0.22.0",
+  "version": "0.22.1",
   "description": "Private Codex governance with one Boss-facing central entry, native task lifecycle controls, bounded runtime permissions, receipt-backed communication, automatic return inbox and automatic successor dispatch.",
   "author": {
     "name": "QIANYI"
@@ -11,10 +11,10 @@
   "interface": {
     "displayName": "Codex 模块治理",
     "shortDescription": "私有多任务施工治理、建档与工程总账。",
-    "longDescription": "先由唯一总设计师形成全项目施工大纲，再通过唯一可见的“中央工作台”由 Codex 中央一次理清任务、依赖和并行波次；中央与任务窗口以原生任务消息和可验证回执双向通信，任务窗口只把摘要送入中央单槽验收；合法 DONE 后自动续派，每个任务窗口最多承接两项串行任务。所有新任务窗口和一级子 Agent 都必须使用 5.6 Terra 与工作区受限权限，并留下运行凭据；原生标题、分组、置顶和归档只是 C03 状态的界面投影。",
+    "longDescription": "先由唯一总设计师形成全项目施工大纲，再由启动该项目的当前任务窗口成为唯一 CURRENT_CENTRAL，一次理清任务、依赖和并行波次。中央与任务窗口以原生任务消息和可验证回执双向通信；合法 DONE 后自动续派，每个任务窗口最多承接两项串行任务。新 Git 任务先在已保存项目的 local 环境建立归属，再受控交接到标准 worktree。所有任务窗口和一级子 Agent 都必须使用 5.6 Terra、受限权限和明确可写根，且不得访问中央私有治理目录。",
     "developerName": "QIANYI",
     "category": "Productivity",
     "capabilities": ["Reusable construction-outline planning", "One-pass central execution map", "Native thread create, reuse, readback, monitoring and lifecycle projection", "Terra plus bounded-permission runtime gate", "Receipt-backed bidirectional task communication", "Receipt-backed automatic return inbox", "Single-slot independent validation", "Automatic successor dispatch", "Two-task sequential window lifecycle", "Quality-gated proactive sub-agent delegation", "Stable task identity", "Logical central and adjudication roles", "Durable task event inbox", "Planned role handover", "Scoped batch approval", "Dependency-wave dispatch", "Saved-project task binding", "Boss natural-language governance gateway", "Single central governance router", "Two-phase task-window dispatch", "First-level sub-agent control", "External Skill registry and adapters", "Verified module ledger", "Atomic occupancy review", "Independent validation", "Boss-controlled adjudication", "Disconnection recovery control"],
-    "defaultPrompt": "使用中央工作台读取完整冻结大纲和最新总账，一次输出全部任务、Boss 决策、依赖与并行波次；批准后持续自动放行合格任务。任务窗口必须同时通过 Terra、工作区受限权限和保存项目读回；中央与任务窗口的消息必须经 C14 原生投递和收件确认，任务窗口只以回传票据送入单槽验收；保留父窗口质量闸门和全部最终验收。"
+    "defaultPrompt": "把当前任务窗口登记为本项目首代 CURRENT_CENTRAL，不要再创建第二个中央。读取完整冻结大纲和最新总账，一次输出全部任务、Boss 决策、依赖与并行波次；批准后持续自动放行合格任务。任务窗口必须同时通过 Terra、保存项目、明确可写根和中央私有目录拒绝访问读回；中央与任务窗口的消息必须经 C14 原生投递和收件确认。"
   }
 }

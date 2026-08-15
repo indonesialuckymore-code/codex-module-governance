@@ -11,8 +11,9 @@ description: 维护 Codex 模块唯一详细工程总账：登记任务、窗口
 
 1. 确认项目已由 C02 建档，且私有数据目录位于所有 Git 工作树之外。
 2. 确认当前写入者是 `codex-module-central`。Boss、Fable、Claude 中央、任务窗口和子 Agent 都不能直接改账本。
-3. 先读取当前总账和不可变回执，检查同编号、对象占用、任务状态和硬停项。
-4. 若请求来自跨模块交接，只记录交接引用和需要 Boss 的结论，不复制 Claude 的详细任务状态。
+3. 若 C08 已建立角色路由，还必须读取当前原生任务 ID，并与唯一 `CURRENT_CENTRAL` 路由完全匹配。正确 writer 名称但缺少/冒用 `callerThreadRef` 仍必须拒绝。
+4. 先读取当前总账和不可变回执，检查同编号、对象占用、任务状态和硬停项。
+5. 若请求来自跨模块交接，只记录交接引用和需要 Boss 的结论，不复制 Claude 的详细任务状态。
 
 ## 可登记的事实
 
@@ -48,6 +49,7 @@ python3 plugins/codex-module-governance/scripts/ledger_manager.py \
   --data-root "/用户选择的私有目录" \
   --project-id "approved-project-id" \
   --writer-id "codex-module-central" \
+  --caller-thread-ref "CURRENT_CENTRAL原生任务ID" \
   add-task --task-id "C-07" --title "任务标题" \
   --business-goal "已获批准的业务目标" --plan-ref "plan-ref-001"
 ```

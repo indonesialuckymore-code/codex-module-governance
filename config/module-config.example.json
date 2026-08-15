@@ -1,6 +1,6 @@
 {
   "$schema": "../schemas/module-config.schema.json",
-  "schemaVersion": "0.22.0",
+  "schemaVersion": "0.22.1",
   "module": {
     "id": "replace-with-module-id",
     "displayName": "Codex 模块"
@@ -13,9 +13,11 @@
   "runtimePermissions": {
     "taskWindowClass": "WORKTREE_SCOPED",
     "subAgentClass": "WORKTREE_SCOPED",
-    "allowedTaskProfiles": [":workspace", "qianyi-task-terra", "workspace-write"],
+    "allowedTaskProfiles": [":workspace", "qianyi-task-terra"],
     "forbidDangerFullAccess": true,
     "requireRuntimeEvidence": true,
+    "requireDeclaredWritableRoots": true,
+    "denyGovernanceDataRootAccess": true,
     "allowManualUiEvidence": true,
     "autoReviewRequiresInteractiveApproval": true
   },
@@ -97,6 +99,8 @@
     "allowPlanScopedBatchApproval": true,
     "releaseApprovedWavesWhenDependenciesDone": true,
     "requireSavedCodexProjectTarget": true,
+    "newGitTaskProjectBinding": "LOCAL_BOOTSTRAP_TO_WORKTREE",
+    "rejectProjectlessTargets": true,
     "maxThreadsPerMonitoringBatch": 8,
     "greenSharedReadParallel": true,
     "yellowIsolatedWriteAllowed": true,

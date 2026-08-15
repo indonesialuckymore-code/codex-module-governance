@@ -13,14 +13,28 @@
 
 ## 项目首次启动
 
+首次调用“中央工作台”的当前原生任务就是 `CURRENT_CENTRAL G1`。`calling-thread-ref` 与 `central-thread-ref` 必须完全相同；初始化不得另建一个中央窗口。
+
 ```bash
 python3 plugins/codex-module-governance/scripts/role_continuity_controller.py \
   --data-root <私有目录> --project-id <项目ID> \
   --writer-id codex-module-central initialize \
+  --calling-thread-ref <当前调用任务ID> \
   --central-thread-ref <当前中央任务ID> \
   --runtime-project-id <Codex保存项目ID> \
   --execution-map-ref <中央启动图引用>
 ```
+
+路由激活后，任何写 C03 的命令都必须携带当前原生中央任务 ID：
+
+```bash
+python3 plugins/codex-module-governance/scripts/ledger_manager.py \
+  --data-root <私有目录> --project-id <项目ID> \
+  --writer-id codex-module-central \
+  --caller-thread-ref <CURRENT_CENTRAL任务ID> <具体变更命令>
+```
+
+缺少 `caller-thread-ref`、旧中央 ID 或任务窗口 ID 都必须硬停。这不依赖聊天标题判断，而是与 C08 当前角色路由机械对账。
 
 ## 第一次需要中央裁定
 
@@ -63,6 +77,7 @@ python3 plugins/codex-module-governance/scripts/role_continuity_controller.py \
 - 交接包与当前路由或 C03 摘要不一致；
 - 任务 ID、唯一标题、窗口代际任一不一致；
 - 旧中央尝试派工、验收、确认事件或写账；
+- 首次初始化时调用窗口与拟登记中央窗口不是同一原生任务；
 - 事件声称来自未登记窗口；
 - 把聊天送达当成任务状态已经更新。
 

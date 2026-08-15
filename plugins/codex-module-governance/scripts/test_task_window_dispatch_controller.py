@@ -25,8 +25,8 @@ def model_control(method, evidence_ref, model=TERRA):
     return {"model": model, "method": method, "evidenceRef": evidence_ref}
 
 
-def permission_control(evidence_ref, profile=":workspace", method="PERMISSION_PROFILE_READBACK"):
-    return {"permissionClass": "WORKTREE_SCOPED", "profile": profile, "method": method, "evidenceRef": evidence_ref}
+def permission_control(evidence_ref, profile=":workspace", method="PERMISSION_PROFILE_READBACK", writable_roots=None, governance_access="DENIED"):
+    return {"permissionClass": "WORKTREE_SCOPED", "profile": profile, "method": method, "evidenceRef": evidence_ref, "writableRoots": writable_roots or ["/tmp/.codex/worktrees/abcd/fictional-project"], "governanceDataRootAccess": governance_access}
 
 
 def invoke(script, arguments):
@@ -56,7 +56,7 @@ def dispatch_request(agents=None, approved=True, dispatch_id="dispatch-c10-001")
         "runtimeProject": {"codexProjectId": "codex-project-001", "projectPath": "/tmp/fictional-project", "isGitRepository": True, "environment": "WORKTREE"},
         "bossDispatchAuthorization": {
             "status": "APPROVED" if approved else "PENDING",
-            "reference": "boss-dispatch-c10",
+            "reference": "boss-review-001",
             "scope": {"type": "EXECUTION_MAP", "scopeId": "central-plan-001", "scopeDigest": "a" * 64, "waveId": "wave-01", "taskIds": [fixture.TASK_ID]},
         },
         "subAgents": agents or [],
@@ -68,12 +68,15 @@ def prepare(root, payload):
     return invoke(C10, ["--data-root", str(root), "--project-id", fixture.PROJECT_ID, "--writer-id", "codex-module-central", "prepare", "--package-id", fixture.PACKAGE_ID, "--review-id", fixture.REVIEW_ID, "--request", str(path)])
 
 
-def confirmation(window_id="window-c10-001", reused=False, agents=None, project_id="codex-project-001", cwd="/tmp/.codex/worktrees/abcd/fictional-project", environment="WORKTREE", association_method="DIRECT", handoff_refs=None, runtime_ref="thread-c10-001", runtime_title="C-05｜Fictional C-05｜G1", generation=1, model=TERRA, model_method=None, permission_profile=":workspace", permission_method="PERMISSION_PROFILE_READBACK"):
+def confirmation(window_id="window-c10-001", reused=False, agents=None, project_id="codex-project-001", cwd="/tmp/.codex/worktrees/abcd/fictional-project", environment="WORKTREE", association_method=None, handoff_refs=None, runtime_ref="thread-c10-001", runtime_title="C-05｜Fictional C-05｜G1", generation=1, model=TERRA, model_method=None, permission_profile=":workspace", permission_method="PERMISSION_PROFILE_READBACK"):
+    association_method = association_method or ("EXISTING_REGISTERED_WINDOW" if reused else "LOCAL_BOOTSTRAP_TO_WORKTREE" if environment == "WORKTREE" else "DIRECT")
+    if handoff_refs is None:
+        handoff_refs = ["thread-project-local"] if association_method == "LOCAL_BOOTSTRAP_TO_WORKTREE" else []
     window_method = model_method or ("NATIVE_SEND_MESSAGE_MODEL_OVERRIDE" if reused else "NATIVE_CREATE_THREAD_MODEL_PARAMETER")
     normalized_agents = []
     for agent in agents or []:
         normalized_agents.append({**agent, "modelControl": agent.get("modelControl", model_control("NATIVE_SPAWN_AGENT_MODEL_PARAMETER", agent["runtimeAgentRef"])), "permissionControl": agent.get("permissionControl", permission_control(runtime_ref, permission_profile, "INHERITED_FROM_PARENT_WINDOW"))})
-    return {"confirmationSchemaVersion": "0.17.0", "recordType": "C10_RUNTIME_CONFIRMATION", "dispatchId": "dispatch-c10-001", "taskWindow": {"status": "REUSED" if reused else "CREATED", "taskId": fixture.TASK_ID, "runtimeTitle": runtime_title, "generation": generation, "windowId": window_id, "runtimeThreadRef": runtime_ref, "runtimeProjectId": project_id, "runtimeCwd": cwd, "environmentType": environment, "associationMethod": association_method, "associationHandoffRefs": handoff_refs or [], "modelControl": model_control(window_method, runtime_ref, model), "permissionControl": permission_control(runtime_ref, permission_profile, permission_method)}, "subAgents": normalized_agents}
+    return {"confirmationSchemaVersion": "0.17.0", "recordType": "C10_RUNTIME_CONFIRMATION", "dispatchId": "dispatch-c10-001", "taskWindow": {"status": "REUSED" if reused else "CREATED", "taskId": fixture.TASK_ID, "runtimeTitle": runtime_title, "generation": generation, "windowId": window_id, "runtimeThreadRef": runtime_ref, "runtimeProjectId": project_id, "runtimeCwd": cwd, "environmentType": environment, "associationMethod": association_method, "associationHandoffRefs": handoff_refs, "modelControl": model_control(window_method, runtime_ref, model), "permissionControl": permission_control(runtime_ref, permission_profile, permission_method)}, "subAgents": normalized_agents}
 
 
 def confirm(root, value):
@@ -141,7 +144,8 @@ class C10Tests(unittest.TestCase):
             code, output = prepare(root, dispatch_request())
             self.assertEqual(code, 0, output); self.assertEqual(output["trafficLight"], "GREEN"); self.assertFalse(output["dispatchPerformed"])
             self.assertEqual(output["runtimeTarget"], {"type": "project", "projectId": "codex-project-001", "environment": {"type": "worktree"}})
-            self.assertEqual(output["projectAssociationProtocol"]["onMissingProjectId"], "HANDOFF_TO_PROJECT_LOCAL_THEN_RETURN")
+            self.assertEqual(output["projectAssociationProtocol"]["primary"], "CREATE_PROJECT_LOCAL_THEN_HANDOFF_TO_WORKTREE")
+            self.assertEqual(output["projectAssociationProtocol"]["onMissingProjectId"], "STOP_AND_RETIRE_UNCONFIRMED_CANDIDATE")
             self.assertEqual(output["nativeRuntime"]["windowOperation"]["tool"], "codex_app__create_thread")
             self.assertEqual(output["nativeRuntime"]["windowOperation"]["requiredModel"], TERRA)
             self.assertTrue(output["nativeRuntime"]["uiProjectionIsNotTaskState"])
@@ -170,6 +174,14 @@ class C10Tests(unittest.TestCase):
             root = Path(temp) / "private"; setup_ready(root)
             code, output = prepare(root, dispatch_request(approved=False))
             self.assertEqual(code, 2); self.assertEqual(output["reason"], "C10_EXPLICIT_BOSS_DISPATCH_APPROVAL_REQUIRED")
+
+    def test_dispatch_authorization_must_match_the_c05_boss_review(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "private"; setup_ready(root)
+            payload = dispatch_request(); payload["bossDispatchAuthorization"]["reference"] = "different-unbound-approval"
+            code, output = prepare(root, payload)
+            self.assertEqual(code, 2)
+            self.assertEqual(output["reason"], "C10_BOSS_AUTHORIZATION_NOT_BOUND_TO_C05_REVIEW")
 
     def test_task_must_be_inside_batch_authorization_scope(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -240,6 +252,30 @@ class C10Tests(unittest.TestCase):
             code, output = confirm(root, confirmation(permission_profile=":danger-full-access"))
             self.assertEqual(code, 2); self.assertEqual(output["reason"], "C10_DANGER_FULL_ACCESS_FORBIDDEN"); self.assertEqual(before, ledger_path.read_bytes())
 
+    def test_task_window_cannot_receive_the_private_governance_data_root(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "private"; setup_ready(root); self.assertEqual(prepare(root, dispatch_request())[0], 0)
+            payload = confirmation()
+            payload["taskWindow"]["permissionControl"].update({
+                "writableRoots": ["/tmp/.codex/worktrees/abcd/fictional-project", str(root)],
+                "governanceDataRootAccess": "READ_WRITE",
+            })
+            code, output = confirm(root, payload)
+            self.assertEqual(code, 2)
+            self.assertEqual(output["reason"], "C10_GOVERNANCE_DATA_ROOT_EXPOSED_TO_TASK_WINDOW")
+
+    def test_task_window_writable_root_cannot_be_nested_inside_private_governance_data(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "private"; setup_ready(root); self.assertEqual(prepare(root, dispatch_request())[0], 0)
+            payload = confirmation()
+            payload["taskWindow"]["permissionControl"].update({
+                "writableRoots": [str(root / "task-visible-subdirectory")],
+                "governanceDataRootAccess": "DENIED",
+            })
+            code, output = confirm(root, payload)
+            self.assertEqual(code, 2)
+            self.assertEqual(output["reason"], "C10_GOVERNANCE_DATA_ROOT_EXPOSED_TO_TASK_WINDOW")
+
     def test_missing_permission_control_is_refused_without_advancing_task(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "private"; setup_ready(root); self.assertEqual(prepare(root, dispatch_request())[0], 0)
@@ -276,28 +312,39 @@ class C10Tests(unittest.TestCase):
             code, output = confirm(root, confirmation(project_id="wrong-project"))
             self.assertEqual(code, 2); self.assertEqual(output["reason"], "C10_RUNTIME_PROJECT_ASSOCIATION_MISMATCH"); self.assertEqual(before, ledger_path.read_bytes())
 
-    def test_local_handoff_roundtrip_repairs_project_association(self):
+    def test_new_worktree_task_must_bind_saved_project_before_worktree_handoff(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "private"; setup_ready(root)
+            code, plan = prepare(root, dispatch_request())
+            self.assertEqual(code, 0, plan)
+            self.assertEqual(plan["projectAssociationProtocol"]["primary"], "CREATE_PROJECT_LOCAL_THEN_HANDOFF_TO_WORKTREE")
+            self.assertEqual(plan["projectAssociationProtocol"]["requiredMethod"], "LOCAL_BOOTSTRAP_TO_WORKTREE")
+            code, output = confirm(root, confirmation(association_method="DIRECT"))
+            self.assertEqual(code, 2)
+            self.assertEqual(output["reason"], "C10_PROJECT_ASSOCIATION_METHOD_MISMATCH")
+
+    def test_local_bootstrap_then_worktree_handoff_preserves_project_association(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "private"; setup_ready(root); self.assertEqual(prepare(root, dispatch_request())[0], 0)
-            value = confirmation(association_method="LOCAL_HANDOFF_ROUNDTRIP", handoff_refs=["thread-initial", "thread-project-local"], runtime_ref="thread-final-worktree")
+            value = confirmation(association_method="LOCAL_BOOTSTRAP_TO_WORKTREE", handoff_refs=["thread-project-local"], runtime_ref="thread-final-worktree")
             code, output = confirm(root, value)
-            self.assertEqual(code, 0, output); self.assertEqual(output["associationMethod"], "LOCAL_HANDOFF_ROUNDTRIP")
+            self.assertEqual(code, 0, output); self.assertEqual(output["associationMethod"], "LOCAL_BOOTSTRAP_TO_WORKTREE")
             ledger = json.loads((root / "module-ledgers" / fixture.PROJECT_ID / "ledger.json").read_text())
-            self.assertEqual(ledger["windows"]["window-c10-001"]["associationMethod"], "LOCAL_HANDOFF_ROUNDTRIP")
+            self.assertEqual(ledger["windows"]["window-c10-001"]["associationMethod"], "LOCAL_BOOTSTRAP_TO_WORKTREE")
 
-    def test_handoff_repair_requires_two_prior_thread_refs(self):
+    def test_worktree_handoff_requires_one_project_local_thread_ref(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "private"; setup_ready(root); self.assertEqual(prepare(root, dispatch_request())[0], 0)
             ledger_path = root / "module-ledgers" / fixture.PROJECT_ID / "ledger.json"; before = ledger_path.read_bytes()
-            value = confirmation(association_method="LOCAL_HANDOFF_ROUNDTRIP", handoff_refs=["thread-initial"])
+            value = confirmation(association_method="LOCAL_BOOTSTRAP_TO_WORKTREE", handoff_refs=[])
             code, output = confirm(root, value)
             self.assertEqual(code, 2); self.assertEqual(output["reason"], "C10_PROJECT_ASSOCIATION_REPAIR_EVIDENCE_INVALID"); self.assertEqual(before, ledger_path.read_bytes())
 
     def test_direct_association_refuses_false_handoff_evidence(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "private"; setup_ready(root); self.assertEqual(prepare(root, dispatch_request())[0], 0)
-            code, output = confirm(root, confirmation(handoff_refs=["thread-not-used"]))
-            self.assertEqual(code, 2); self.assertEqual(output["reason"], "C10_PROJECT_ASSOCIATION_REPAIR_EVIDENCE_INVALID")
+            code, output = confirm(root, confirmation(association_method="DIRECT", handoff_refs=["thread-not-used"]))
+            self.assertEqual(code, 2); self.assertEqual(output["reason"], "C10_PROJECT_ASSOCIATION_METHOD_MISMATCH")
 
     def test_custom_directory_is_not_accepted_as_project_worktree(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -315,7 +362,7 @@ class C10Tests(unittest.TestCase):
 
     def test_existing_window_is_reused(self):
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp) / "private"; fixture.setup_project(root); code, _ = c03(root, "register-window", "--window-id", "window-existing", "--task-id", fixture.TASK_ID, "--context-mode", "NEW", "--runtime-model-evidence-ref", "manual-terra-window-existing", "--runtime-permission-profile", ":workspace", "--runtime-permission-evidence-ref", "manual-permission-window-existing"); self.assertEqual(code, 0)
+            root = Path(temp) / "private"; fixture.setup_project(root); code, _ = c03(root, "register-window", "--window-id", "window-existing", "--task-id", fixture.TASK_ID, "--context-mode", "NEW", "--runtime-model-evidence-ref", "manual-terra-window-existing", "--runtime-permission-profile", ":workspace", "--runtime-permission-evidence-ref", "manual-permission-window-existing", "--runtime-writable-root", "/tmp/.codex/worktrees/existing/fictional-project", "--governance-data-root-access", "DENIED"); self.assertEqual(code, 0)
             review = fixture.create_review(root); code, _ = invoke(C05, ["--data-root", str(root), "--project-id", fixture.PROJECT_ID, "--writer-id", "codex-module-central", "evaluate", "--package-id", fixture.PACKAGE_ID, "--review", str(review), "--apply"]); self.assertEqual(code, 0)
             prepare(root, dispatch_request()); code, output = confirm(root, confirmation(window_id="window-existing", reused=True))
             self.assertEqual(code, 0, output); self.assertEqual(output["windowId"], "window-existing")

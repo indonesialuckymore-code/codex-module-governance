@@ -68,11 +68,29 @@ runtimeProject:
   defaultEnvironment: WORKTREE
 ```
 
-- Git 项目：创建任务时使用 `target.type=project`、保存的 `projectId` 和 `environment.type=worktree`。
+- Git 项目：新任务第一段使用 `target.type=project`、保存的 `projectId` 和 `environment.type=local`；回读归属后，再以 `LOCAL_BOOTSTRAP_TO_WORKTREE` 交接到同项目标准 worktree。
 - 非 Git 项目：使用 `target.type=project` 和 `environment.type=local`。
 - 不允许 `projectless`，不允许中央自行命名其他物理目录。
-- 创建后回读的 `projectId` 必须一致；Git worktree 目录必须是 Codex 标准 worktree，非 Git 本地目录必须等于保存项目路径。
-- 若 Git worktree 路径正确但回读 `projectId` 为空，C10 对同一任务执行一次原生往返交接：先到保存项目根目录完成项目绑定，再回到原 worktree，最后重新核对项目 ID、目录和最终任务 ID。修复失败保持 `NEEDS_REVIEW`。
+- local 引导阶段回读的 `projectId` 必须一致；若为空，直接停止并退役未确认候选，不得通过反复新建猜测归属。
+- Git 最终 worktree 必须与 local 引导阶段的 `projectId` 相同，目录必须是 Codex 标准 worktree；私有确认保留一个 local 引导引用和一个最终 worktree 引用。非 Git 本地目录必须等于保存项目路径。
+
+## 5.1 任务权限与中央私有数据隔离
+
+每个 C10 运行确认必须回传：
+
+```yaml
+permissionControl:
+  permissionClass: WORKTREE_SCOPED
+  profile: ":workspace"
+  method: NATIVE_RUNTIME_READBACK
+  evidenceRef: ""
+  writableRoots: ["<当前项目或当前worktree绝对路径>"]
+  governanceDataRootAccess: DENIED
+```
+
+- `writableRoots` 不得为空，必须覆盖当前运行目录，且不得包含中央私有治理数据目录。
+- 任务窗口 profile 只允许 `:workspace` 或 `qianyi-task-terra`；通用 `workspace-write` 不再视为可验证隔离。
+- 中央可以读写私有治理数据目录；任务窗口和一级子 Agent 必须是 `DENIED`。这样 C03 的当前中央身份门禁才不会被任务窗口直接修改文件绕过。
 
 ## 6. 范围化批准
 
@@ -95,6 +113,8 @@ authorizationScope:
 ## 6.1 自动续派机器文件
 
 Boss 批准后的运行版必须保存为私有 JSON，并符合 `schemas/codex-approved-execution-map.schema.json`。`scopeDigest` 是对 `executionPlan` 采用排序键、无多余空格的 UTF-8 JSON 计算 SHA-256；C05/C10 输入也必须引用同一个 `bossApprovalRef`、`scopeId`、`scopeDigest` 和完整 `taskIds`。
+
+C04 对每个任务生成的仍是 `DRAFT_REQUIRES_BOSS_REVIEW` 合同，因为 C04 自身不能派发。若它完全位于已批准启动图范围内，同一 `bossApprovalRef` 由 C05 审查并由 C10 再次机械核对，不得逐包重复请 Boss 批准。任务窗口执行 C10 派发单内嵌的 `taskPackage`，不依赖额外“最终包路径”。
 
 ```json
 {

@@ -10,8 +10,8 @@
 | ADR-006 | Codex 可程序化新建逻辑任务/线程；物理新窗口不作保证。 | C12 保留可复制任务包降级方案。 |
 | ADR-007 | 跨模块详细总账不共享；Boss + Fable 5 只维护全局路线与交接摘要。 | C03 只建立 Codex 详细账本；Claude 另有自己的详细账本，双方不共写。 |
 | ADR-008 | C02 的项目启动卡和项目索引仅用于私有建档与重复检查，不是工程总账。 | C02 不记录任务、窗口、证据、对象占用或跨模块状态；不得拿它替代 C03。 |
-| ADR-009 | C03 唯一详细写入者是 `codex-module-central`；Fable、Claude 中央、任务窗口与子 Agent 只能读取或通过交接引用间接回传。 | 避免双中央处理器和多个详细任务状态源；重复完成信号不重复推进。 |
-| ADR-010 | C04 只从 C03 的 `PLANNED` 任务生成待审任务包；任务包不是派发。 | C04 不改变任务状态、不建窗口、不占用对象；Boss 审阅后仍须通过 C05 才可能派发。 |
+| ADR-009 | C03 唯一详细写入者是 `codex-module-central`；C08 路由激活后还必须以当前原生 `callerThreadRef` 匹配唯一 `CURRENT_CENTRAL`。 | 避免双中央处理器、旧中央继续写账和任务窗口冒用 writer 名称；重复完成信号不重复推进。 |
+| ADR-010 | C04 只从 C03 的 `PLANNED` 任务生成不可单独派发的合同草案。 | 若任务已位于 Boss 批准启动图范围，C05 与 C10 复用并机械核对同一 `bossApprovalRef`，不逐包重复请示；C04 仍不自行改状态或占用。 |
 | ADR-011 | C05 复用 C03 唯一占用分区，采用整包原子预留。 | 任一对象冲突时不做部分占用；后启动任务进入 `BLOCKED` 并硬停，安全任务进入 `READY`，但均不实际派发。 |
 | ADR-012 | 跨模块冲突只接收 Fable 交接引用与明确结论，不复制 Claude 细账。 | 保持双模块各自细账，避免形成第三套详细任务中心。 |
 | ADR-013 | C06 是 C03 唯一允许写入 `DONE` 的路径，且采用“中央独立验收 + Boss 最终批准”两段式。 | 任务窗口自报完成、中央验证通过或 Boss 单独批准均不能独自形成 `DONE`。 |
@@ -37,7 +37,7 @@
 | ADR-030 | C00 `construction-outline-planner` 是整个项目总设计师能力；Boss 指定唯一总设计师，同一版本不得由两方同时续编。 | C00 设计全项目但只写大纲草案、冻结版和 `OUTLINE_HANDOFF`；C09/C03 只接管 `CODEX_ONLY` 候选任务，其他模块保留交接引用而不复制细账。 |
 | ADR-031 | C09 首次运营采用一份中央启动图集中承载任务范围、Boss 决策、依赖和并行波次。 | Boss 对唯一摘要的批准可被图内 C03/C04/C05/C10 复用；C03 仍是唯一详细状态源，范围或风险变化使受影响授权失效。 |
 | ADR-032 | C10 新任务必须绑定 Codex 保存项目并回读归属；Git 项目默认标准 worktree。 | 项目 ID、运行环境或目录不符时不得登记 `IN_PROGRESS`；禁止自造目录或 `projectless` 冒充项目任务。 |
-| ADR-033 | Git worktree 目录正确但项目 ID 为空时，对同一任务执行项目本地往返交接修复。 | 先交接到保存项目根目录，再交接回原 worktree；最终项目 ID 与目录同时正确才登记，失败不新建平行任务。 |
+| ADR-033 | 新 Git 任务先以 `project + local` 建立归属，再以 `LOCAL_BOOTSTRAP_TO_WORKTREE` 交接到同项目标准 worktree。 | local 引导或最终回读任一失败即停，不采用“先建空归属 worktree 再往返补救”，也不循环创建平行窗口。 |
 | ADR-034 | 每个项目只有一个 `CURRENT_CENTRAL` 和一个可选的 `CURRENT_ADJUDICATION`；窗口可换代，逻辑角色不变。 | 任务窗口不再永久绑定某个中央聊天 ID；旧代际只读，新代际读交接包和持久事件箱续接。 |
 | ADR-035 | 第一次中央裁定从当前中央复制上下文，后续裁定都留在同一裁定角色；中央只接收裁定影响摘要。 | 裁定讨论不占中央上下文；裁定窗口不能派工、改账、验收或成为第二中央。 |
 | ADR-036 | 任务身份由任务 ID 主导，全链唯一标题为 `任务ID｜业务名称`，运行窗口再加 `｜G代际`。 | 总账、任务包、派发单和运行时回读任一不一致都返回 `TASK_IDENTITY_MISMATCH / NEEDS_REVIEW`，不推进 `IN_PROGRESS`。 |
@@ -48,5 +48,6 @@
 | ADR-041 | 施工回传采用 C08 持久票据收件箱；中央只接收摘要，全项目一次只保留一个隔离 C06 验收槽。 | 聊天文字不构成回传；`returnTicketId + TASK_EVENT_QUEUED` 是最低投递证明。Boss 可一次批准范围内自动送验，但 `DONE` 仍须独立验收后由 Boss 最终批准。 |
 | ADR-042 | C14 是中央与任务窗口的唯一原生消息执行层；C08/C03 仍分别是回传事实源和唯一详细任务状态源。 | 消息状态与任务状态分离：`QUEUED → DELIVERED → ACKNOWLEDGED → APPLIED/REFUSED/BLOCKED`。消息正文只传私有票据指针；换代前未确认的消息重新解析 `CURRENT_CENTRAL`，不得向旧中央盲发。 |
 | ADR-043 | C10 任务窗口与一级子 Agent 强制使用 `gpt-5.6-terra`，并保存原生模型参数或人工选择证据。 | 新建使用 `create_thread(model=Terra)`，复用使用 `send_message_to_thread(model=Terra)`，子 Agent 使用 `spawn_agent(model=Terra)`；Sol/其他模型或缺少模型控制记录不得进入 `IN_PROGRESS`，旧无凭据窗口不得复用。 |
-| ADR-044 | Terra 模型门与 `WORKTREE_SCOPED` 权限门是并列的运行前提。 | `:danger-full-access`、缺权限证据或仅有文字承诺不得进入 `IN_PROGRESS`；一级子 Agent 继承父窗口受限权限。旧窗口可完成当前任务，但无权限凭据时不得承接第二项。 |
+| ADR-044 | Terra 模型门与 `WORKTREE_SCOPED` 权限门是并列的运行前提。 | 任务窗口只允许 `:workspace`/`qianyi-task-terra`，必须声明精确 `writableRoots` 并证明中央私有治理目录 `DENIED`；子 Agent 继承同一边界。旧窗口可完成当前任务，无完整证据时不得承接第二项。 |
 | ADR-045 | Codex 原生任务清单、批量等待、fork/handoff、标题、置顶和归档只投影治理状态，不成为新事实源。 | C03 仍是唯一详细任务状态，C08 管角色连续性和事件箱，C14 管消息送达/确认；界面显示不能倒推 `IN_PROGRESS`、`DONE` 或交接成功。 |
+| ADR-046 | 新项目首次调用“中央工作台”的当前原生任务直接成为 `CURRENT_CENTRAL G1`。 | C08 初始化强制 `callingThreadRef = centralThreadRef`；首次启动不另建第二个中央，后续换代仍按 C08 交接包和唯一活跃路由执行。 |

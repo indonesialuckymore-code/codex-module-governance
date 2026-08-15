@@ -339,7 +339,10 @@ def verify_routing(data_root: Path, project_id: str) -> Dict[str, Any]:
 def initialize(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     data_root = load_data_root(args); project_id = project_ref(args.project_id); require_writer(args.writer_id)
     verified_ledger(data_root, project_id)
+    calling_thread = ref(args.calling_thread_ref, "C08C_CALLING_THREAD_REF_INVALID")
     central_thread = ref(args.central_thread_ref, "C08C_CENTRAL_THREAD_REF_INVALID")
+    if central_thread != calling_thread:
+        raise ContinuityError("C08C_INITIAL_CENTRAL_MUST_BE_CALLING_THREAD")
     runtime_project = ref(args.runtime_project_id, "C08C_RUNTIME_PROJECT_ID_INVALID")
     execution_map = ref(args.execution_map_ref, "C08C_EXECUTION_MAP_REF_INVALID")
     with continuity_lock(data_root, project_id):
@@ -839,7 +842,7 @@ def admit_return(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
                 raise ContinuityError("C08C_RETURN_ADMISSION_INVALID")
             return {"status": "IDEMPOTENT_RETURN_ADMISSION", "returnState": return_ticket_state(data_root, project_id, ticket_id), "returnTicketId": ticket_id, "taskId": submission["taskId"], "writePerformed": False}, 0
         acknowledgement = ensure_return_event_acknowledgement(data_root, project_id, ticket_id, current_thread_ref, admission_ref, routing)
-        signal_result, signal_code = record_completion_signal(argparse.Namespace(data_root=str(data_root), config=None, project_id=project_id, writer_id=CENTRAL_WRITER, task_id=submission["taskId"], signal_id=submission["completionSignalId"]))
+        signal_result, signal_code = record_completion_signal(argparse.Namespace(data_root=str(data_root), config=None, project_id=project_id, writer_id=CENTRAL_WRITER, caller_thread_ref=args.current_thread_ref, task_id=submission["taskId"], signal_id=submission["completionSignalId"]))
         if signal_code != 0:
             raise ContinuityError("C08C_RETURN_COMPLETION_SIGNAL_FAILED")
         artifact = {
@@ -986,7 +989,7 @@ def parse_args() -> argparse.Namespace:
     source = parser.add_mutually_exclusive_group(required=True); source.add_argument("--data-root"); source.add_argument("--config")
     parser.add_argument("--project-id", required=True); parser.add_argument("--writer-id")
     commands = parser.add_subparsers(dest="command", required=True)
-    initialize_parser = commands.add_parser("initialize"); initialize_parser.add_argument("--central-thread-ref", required=True); initialize_parser.add_argument("--runtime-project-id", required=True); initialize_parser.add_argument("--execution-map-ref", required=True)
+    initialize_parser = commands.add_parser("initialize"); initialize_parser.add_argument("--calling-thread-ref", required=True); initialize_parser.add_argument("--central-thread-ref", required=True); initialize_parser.add_argument("--runtime-project-id", required=True); initialize_parser.add_argument("--execution-map-ref", required=True)
     prepare_parser = commands.add_parser("prepare-handover"); prepare_parser.add_argument("--request", required=True)
     activation_parser = commands.add_parser("activate-successor"); activation_parser.add_argument("--handover-id", required=True); activation_parser.add_argument("--activation", required=True)
     event_parser = commands.add_parser("submit-event"); event_parser.add_argument("--event", required=True)

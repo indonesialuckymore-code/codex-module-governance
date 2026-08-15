@@ -16,17 +16,18 @@ description: 在 Boss 对单项任务或中央启动图作出范围化批准且 
 1. `prepare` 验证 C04、C05、C03、Boss 批准和恢复状态，只生成不可覆盖派发单。
 2. 派发单固定任务身份：总账/任务包使用 `任务ID｜业务名称`，Codex 窗口使用 `任务ID｜业务名称｜G代际`。
 3. Codex 运行时按派发单的完整标题创建新任务、发送到旧任务或创建一级子 Agent。新任务必须调用原生 `create_thread` 且明确传入 `model: "gpt-5.6-terra"`；复用旧窗口必须调用原生 `send_message_to_thread` 且明确传入同一 `model`；一级子 Agent 必须用原生 `spawn_agent` 且明确传入同一 `model`。只在提示词里写“请使用 Terra”不算派发。
-4. 只有所有要求的运行时对象都成功、标题/任务 ID/代际完全匹配、返回真实 ID，并同时回传模型控制和权限控制记录后，`confirm` 才登记窗口和子 Agent，并把任务从 `READY` 推进为 `IN_PROGRESS`。权限必须为 `WORKTREE_SCOPED`，允许 `:workspace`、`qianyi-task-terra` 或兼容旧运行时的 `workspace-write`；完整访问一律拒绝。
-5. Sol、Luna、缺少模型/权限控制记录、方法不匹配、`danger-full-access` 或部分创建，都不得更新总账；报告对应的 `C10_* / NEEDS_REVIEW`。已产生的孤立对象应交 C08 冻结或收回，不能冒充合格窗口。
+4. 只有所有要求的运行时对象都成功、标题/任务 ID/代际完全匹配、返回真实 ID，并同时回传模型控制和权限控制记录后，`confirm` 才登记窗口和子 Agent，并把任务从 `READY` 推进为 `IN_PROGRESS`。权限必须为 `WORKTREE_SCOPED`，profile 只允许 `:workspace` 或 `qianyi-task-terra`，必须列出唯一任务可写根，并记录 `governanceDataRootAccess=DENIED`；完整访问和通用 `workspace-write` 一律拒绝。
+5. Sol、Luna、缺少模型/权限控制记录、方法不匹配、可写根包含中央私有目录、`danger-full-access` 或部分创建，都不得更新总账；报告对应的 `C10_* / NEEDS_REVIEW`。已产生的孤立对象应交 C08 冻结或收回，不能冒充合格窗口。
 6. 如果当前 Codex 表面不能自动创建任务，`export-fallback` 只生成可复制任务包交 Boss 手工建窗；Boss 必须先在模型菜单选择 **5.6 Terra**，把权限设为工作区受限并关闭完整访问，保留两项证据，随后分别以 `MANUAL_UI_TERRA_SELECTION_EVIDENCE` 和 `MANUAL_UI_PERMISSION_EVIDENCE` 完成 C10 确认。没有该手工包与证据，手工窗口不得登记。
 
 ## 权限门禁
 
 1. Terra 管“由什么模型施工”，权限门禁管“它可以碰到哪里”；两者缺一不可。
 2. 任务窗口必须是 `WORKTREE_SCOPED`。`danger-full-access`、`full-access`、缺证据或只有提示词承诺均禁止进入 `IN_PROGRESS`。
-3. 一级子 Agent 默认继承父任务窗口的受限权限；回执必须引用父窗口运行身份，且 profile 完全一致。若运行时能提供独立读回，也可用独立权限回执。
-4. 旧窗口即使有 Terra 凭据，只要没有权限凭据，就不得承接第二项任务；允许完成当前任务，但下一项应新开合格窗口。
-5. Codex 权限 Profile 仍属运行时能力；C10 只验收真实读回/界面证据，不把配置文件文本当成已生效事实。
+3. 权限回执必须同时包含 `profile`、`method`、`evidenceRef`、`writableRoots`和 `governanceDataRootAccess`。`writableRoots` 必须是非空绝对路径列表，当前运行目录必须位于其中；中央私有治理目录不得落入任一可写根。
+4. 一级子 Agent 默认继承父任务窗口的受限权限；回执必须引用父窗口运行身份，且 profile 和 `writableRoots` 完全一致。若运行时能提供独立读回，也可用独立权限回执。
+5. 旧窗口即使有 Terra 凭据，只要没有完整权限边界凭据，就不得承接第二项任务；允许完成当前任务，但下一项应新开合格窗口。
+6. Codex 权限 Profile 仍属运行时能力；C10 只验收真实读回/界面证据，不把配置文件文本当成已生效事实。
 
 ## 窗口两任务上限
 
@@ -42,6 +43,7 @@ description: 在 Boss 对单项任务或中央启动图作出范围化批准且 
 
 - C10 接受 `SINGLE_TASK` 或 `EXECUTION_MAP` 两种批准范围。
 - `EXECUTION_MAP` 必须包含启动图 ID、SHA-256、当前波次和全部获批任务 ID；当前任务不在清单中就拒绝。
+- C05 `bossReview.reference` 必须与 C10 `bossApprovalRef` 完全相同。C04 任务包仍是不可单独派发的草案；实际施工合同由 C10 派发单内嵌给任务窗口，不要另找不存在的“最终任务包”。
 - 同一波所有任务先分别通过 C04、C05 和 `prepare`，再批量调用运行时；某个任务失败不把其他已真实成功且无冲突的任务伪装成失败，但失败项不得写入 `IN_PROGRESS`。
 - 后续波次复用原启动图批准，但仍要验证前置任务已由 C06 + Boss 确认为 `DONE`，并重新运行 C05。
 - C06 返回 `successorDispatch.required=true` 时，中央直接准备并真实派发所有新近合格任务；范围未变化时不再向 Boss 请求“下一项”批准。
@@ -49,12 +51,11 @@ description: 在 Boss 对单项任务或中央启动图作出范围化批准且 
 ## 项目归属门禁
 
 1. 派发前先读取 Codex 保存项目清单，用保存路径匹配唯一项目 ID。
-2. Git 项目默认用 `project + worktree`；非 Git 项目用 `project + local`。禁止 `projectless` 和中央自造任务目录。
-3. 派发单必须记录 `runtimeTarget`，运行时严格照此创建，不得另传自定义目录。
-4. 创建后回读真实 `projectId`、工作目录和运行环境：Git 必须是 Codex 标准 worktree 且目录名与项目一致；本地模式必须等于保存项目路径。
-5. Git worktree 目录正确但 `projectId` 为空时，不要重新创建平行任务：对同一任务执行一次原生交接到保存项目根目录，回读正确项目 ID 后再交接回原 worktree，最后再次回读项目 ID 和目录。
-6. 往返交接后的最终任务必须同时满足正确 `projectId` 和标准 worktree 路径；私有确认中保留初始、项目本地和最终任务引用，C03 只登记最终任务引用及修复方式。
-7. 项目或目录仍不匹配时，不写 C03、不推进任务，报告 `PROJECT_ASSOCIATION_MISMATCH / NEEDS_REVIEW`。
+2. 新 Git 任务不直接创建 worktree 候选。第一段固定使用 `project + local`，并读回正确 `projectId`；非 Git 项目到此完成。
+3. Git 任务第二段将这个逻辑派发受控交接到同一保存项目的标准 worktree，方法固定为 `LOCAL_BOOTSTRAP_TO_WORKTREE`。私有确认保留唯一 local 引导任务引用和唯一最终 worktree 任务引用，C03 只登记最终引用。
+4. 派发单必须同时记录 `initialTarget` 和 `finalTarget`，运行时严格照此执行，不得另传自定义目录、`projectless` 或新项目 ID。
+5. 最终回读必须同时满足：`projectId` 与引导阶段相同、Git 目录是 Codex 标准 worktree、任务 ID 真实且与标题一致、Terra 和权限证据完整。
+6. 第一段 `projectId` 为空、交接失败或最终不匹配时，立即报告 `PROJECT_ASSOCIATION_MISMATCH / NEEDS_REVIEW`，将未确认候选交 C08 冻结/退役，不循环创建更多窗口。
 
 “同一项目”指 Codex 左栏归入同一个项目。Git 并行任务仍使用不同 worktree 物理目录，这是本地文件隔离，不是跑到另一个项目。
 

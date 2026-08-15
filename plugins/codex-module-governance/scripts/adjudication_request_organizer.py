@@ -344,6 +344,7 @@ def prepare(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         ledger_result = commit_mutation(
             data_root, project_id, ledger, CENTRAL_WRITER, "C07_RECORD_ADJUDICATION_REQUEST",
             {"requestId": request["requestId"], "taskId": request["taskId"], "taskStatusUnchanged": before_status}, mutate,
+            caller_thread_ref=args.caller_thread_ref,
         )
         mutation = mutation_summary(ledger_result, data_root, project_id)
         artifact = {
@@ -461,7 +462,7 @@ def record_advice(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             target_entry = after["adjudications"][request_id]
             target_entry.update({"stage": "ADVICE_RECEIVED", "adviceRef": request_id, "adviceRecordedAt": utc_now()})
 
-        ledger_result = commit_mutation(data_root, project_id, ledger, CENTRAL_WRITER, "C07_RECORD_ADVISORY_OPINION", {"requestId": request_id, "taskStatusUnchanged": task_status}, mutate)
+        ledger_result = commit_mutation(data_root, project_id, ledger, CENTRAL_WRITER, "C07_RECORD_ADVISORY_OPINION", {"requestId": request_id, "taskStatusUnchanged": task_status}, mutate, caller_thread_ref=args.caller_thread_ref)
         mutation = mutation_summary(ledger_result, data_root, project_id)
         artifact = {
             "schemaVersion": SCHEMA_VERSION, "recordType": "C07_ADVISORY_OPINION_FOR_BOSS",
@@ -559,7 +560,7 @@ def record_boss_decision(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]
                 "bossDecisionStatus": decision["status"], "bossDecisionRecordedAt": utc_now(),
             })
 
-        ledger_result = commit_mutation(data_root, project_id, ledger, CENTRAL_WRITER, "C07_RECORD_BOSS_ADJUDICATION_DECISION", {"requestId": request_id, "decisionStatus": decision["status"], "taskStatusUnchanged": task_status}, mutate)
+        ledger_result = commit_mutation(data_root, project_id, ledger, CENTRAL_WRITER, "C07_RECORD_BOSS_ADJUDICATION_DECISION", {"requestId": request_id, "decisionStatus": decision["status"], "taskStatusUnchanged": task_status}, mutate, caller_thread_ref=args.caller_thread_ref)
         mutation = mutation_summary(ledger_result, data_root, project_id)
         artifact = {
             "schemaVersion": SCHEMA_VERSION, "recordType": "C07_BOSS_ADJUDICATION_DECISION",
@@ -680,6 +681,7 @@ def parse_args() -> argparse.Namespace:
     root_source.add_argument("--config")
     parser.add_argument("--project-id", required=True)
     parser.add_argument("--writer-id")
+    parser.add_argument("--caller-thread-ref")
     commands = parser.add_subparsers(dest="command", required=True)
     prepare_parser = commands.add_parser("prepare")
     prepare_parser.add_argument("--request", required=True)

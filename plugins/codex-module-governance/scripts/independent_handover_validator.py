@@ -677,6 +677,7 @@ def assess(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             ledger_result = commit_mutation(
                 data_root, project_id, before, writer_id, operation,
                 {"validationId": review["validationId"], "taskId": handback["taskId"], "outcome": outcome}, mutate,
+                caller_thread_ref=args.caller_thread_ref,
             )
             after = load_ledger(data_root, project_id)
         decision = build_decision(
@@ -840,6 +841,7 @@ def finalize(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             ledger_result = commit_mutation(
                 data_root, project_id, before, writer_id, operation,
                 {"validationId": validation_id, "taskId": decision["taskId"], "bossDecision": boss_decision}, mutate,
+                caller_thread_ref=args.caller_thread_ref,
             )
             after = load_ledger(data_root, project_id)
         window_after = after["windows"][decision["windowId"]]
@@ -915,6 +917,7 @@ def parse_args() -> argparse.Namespace:
     root_source.add_argument("--config")
     parser.add_argument("--project-id", required=True)
     parser.add_argument("--writer-id")
+    parser.add_argument("--caller-thread-ref")
     commands = parser.add_subparsers(dest="command", required=True)
 
     assess_command = commands.add_parser("assess")

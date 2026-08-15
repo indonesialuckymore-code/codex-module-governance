@@ -489,6 +489,7 @@ def continue_successors(args: argparse.Namespace, registry: Dict[str, Any]) -> D
             try:
                 c05_preview, c05_preview_code = evaluate_occupancy(argparse.Namespace(
                     data_root=str(data_root), config=None, project_id=project_id, writer_id=CENTRAL_WRITER,
+                    caller_thread_ref=args.caller_thread_ref,
                     command="evaluate", package_id=item["packageId"], review=str(review_path), dry_run=True, apply=False,
                 ))
             except (LedgerError, OccupancyError, TaskPackageError, ValueError) as error:
@@ -506,6 +507,7 @@ def continue_successors(args: argparse.Namespace, registry: Dict[str, Any]) -> D
             try:
                 c05_result, c05_code = evaluate_occupancy(argparse.Namespace(
                     data_root=str(data_root), config=None, project_id=project_id, writer_id=CENTRAL_WRITER,
+                    caller_thread_ref=args.caller_thread_ref,
                     command="evaluate", package_id=item["packageId"], review=str(review_path), dry_run=False, apply=True,
                 ))
             except (LedgerError, OccupancyError, TaskPackageError, ValueError) as error:
@@ -621,6 +623,7 @@ def parse_args() -> argparse.Namespace:
     successor_parser.add_argument("--validation-id", required=True)
     successor_parser.add_argument("--execution-map", required=True)
     successor_parser.add_argument("--writer-id", required=True)
+    successor_parser.add_argument("--caller-thread-ref", required=True)
     return parser.parse_args()
 
 

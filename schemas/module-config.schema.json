@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schemaVersion", "module", "models", "runtimePermissions", "nativeRuntime", "subAgentPolicy", "storage", "projectInitialization", "ledger", "occupancy", "validation", "adjudication", "recovery", "centralIntegration", "dispatch", "externalSkills", "naturalLanguageGateway", "publishing"],
   "properties": {
-    "schemaVersion": { "const": "0.22.0" },
+    "schemaVersion": { "const": "0.22.1" },
     "module": {
       "type": "object",
       "additionalProperties": false,
@@ -29,24 +29,25 @@
     "runtimePermissions": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["taskWindowClass", "subAgentClass", "allowedTaskProfiles", "forbidDangerFullAccess", "requireRuntimeEvidence", "allowManualUiEvidence", "autoReviewRequiresInteractiveApproval"],
+      "required": ["taskWindowClass", "subAgentClass", "allowedTaskProfiles", "forbidDangerFullAccess", "requireRuntimeEvidence", "requireDeclaredWritableRoots", "denyGovernanceDataRootAccess", "allowManualUiEvidence", "autoReviewRequiresInteractiveApproval"],
       "properties": {
         "taskWindowClass": { "const": "WORKTREE_SCOPED" },
         "subAgentClass": { "const": "WORKTREE_SCOPED" },
         "allowedTaskProfiles": {
           "type": "array",
-          "minItems": 3,
-          "maxItems": 3,
+          "minItems": 2,
+          "maxItems": 2,
           "uniqueItems": true,
-          "items": { "enum": [":workspace", "qianyi-task-terra", "workspace-write"] },
+          "items": { "enum": [":workspace", "qianyi-task-terra"] },
           "allOf": [
             { "contains": { "const": ":workspace" } },
-            { "contains": { "const": "qianyi-task-terra" } },
-            { "contains": { "const": "workspace-write" } }
+            { "contains": { "const": "qianyi-task-terra" } }
           ]
         },
         "forbidDangerFullAccess": { "const": true },
         "requireRuntimeEvidence": { "const": true },
+        "requireDeclaredWritableRoots": { "const": true },
+        "denyGovernanceDataRootAccess": { "const": true },
         "allowManualUiEvidence": { "const": true },
         "autoReviewRequiresInteractiveApproval": { "const": true }
       }
@@ -177,12 +178,14 @@
     "dispatch": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["requireTwoPhaseRuntimeConfirmation", "allowPlanScopedBatchApproval", "releaseApprovedWavesWhenDependenciesDone", "requireSavedCodexProjectTarget", "maxThreadsPerMonitoringBatch", "greenSharedReadParallel", "yellowIsolatedWriteAllowed", "redConflictHardStop", "subAgentsReturnToParentWindowOnly", "allowSubAgentDoneDeclaration", "parentMustReadCriticalEvidence", "noRawSubAgentOutputConcatenation"],
+      "required": ["requireTwoPhaseRuntimeConfirmation", "allowPlanScopedBatchApproval", "releaseApprovedWavesWhenDependenciesDone", "requireSavedCodexProjectTarget", "newGitTaskProjectBinding", "rejectProjectlessTargets", "maxThreadsPerMonitoringBatch", "greenSharedReadParallel", "yellowIsolatedWriteAllowed", "redConflictHardStop", "subAgentsReturnToParentWindowOnly", "allowSubAgentDoneDeclaration", "parentMustReadCriticalEvidence", "noRawSubAgentOutputConcatenation"],
       "properties": {
         "requireTwoPhaseRuntimeConfirmation": { "const": true },
         "allowPlanScopedBatchApproval": { "const": true },
         "releaseApprovedWavesWhenDependenciesDone": { "const": true },
         "requireSavedCodexProjectTarget": { "const": true },
+        "newGitTaskProjectBinding": { "const": "LOCAL_BOOTSTRAP_TO_WORKTREE" },
+        "rejectProjectlessTargets": { "const": true },
         "maxThreadsPerMonitoringBatch": { "const": 8 },
         "greenSharedReadParallel": { "const": true },
         "yellowIsolatedWriteAllowed": { "const": true },

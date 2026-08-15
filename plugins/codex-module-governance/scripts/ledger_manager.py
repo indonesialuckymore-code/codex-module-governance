@@ -26,11 +26,13 @@ MAX_TASKS_PER_WINDOW = 2
 TASK_RUNTIME_MODEL = "gpt-5.6-terra"
 MANUAL_WINDOW_MODEL_METHOD = "MANUAL_UI_TERRA_SELECTION_EVIDENCE"
 TASK_PERMISSION_CLASS = "WORKTREE_SCOPED"
-ALLOWED_TASK_PERMISSION_PROFILES = {":workspace", "qianyi-task-terra", "workspace-write"}
+ALLOWED_TASK_PERMISSION_PROFILES = {":workspace", "qianyi-task-terra"}
 MANUAL_WINDOW_PERMISSION_METHOD = "MANUAL_UI_PERMISSION_EVIDENCE"
 LEDGERS_DIRECTORY = Path("module-ledgers")
 LEDGER_FILENAME = "ledger.json"
 RECEIPTS_DIRECTORY = "receipts"
+ROLE_CONTINUITY_DIRECTORY = Path("role-continuity")
+ROLE_ROUTING_FILENAME = "routing.json"
 TASK_ID_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{2,127}$")
 REFERENCE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
 TASK_TRANSITIONS = {
@@ -286,6 +288,43 @@ def require_writer(writer_id: Optional[str]) -> str:
     return writer_id
 
 
+def require_current_central_thread(
+    data_root: Path,
+    project_id: str,
+    caller_thread_ref: Optional[str],
+) -> Optional[str]:
+    """Bind every post-C08 ledger write to the one active central task.
+
+    Before C08 routing exists, C02/C03 bootstrap remains backwards compatible.
+    Once routing is active, the generic writer name is no longer sufficient:
+    the native Codex task id must match CURRENT_CENTRAL.activeThreadRef.
+    """
+    path = data_root / ROLE_CONTINUITY_DIRECTORY / project_id / ROLE_ROUTING_FILENAME
+    if not path.is_file():
+        return None
+    try:
+        routing = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raise LedgerError("C08_CURRENT_CENTRAL_ROUTING_INVALID")
+    central = routing.get("roles", {}).get("CURRENT_CENTRAL") if isinstance(routing, dict) else None
+    active_thread_ref = central.get("activeThreadRef") if isinstance(central, dict) else None
+    if (
+        routing.get("recordType") != "C08_ROLE_ROUTING"
+        or routing.get("projectId") != project_id
+        or not isinstance(central, dict)
+        or central.get("status") != "ACTIVE"
+        or not isinstance(active_thread_ref, str)
+        or not active_thread_ref.strip()
+    ):
+        raise LedgerError("C08_CURRENT_CENTRAL_ROUTING_INVALID")
+    if not isinstance(caller_thread_ref, str) or not caller_thread_ref.strip():
+        raise LedgerError("LEDGER_CALLER_THREAD_REQUIRED")
+    caller = caller_thread_ref.strip()
+    if caller != active_thread_ref:
+        raise LedgerError("LEDGER_CALLER_NOT_CURRENT_CENTRAL")
+    return caller
+
+
 def receipt_id_for(ledger: Dict[str, Any]) -> str:
     return f"receipt-{ledger['revision'] + 1:06d}-{uuid.uuid4().hex[:12]}"
 
@@ -298,7 +337,9 @@ def commit_mutation(
     operation: str,
     change_summary: Dict[str, Any],
     mutate,
+    caller_thread_ref: Optional[str] = None,
 ) -> Dict[str, Any]:
+    caller = require_current_central_thread(data_root, project_id, caller_thread_ref)
     recovery_state = ledger.get("recovery", {}).get("state", "UNKNOWN")
     if recovery_state not in {"NORMAL", "CLOSED"} and not operation.startswith("C08_"):
         raise LedgerError("LEDGER_RECOVERY_FREEZE_ACTIVE")
@@ -318,6 +359,7 @@ def commit_mutation(
         "projectId": project_id,
         "module": MODULE,
         "writerId": writer_id,
+        "callerThreadRef": caller,
         "operation": operation,
         "beforeRevision": before["revision"],
         "afterRevision": after["revision"],
@@ -414,7 +456,16 @@ def mutate_ledger(args: argparse.Namespace, operation: str, change_summary: Dict
     writer_id = require_writer(args.writer_id)
     with ledger_lock(data_root, project_id):
         ledger = load_ledger(data_root, project_id)
-        return commit_mutation(data_root, project_id, ledger, writer_id, operation, change_summary, mutate), 0
+        return commit_mutation(
+            data_root,
+            project_id,
+            ledger,
+            writer_id,
+            operation,
+            change_summary,
+            mutate,
+            caller_thread_ref=args.caller_thread_ref,
+        ), 0
 
 
 def add_task(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
@@ -488,7 +539,16 @@ def record_completion_signal(args: argparse.Namespace) -> Tuple[Dict[str, Any], 
             target["status"] = "NEEDS_REVIEW"
             target["history"].append({"at": utc_now(), "event": "COMPLETION_SIGNAL_RECEIVED", "signalId": signal_id, "to": "NEEDS_REVIEW", "by": CENTRAL_WRITER})
 
-        return commit_mutation(data_root, project_id, ledger, writer_id, "RECORD_COMPLETION_SIGNAL", {"taskId": task_id, "signalId": signal_id, "toStatus": "NEEDS_REVIEW"}, mutate), 0
+        return commit_mutation(
+            data_root,
+            project_id,
+            ledger,
+            writer_id,
+            "RECORD_COMPLETION_SIGNAL",
+            {"taskId": task_id, "signalId": signal_id, "toStatus": "NEEDS_REVIEW"},
+            mutate,
+            caller_thread_ref=args.caller_thread_ref,
+        ), 0
 
 
 def register_window(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
@@ -502,13 +562,24 @@ def register_window(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         model_evidence_ref = require_opaque_reference(args.runtime_model_evidence_ref, "WINDOW_RUNTIME_MODEL_EVIDENCE_INVALID")
     permission_profile = args.runtime_permission_profile
     permission_evidence_ref = args.runtime_permission_evidence_ref
-    if (permission_profile is None) != (permission_evidence_ref is None):
+    writable_roots = args.runtime_writable_root or []
+    governance_access = args.governance_data_root_access
+    if len({permission_profile is None, permission_evidence_ref is None, not writable_roots, governance_access is None}) != 1:
         raise LedgerError("WINDOW_RUNTIME_PERMISSION_EVIDENCE_INCOMPLETE")
     if permission_profile is not None:
         permission_profile = require_text(permission_profile, "WINDOW_RUNTIME_PERMISSION_PROFILE_INVALID", 80)
         if permission_profile not in ALLOWED_TASK_PERMISSION_PROFILES:
             raise LedgerError("WINDOW_RUNTIME_PERMISSION_PROFILE_INVALID")
         permission_evidence_ref = require_opaque_reference(permission_evidence_ref, "WINDOW_RUNTIME_PERMISSION_EVIDENCE_INVALID")
+        if str(governance_access).strip().upper() != "DENIED":
+            raise LedgerError("WINDOW_GOVERNANCE_DATA_ROOT_MUST_BE_DENIED")
+        normalized_roots = []
+        for raw_root in writable_roots:
+            candidate = Path(raw_root).expanduser()
+            if not candidate.is_absolute() or ".." in candidate.parts:
+                raise LedgerError("WINDOW_RUNTIME_WRITABLE_ROOT_INVALID")
+            normalized_roots.append(str(candidate.resolve()))
+        writable_roots = normalized_roots
 
     def mutate(ledger: Dict[str, Any]) -> None:
         if window_id in ledger["windows"]:
@@ -567,6 +638,8 @@ def register_window(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
                 "profile": permission_profile,
                 "method": MANUAL_WINDOW_PERMISSION_METHOD,
                 "evidenceRef": permission_evidence_ref,
+                "writableRoots": writable_roots,
+                "governanceDataRootAccess": "DENIED",
                 "confirmedAt": utc_now(),
             }
         ledger["windows"][window_id] = window
@@ -744,6 +817,10 @@ def parse_args() -> argparse.Namespace:
     root_source.add_argument("--config", help="Private module config JSON containing storage.userDataRoot")
     parser.add_argument("--project-id", required=True)
     parser.add_argument("--writer-id", help=f"The only accepted writer is {CENTRAL_WRITER}")
+    parser.add_argument(
+        "--caller-thread-ref",
+        help="Native Codex task id; required for writes after C08 CURRENT_CENTRAL routing is active",
+    )
     commands = parser.add_subparsers(dest="command", required=True)
 
     initialize = commands.add_parser("initialize")
@@ -773,6 +850,8 @@ def parse_args() -> argparse.Namespace:
     window.add_argument("--runtime-model-evidence-ref")
     window.add_argument("--runtime-permission-profile")
     window.add_argument("--runtime-permission-evidence-ref")
+    window.add_argument("--runtime-writable-root", action="append")
+    window.add_argument("--governance-data-root-access")
 
     sub_agent = commands.add_parser("register-sub-agent")
     sub_agent.add_argument("--sub-agent-id", required=True)

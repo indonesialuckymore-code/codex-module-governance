@@ -33,7 +33,14 @@
 
 ## Git 任务如何稳定归入项目
 
-中央先按保存项目 ID 创建标准 worktree，然后同时回读项目 ID 和目录。现场实测表明，个别新初始化项目会出现“worktree 目录正确但项目 ID 为空”的状态，此时任务仍可能显示在“最近”。C10 不重建任务，而是把同一任务原生交接到保存项目根目录完成绑定，再交接回原 worktree。只有最终项目 ID 和 worktree 路径同时正确，才登记 `IN_PROGRESS`。
+中央先按保存项目 ID 在 `project + local` 环境创建引导任务，当场回读项目 ID。Git 任务在第二段以 `LOCAL_BOOTSTRAP_TO_WORKTREE` 交接到同项目标准 worktree，最后再回读项目 ID、目录、真实任务 ID、标题和 Terra。任一阶段为空或不匹配都不登记 `IN_PROGRESS`，也不反复创建平行候选窗口。
+
+## 任务窗口与中央数据隔离
+
+- 任务权限 profile 只允许 `:workspace` 或 `qianyi-task-terra`。
+- 运行确认必须列出唯一项目/worktree 可写根，当前运行目录必须在其中。
+- 中央私有治理数据目录必须显示 `DENIED`；若全局可写根包含该目录，任务保持 `PENDING_RUNTIME_CONFIRMATION`。
+- 这是中央唯一写账的文件层保险；仅校验 writer 名称或提示词不足以隔离任务窗口。
 
 ## 子 Agent：提高速度，不降低验收
 
@@ -45,7 +52,7 @@
 
 ## 平台不能自动建窗时
 
-中央对已批准派发单运行 `export-fallback`，生成一个可复制的私有任务包。这个降级包不会把任务推进为 `IN_PROGRESS`，不会登记虚假的窗口 ID，也不会改变对象占用；Boss 把内容复制到手工新建的 Codex 任务前，必须在模型菜单选择 **5.6 Terra** 并保留可核对证据。之后仍须用真实任务 ID 和 `MANUAL_UI_TERRA_SELECTION_EVIDENCE` 完成 C10 第二阶段确认。
+中央对已批准派发单运行 `export-fallback`，生成一个可复制的私有任务包。这个降级包不会把任务推进为 `IN_PROGRESS`，不会登记虚假的窗口 ID，也不会改变对象占用；Boss 手工建立时必须选择 **5.6 Terra**、使用已保存项目并保留真实任务 ID。之后仍须用 `MANUAL_UI_TERRA_SELECTION_EVIDENCE`、`MANUAL_UI_PERMISSION_EVIDENCE`、唯一可写根和 `governanceDataRootAccess=DENIED` 完成 C10 第二阶段确认。
 
 ## 验收
 

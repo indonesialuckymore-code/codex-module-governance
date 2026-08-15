@@ -303,7 +303,7 @@ def freeze(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
                     task["status"] = "BLOCKED"
                     task["history"].append({"at": utc_now(), "event": "C08_DISCONNECTION_FROZEN", "caseId": incident["caseId"], "from": source, "to": "BLOCKED", "by": CENTRAL_WRITER})
 
-        result = commit_mutation(data_root, project_id, before, CENTRAL_WRITER, "C08_FREEZE_DISCONNECTED_CONTEXT", {"caseId": incident["caseId"], "incidentType": incident["incidentType"], "occupancyReleased": False}, mutate)
+        result = commit_mutation(data_root, project_id, before, CENTRAL_WRITER, "C08_FREEZE_DISCONNECTED_CONTEXT", {"caseId": incident["caseId"], "incidentType": incident["incidentType"], "occupancyReleased": False}, mutate, caller_thread_ref=args.caller_thread_ref)
         mutation = ledger_mutation(result, data_root, project_id)
         artifact = {
             "schemaVersion": SCHEMA_VERSION, "recordType": "C08_FROZEN_RECOVERY_SNAPSHOT",
@@ -360,7 +360,7 @@ def takeover(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         def mutate(after: Dict[str, Any]) -> None:
             after["recovery"].update({"state": "CENTRAL_CONTROL_RECOVERED", "successorInstanceRef": takeover_input["successorInstanceRef"], "controlRecoveredAt": utc_now(), "businessExecutionResumed": False})
 
-        result = commit_mutation(data_root, project_id, before, CENTRAL_WRITER, "C08_RECOVER_CENTRAL_CONTROL", {"caseId": case_id, "recoveryEpoch": recovery["recoveryEpoch"], "businessExecutionResumed": False}, mutate)
+        result = commit_mutation(data_root, project_id, before, CENTRAL_WRITER, "C08_RECOVER_CENTRAL_CONTROL", {"caseId": case_id, "recoveryEpoch": recovery["recoveryEpoch"], "businessExecutionResumed": False}, mutate, caller_thread_ref=args.caller_thread_ref)
         mutation = ledger_mutation(result, data_root, project_id)
         artifact = {"schemaVersion": SCHEMA_VERSION, "recordType": "C08_CENTRAL_TAKEOVER", "createdAt": utc_now(), "projectId": project_id, **takeover_input, "sourceInputDigest": input_digest, "freezeDigest": canonical_digest(freeze_artifact), "recoveryEpoch": recovery["recoveryEpoch"], "ledgerOperation": "C08_RECOVER_CENTRAL_CONTROL", "ledgerMutation": mutation, "boundary": {"governanceControlRecovered": True, "businessExecutionResumed": False, "occupancyReleased": False, "newDispatchAllowed": False}}
         persist_stage(data_root, project_id, case_id, "takeover", "C08_RECOVER_CENTRAL_CONTROL", artifact)
@@ -411,7 +411,7 @@ def decide(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
                 for agent_id in freeze_artifact["affectedContext"]["subAgentIds"]:
                     after["subAgents"][agent_id]["status"] = "CANCELLED"
 
-        result = commit_mutation(data_root, project_id, before, CENTRAL_WRITER, "C08_RECORD_RECOVERY_DECISION", {"caseId": case_id, "action": decision["action"], "occupancyReleased": False}, mutate)
+        result = commit_mutation(data_root, project_id, before, CENTRAL_WRITER, "C08_RECORD_RECOVERY_DECISION", {"caseId": case_id, "action": decision["action"], "occupancyReleased": False}, mutate, caller_thread_ref=args.caller_thread_ref)
         mutation = ledger_mutation(result, data_root, project_id)
         artifact = {"schemaVersion": SCHEMA_VERSION, "recordType": "C08_RECOVERY_DECISION", "createdAt": utc_now(), "projectId": project_id, "caseId": case_id, **decision, "sourceInputDigest": input_digest, "freezeDigest": canonical_digest(freeze_artifact), "takeoverDigest": canonical_digest(takeover_artifact), "ledgerOperation": "C08_RECORD_RECOVERY_DECISION", "ledgerMutation": mutation, "boundary": {"businessExecutionResumed": False, "automaticRedispatchAllowed": False, "occupancyReleased": False, "requiresC09ForResume": decision["action"] == "PREPARE_RESUME"}}
         persist_stage(data_root, project_id, case_id, "decision", "C08_RECORD_RECOVERY_DECISION", artifact)
@@ -483,7 +483,7 @@ def release(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             for agent_id in freeze_artifact["affectedContext"]["subAgentIds"]:
                 after["subAgents"][agent_id]["status"] = "CLOSED"
 
-        result = commit_mutation(data_root, project_id, before, CENTRAL_WRITER, "C08_RELEASE_COMPLETED_OR_CANCELLED_OCCUPANCY", {"caseId": case_id, "taskId": task_id, "releasedClaimCount": len(matching), "releaseStatus": release_status}, mutate)
+        result = commit_mutation(data_root, project_id, before, CENTRAL_WRITER, "C08_RELEASE_COMPLETED_OR_CANCELLED_OCCUPANCY", {"caseId": case_id, "taskId": task_id, "releasedClaimCount": len(matching), "releaseStatus": release_status}, mutate, caller_thread_ref=args.caller_thread_ref)
         mutation = ledger_mutation(result, data_root, project_id)
         artifact = {"schemaVersion": SCHEMA_VERSION, "recordType": "C08_OCCUPANCY_RELEASE", "createdAt": utc_now(), "projectId": project_id, "caseId": case_id, "taskId": task_id, **release_input, "sourceInputDigest": input_digest, "releaseStatus": release_status, "releasedClaimCount": len(matching), "releasedObjectKeys": sorted({key for key, _ in matching}), "ledgerOperation": "C08_RELEASE_COMPLETED_OR_CANCELLED_OCCUPANCY", "ledgerMutation": mutation, "boundary": {"businessExecutionResumed": False, "otherOwnersPreserved": True, "automaticRedispatchAllowed": False}}
         persist_stage(data_root, project_id, case_id, "release", "C08_RELEASE_COMPLETED_OR_CANCELLED_OCCUPANCY", artifact)
@@ -509,7 +509,7 @@ def verify_command(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="C08 disconnection recovery controller")
     roots = parser.add_mutually_exclusive_group(required=True); roots.add_argument("--data-root"); roots.add_argument("--config")
-    parser.add_argument("--project-id", required=True); parser.add_argument("--writer-id")
+    parser.add_argument("--project-id", required=True); parser.add_argument("--writer-id"); parser.add_argument("--caller-thread-ref")
     commands = parser.add_subparsers(dest="command", required=True)
     freeze_parser = commands.add_parser("freeze"); freeze_parser.add_argument("--incident", required=True)
     action = freeze_parser.add_mutually_exclusive_group(required=True); action.add_argument("--dry-run", action="store_true"); action.add_argument("--apply", action="store_true")

@@ -41,7 +41,7 @@ WINDOW_REUSE_MODEL_METHOD = "NATIVE_SEND_MESSAGE_MODEL_OVERRIDE"
 MANUAL_WINDOW_MODEL_METHOD = "MANUAL_UI_TERRA_SELECTION_EVIDENCE"
 SUB_AGENT_MODEL_METHOD = "NATIVE_SPAWN_AGENT_MODEL_PARAMETER"
 TASK_PERMISSION_CLASS = "WORKTREE_SCOPED"
-ALLOWED_TASK_PERMISSION_PROFILES = {":workspace", "qianyi-task-terra", "workspace-write"}
+ALLOWED_TASK_PERMISSION_PROFILES = {":workspace", "qianyi-task-terra"}
 WINDOW_PERMISSION_METHODS = {
     "PERMISSION_PROFILE_READBACK",
     "LEGACY_WORKSPACE_SANDBOX_READBACK",
@@ -88,9 +88,9 @@ def validate_model_control(raw: Any, allowed_methods: set[str], error: str) -> D
     }
 
 
-def validate_permission_control(raw: Any, allowed_methods: set[str], error: str) -> Dict[str, str]:
+def validate_permission_control(raw: Any, allowed_methods: set[str], error: str, governance_data_root: Path) -> Dict[str, Any]:
     """Require bounded workspace permission evidence; full access is never eligible."""
-    value = exact(raw, {"permissionClass", "profile", "method", "evidenceRef"}, error)
+    value = exact(raw, {"permissionClass", "profile", "method", "evidenceRef", "writableRoots", "governanceDataRootAccess"}, error)
     permission_class = str(value["permissionClass"]).strip().upper()
     profile = str(value["profile"]).strip()
     method = str(value["method"]).strip().upper()
@@ -102,11 +102,30 @@ def validate_permission_control(raw: Any, allowed_methods: set[str], error: str)
         raise DispatchError("C10_RUNTIME_PERMISSION_PROFILE_NOT_ALLOWED")
     if method not in allowed_methods:
         raise DispatchError(error)
+    if str(value["governanceDataRootAccess"]).strip().upper() != "DENIED":
+        raise DispatchError("C10_GOVERNANCE_DATA_ROOT_EXPOSED_TO_TASK_WINDOW")
+    if not isinstance(value["writableRoots"], list) or not value["writableRoots"] or len(value["writableRoots"]) > 8:
+        raise DispatchError(error)
+    writable_roots: List[str] = []
+    for raw_root in value["writableRoots"]:
+        if not isinstance(raw_root, str):
+            raise DispatchError(error)
+        candidate = Path(raw_root).expanduser()
+        if not candidate.is_absolute() or ".." in candidate.parts:
+            raise DispatchError(error)
+        resolved = candidate.resolve()
+        if is_within(governance_data_root, resolved) or is_within(resolved, governance_data_root):
+            raise DispatchError("C10_GOVERNANCE_DATA_ROOT_EXPOSED_TO_TASK_WINDOW")
+        writable_roots.append(str(resolved))
+    if len(writable_roots) != len(set(writable_roots)):
+        raise DispatchError(error)
     return {
         "permissionClass": TASK_PERMISSION_CLASS,
         "profile": profile,
         "method": method,
         "evidenceRef": require_ref(value["evidenceRef"], error),
+        "writableRoots": writable_roots,
+        "governanceDataRootAccess": "DENIED",
     }
 
 
@@ -138,6 +157,9 @@ def bounded_permission_is_enforced(record: Dict[str, Any]) -> bool:
         and control.get("method") in WINDOW_PERMISSION_METHODS
         and isinstance(control.get("evidenceRef"), str)
         and bool(control["evidenceRef"].strip())
+        and control.get("governanceDataRootAccess") == "DENIED"
+        and isinstance(control.get("writableRoots"), list)
+        and bool(control["writableRoots"])
     )
 
 
@@ -413,16 +435,40 @@ def prepare(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             }, 0
         raise DispatchError("C10_DISPATCH_ID_REUSED_WITH_DIFFERENT_REQUEST")
     package, decision, ledger = verified_sources(root, project_id, package_id, review_id, request["taskId"])
+    if decision.get("bossApprovalRef") != request["bossApprovalRef"]:
+        raise DispatchError("C10_BOSS_AUTHORIZATION_NOT_BOUND_TO_C05_REVIEW")
     window = decision["windowDecision"]
     if window.get("status") not in {"OPEN_NEW_WINDOW", "REUSE_EXISTING_WINDOW"}:
         raise DispatchError("C10_WINDOW_DECISION_NOT_ACTIONABLE")
     light = classify(decision)
     environment_type = request["runtimeProject"]["environment"].lower()
-    association_protocol = {
-        "primary": "CREATE_REQUESTED_TARGET",
-        "onMissingProjectId": "HANDOFF_TO_PROJECT_LOCAL_THEN_RETURN" if request["runtimeProject"]["environment"] == "WORKTREE" else "STOP_NEEDS_REVIEW",
-        "requiresFinalProjectReadback": True,
-    }
+    if window["status"] == "OPEN_NEW_WINDOW" and request["runtimeProject"]["environment"] == "WORKTREE":
+        association_protocol = {
+            "primary": "CREATE_PROJECT_LOCAL_THEN_HANDOFF_TO_WORKTREE",
+            "requiredMethod": "LOCAL_BOOTSTRAP_TO_WORKTREE",
+            "initialTarget": {"type": "project", "projectId": request["runtimeProject"]["codexProjectId"], "environment": {"type": "local"}},
+            "finalTarget": {"type": "project", "projectId": request["runtimeProject"]["codexProjectId"], "environment": {"type": "worktree"}},
+            "onMissingProjectId": "STOP_AND_RETIRE_UNCONFIRMED_CANDIDATE",
+            "requiresFinalProjectReadback": True,
+        }
+    elif window["status"] == "OPEN_NEW_WINDOW":
+        association_protocol = {
+            "primary": "CREATE_PROJECT_LOCAL",
+            "requiredMethod": "DIRECT",
+            "initialTarget": {"type": "project", "projectId": request["runtimeProject"]["codexProjectId"], "environment": {"type": "local"}},
+            "finalTarget": {"type": "project", "projectId": request["runtimeProject"]["codexProjectId"], "environment": {"type": "local"}},
+            "onMissingProjectId": "STOP_AND_RETIRE_UNCONFIRMED_CANDIDATE",
+            "requiresFinalProjectReadback": True,
+        }
+    else:
+        association_protocol = {
+            "primary": "REUSE_REGISTERED_PROJECT_WINDOW",
+            "requiredMethod": "EXISTING_REGISTERED_WINDOW",
+            "initialTarget": None,
+            "finalTarget": {"type": "project", "projectId": request["runtimeProject"]["codexProjectId"], "environment": {"type": environment_type}},
+            "onMissingProjectId": "STOP_AND_REPLACE_WINDOW_THROUGH_C08_RECOVERY",
+            "requiresFinalProjectReadback": True,
+        }
     task = ledger["tasks"][request["taskId"]]
     canonical_title = task.get("canonicalTitle", f"{request['taskId']}｜{task['title']}")
     previous_task_id = None
@@ -467,6 +513,9 @@ def prepare(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         "nativeRuntime": {
             "windowOperation": {
                 "tool": "codex_app__create_thread" if window["status"] == "OPEN_NEW_WINDOW" else "codex_app__send_message_to_thread",
+                "initialTarget": association_protocol["initialTarget"],
+                "handoffTool": "codex_app__handoff_thread" if association_protocol["requiredMethod"] == "LOCAL_BOOTSTRAP_TO_WORKTREE" else None,
+                "finalTarget": association_protocol["finalTarget"],
                 "requiredModel": TASK_RUNTIME_MODEL,
                 "requiredProjectId": request["runtimeProject"]["codexProjectId"],
                 "requiredEnvironment": request["runtimeProject"]["environment"],
@@ -488,7 +537,7 @@ def prepare(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     return {"status": "READY_FOR_RUNTIME_DISPATCH", "dispatchId": request["dispatchId"], "trafficLight": light, "taskIdentity": task_identity, "windowAction": plan["windowAction"], "runtimeTarget": plan["runtimeTarget"], "nativeRuntime": plan["nativeRuntime"], "projectAssociationProtocol": association_protocol, "authorizationScope": plan["authorizationScope"], "subAgentCount": len(plan["subAgents"]), "writePerformed": True, "dispatchPerformed": False, "businessWritePerformed": False}, 0
 
 
-def validate_confirmation(raw: Dict[str, Any], dispatch_id: str, plan: Dict[str, Any]) -> Dict[str, Any]:
+def validate_confirmation(raw: Dict[str, Any], dispatch_id: str, plan: Dict[str, Any], root: Path) -> Dict[str, Any]:
     value = exact(raw, {"confirmationSchemaVersion", "recordType", "dispatchId", "taskWindow", "subAgents"}, "C10_CONFIRMATION_SCHEMA_UNSUPPORTED")
     if value["confirmationSchemaVersion"] != SCHEMA_VERSION or value["recordType"] != "C10_RUNTIME_CONFIRMATION" or value["dispatchId"] != dispatch_id:
         raise DispatchError("C10_CONFIRMATION_SCHEMA_UNSUPPORTED")
@@ -508,20 +557,22 @@ def validate_confirmation(raw: Dict[str, Any], dispatch_id: str, plan: Dict[str,
     model_control = validate_model_control(window["modelControl"], allowed_window_methods, "C10_WINDOW_MODEL_CONTROL_INVALID")
     if model_control["method"] != MANUAL_WINDOW_MODEL_METHOD and model_control["evidenceRef"] != runtime_ref:
         raise DispatchError("C10_MODEL_CONTROL_RECEIPT_MISMATCH")
-    permission_control = validate_permission_control(window["permissionControl"], WINDOW_PERMISSION_METHODS, "C10_WINDOW_PERMISSION_CONTROL_INVALID")
+    permission_control = validate_permission_control(window["permissionControl"], WINDOW_PERMISSION_METHODS, "C10_WINDOW_PERMISSION_CONTROL_INVALID", root)
     if permission_control["method"] != "MANUAL_UI_PERMISSION_EVIDENCE" and permission_control["evidenceRef"] != runtime_ref:
         raise DispatchError("C10_PERMISSION_CONTROL_RECEIPT_MISMATCH")
     association_method = str(window["associationMethod"]).strip().upper()
-    if association_method not in {"DIRECT", "LOCAL_HANDOFF_ROUNDTRIP"}:
+    if association_method not in {"DIRECT", "LOCAL_BOOTSTRAP_TO_WORKTREE", "EXISTING_REGISTERED_WINDOW"}:
         raise DispatchError("C10_PROJECT_ASSOCIATION_METHOD_INVALID")
+    if association_method != plan.get("projectAssociationProtocol", {}).get("requiredMethod"):
+        raise DispatchError("C10_PROJECT_ASSOCIATION_METHOD_MISMATCH")
     raw_handoff_refs = window["associationHandoffRefs"]
     if not isinstance(raw_handoff_refs, list):
         raise DispatchError("C10_PROJECT_ASSOCIATION_REPAIR_EVIDENCE_INVALID")
     handoff_refs = [require_ref(item, "C10_PROJECT_ASSOCIATION_REPAIR_EVIDENCE_INVALID") for item in raw_handoff_refs]
-    if association_method == "DIRECT" and handoff_refs:
+    if association_method in {"DIRECT", "EXISTING_REGISTERED_WINDOW"} and handoff_refs:
         raise DispatchError("C10_PROJECT_ASSOCIATION_REPAIR_EVIDENCE_INVALID")
-    if association_method == "LOCAL_HANDOFF_ROUNDTRIP":
-        if len(handoff_refs) != 2 or len(set(handoff_refs)) != 2 or runtime_ref in handoff_refs:
+    if association_method == "LOCAL_BOOTSTRAP_TO_WORKTREE":
+        if len(handoff_refs) != 1 or runtime_ref in handoff_refs:
             raise DispatchError("C10_PROJECT_ASSOCIATION_REPAIR_EVIDENCE_INVALID")
     runtime_project = plan.get("runtimeProject", {})
     if require_ref(window["runtimeProjectId"], "C10_RUNTIME_PROJECT_ID_INVALID") != runtime_project.get("codexProjectId"):
@@ -542,6 +593,8 @@ def validate_confirmation(raw: Dict[str, Any], dispatch_id: str, plan: Dict[str,
         parts = runtime_cwd.parts
         if runtime_cwd == project_path or ".codex" not in parts or "worktrees" not in parts or runtime_cwd.name != runtime_project["projectName"]:
             raise DispatchError("C10_NONSTANDARD_WORKTREE_TASK_LOCATION")
+    if not any(is_within(runtime_cwd.resolve(), Path(item)) for item in permission_control["writableRoots"]):
+        raise DispatchError("C10_RUNTIME_CWD_NOT_IN_DECLARED_WRITABLE_ROOTS")
     agents = value["subAgents"]
     if not isinstance(agents, list) or len(agents) != len(plan["subAgents"]): raise DispatchError("C10_SUB_AGENT_CONFIRMATION_COUNT_MISMATCH")
     expected_agents = {x["subAgentId"]: x for x in plan["subAgents"]}; normalized = []
@@ -553,11 +606,13 @@ def validate_confirmation(raw: Dict[str, Any], dispatch_id: str, plan: Dict[str,
         agent_model_control = validate_model_control(agent["modelControl"], {SUB_AGENT_MODEL_METHOD}, "C10_SUB_AGENT_MODEL_CONTROL_INVALID")
         if agent_model_control["evidenceRef"] != agent_runtime_ref:
             raise DispatchError("C10_MODEL_CONTROL_RECEIPT_MISMATCH")
-        agent_permission_control = validate_permission_control(agent["permissionControl"], SUB_AGENT_PERMISSION_METHODS, "C10_SUB_AGENT_PERMISSION_CONTROL_INVALID")
+        agent_permission_control = validate_permission_control(agent["permissionControl"], SUB_AGENT_PERMISSION_METHODS, "C10_SUB_AGENT_PERMISSION_CONTROL_INVALID", root)
         expected_permission_ref = runtime_ref if agent_permission_control["method"] == "INHERITED_FROM_PARENT_WINDOW" else agent_runtime_ref
         if agent_permission_control["evidenceRef"] != expected_permission_ref:
             raise DispatchError("C10_PERMISSION_CONTROL_RECEIPT_MISMATCH")
         if agent_permission_control["profile"] != permission_control["profile"] and agent_permission_control["method"] == "INHERITED_FROM_PARENT_WINDOW":
+            raise DispatchError("C10_SUB_AGENT_PERMISSION_INHERITANCE_MISMATCH")
+        if agent_permission_control["method"] == "INHERITED_FROM_PARENT_WINDOW" and agent_permission_control["writableRoots"] != permission_control["writableRoots"]:
             raise DispatchError("C10_SUB_AGENT_PERMISSION_INHERITANCE_MISMATCH")
         normalized.append({"subAgentId": agent_id, "runtimeAgentRef": agent_runtime_ref, "modelControl": agent_model_control, "permissionControl": agent_permission_control})
     if len({x["subAgentId"] for x in normalized}) != len(normalized): raise DispatchError("C10_DUPLICATE_SUB_AGENT_CONFIRMATION")
@@ -569,7 +624,7 @@ def confirm(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     if args.writer_id != CENTRAL_WRITER: raise DispatchError("C10_WRITER_NOT_AUTHORIZED")
     plan = read_json(plan_path(root, project_id, dispatch_id), "C10_DISPATCH_PLAN_NOT_FOUND_OR_INVALID")
     raw, confirmation_digest = load_private(args.confirmation, root, "C10_CONFIRMATION_INVALID_JSON")
-    confirmation = validate_confirmation(raw, dispatch_id, plan)
+    confirmation = validate_confirmation(raw, dispatch_id, plan, root)
     if (
         confirmation["modelControl"]["method"] == MANUAL_WINDOW_MODEL_METHOD
         and not fallback_path(root, project_id, dispatch_id).is_file()
@@ -657,7 +712,7 @@ def confirm(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
                 }
             target_task = after["tasks"][plan["taskId"]]; target_task["status"] = "IN_PROGRESS"
             target_task["history"].append({"at": utc_now(), "event": "C10_RUNTIME_DISPATCH_CONFIRMED", "dispatchId": dispatch_id, "windowId": confirmation["windowId"], "from": "READY", "to": "IN_PROGRESS", "by": CENTRAL_WRITER})
-        result = commit_mutation(root, project_id, before, CENTRAL_WRITER, "C10_CONFIRM_RUNTIME_DISPATCH", {"dispatchId": dispatch_id, "taskId": plan["taskId"], "windowId": confirmation["windowId"], "subAgentCount": len(confirmation["agents"])}, mutate)
+        result = commit_mutation(root, project_id, before, CENTRAL_WRITER, "C10_CONFIRM_RUNTIME_DISPATCH", {"dispatchId": dispatch_id, "taskId": plan["taskId"], "windowId": confirmation["windowId"], "subAgentCount": len(confirmation["agents"])}, mutate, caller_thread_ref=args.caller_thread_ref)
         artifact = {"schemaVersion": SCHEMA_VERSION, "recordType": "C10_DISPATCH_CONFIRMATION", "dispatchId": dispatch_id, "confirmedAt": utc_now(), "projectId": project_id, "taskId": plan["taskId"], "taskIdentity": plan["taskIdentity"], "windowId": confirmation["windowId"], "windowAssignment": {"assignmentNumber": plan["windowAction"]["assignmentNumber"], "maxAssignments": MAX_TASKS_PER_WINDOW, "isFinalAllowedAssignment": plan["windowAction"]["assignmentNumber"] == MAX_TASKS_PER_WINDOW}, "runtimeThreadRef": confirmation["runtimeThreadRef"], "runtimeProjectId": confirmation["runtimeProjectId"], "runtimeCwd": confirmation["runtimeCwd"], "environmentType": confirmation["environmentType"], "associationMethod": confirmation["associationMethod"], "associationHandoffRefs": confirmation["associationHandoffRefs"], "model": TASK_RUNTIME_MODEL, "modelEnforcement": confirmation["modelControl"], "permissionEnforcement": confirmation["permissionControl"], "authorizationScope": plan["authorizationScope"], "subAgents": confirmation["agents"], "sourceConfirmationDigest": confirmation_digest, "ledgerReceiptId": result["receiptId"], "boundary": {"runtimeConfirmed": True, "projectAssociationVerified": True, "terraModelEnforced": True, "boundedPermissionEnforced": True, "dangerFullAccessForbidden": True, "taskStatus": "IN_PROGRESS", "businessWritePerformed": False, "completionMustReturnToParentWindow": True, "parentQualityGateRequiredIfSubAgentsUsed": bool(confirmation["agents"])}}
         write_exclusive(target, artifact)
     return {"status": "RUNTIME_DISPATCH_CONFIRMED", "dispatchId": dispatch_id, "windowId": confirmation["windowId"], "model": TASK_RUNTIME_MODEL, "modelEnforcement": confirmation["modelControl"]["method"], "permissionClass": TASK_PERMISSION_CLASS, "permissionProfile": confirmation["permissionControl"]["profile"], "assignmentNumber": plan["windowAction"]["assignmentNumber"], "maxAssignments": MAX_TASKS_PER_WINDOW, "associationMethod": confirmation["associationMethod"], "subAgentCount": len(confirmation["agents"]), "taskStatus": "IN_PROGRESS", "ledgerReceiptId": result["receiptId"], "writePerformed": True, "dispatchPerformed": True, "businessWritePerformed": False}, 0
@@ -740,7 +795,7 @@ def prepare_append(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     return {"status": "READY_FOR_RUNTIME_SUB_AGENT_APPEND", "dispatchId": dispatch_id, "appendId": request["appendId"], "windowId": request["windowId"], "subAgentCount": len(request["subAgents"]), "writePerformed": True, "dispatchPerformed": False, "businessWritePerformed": False}, 0
 
 
-def validate_append_confirmation(raw: Dict[str, Any], append_id: str, dispatch_id: str, plan: Dict[str, Any]) -> Dict[str, Any]:
+def validate_append_confirmation(raw: Dict[str, Any], append_id: str, dispatch_id: str, plan: Dict[str, Any], root: Path) -> Dict[str, Any]:
     value = exact(raw, {"appendConfirmationSchemaVersion", "recordType", "appendId", "dispatchId", "windowId", "subAgents"}, "C10_APPEND_CONFIRMATION_SCHEMA_UNSUPPORTED")
     if value["appendConfirmationSchemaVersion"] != SCHEMA_VERSION or value["recordType"] != "C10_SUB_AGENT_APPEND_RUNTIME_CONFIRMATION" or value["appendId"] != append_id or value["dispatchId"] != dispatch_id or value["windowId"] != plan["windowId"]:
         raise DispatchError("C10_APPEND_CONFIRMATION_SCOPE_MISMATCH")
@@ -756,7 +811,7 @@ def validate_append_confirmation(raw: Dict[str, Any], append_id: str, dispatch_i
         agent_model_control = validate_model_control(agent["modelControl"], {SUB_AGENT_MODEL_METHOD}, "C10_SUB_AGENT_MODEL_CONTROL_INVALID")
         if agent_model_control["evidenceRef"] != runtime_agent_ref:
             raise DispatchError("C10_MODEL_CONTROL_RECEIPT_MISMATCH")
-        agent_permission_control = validate_permission_control(agent["permissionControl"], SUB_AGENT_PERMISSION_METHODS, "C10_SUB_AGENT_PERMISSION_CONTROL_INVALID")
+        agent_permission_control = validate_permission_control(agent["permissionControl"], SUB_AGENT_PERMISSION_METHODS, "C10_SUB_AGENT_PERMISSION_CONTROL_INVALID", root)
         if agent_permission_control["method"] != "INHERITED_FROM_PARENT_WINDOW" or agent_permission_control["evidenceRef"] != plan["parentRuntimeThreadRef"]:
             raise DispatchError("C10_PERMISSION_CONTROL_RECEIPT_MISMATCH")
         if agent_permission_control["profile"] != plan["parentPermissionProfile"]:
@@ -771,7 +826,7 @@ def confirm_append(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     if args.writer_id != CENTRAL_WRITER: raise DispatchError("C10_WRITER_NOT_AUTHORIZED")
     plan = read_json(append_plan_path(root, project_id, dispatch_id, append_id), "C10_APPEND_PLAN_NOT_FOUND_OR_INVALID")
     raw, confirmation_digest = load_private(args.confirmation, root, "C10_APPEND_CONFIRMATION_INVALID_JSON")
-    confirmation = validate_append_confirmation(raw, append_id, dispatch_id, plan)
+    confirmation = validate_append_confirmation(raw, append_id, dispatch_id, plan, root)
     target = append_confirmation_path(root, project_id, dispatch_id, append_id)
     if target.exists():
         existing = read_json(target, "C10_EXISTING_APPEND_CONFIRMATION_INVALID")
@@ -803,7 +858,7 @@ def confirm_append(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
                     "dispatchId": dispatch_id, "appendId": append_id, "registeredAt": utc_now(),
                 }
             after["tasks"][plan["taskId"]]["history"].append({"at": utc_now(), "event": "C10_SUB_AGENT_APPEND_CONFIRMED", "dispatchId": dispatch_id, "appendId": append_id, "windowId": plan["windowId"], "to": "IN_PROGRESS", "by": CENTRAL_WRITER})
-        result = commit_mutation(root, project_id, before, CENTRAL_WRITER, "C10_CONFIRM_SUB_AGENT_APPEND", {"dispatchId": dispatch_id, "appendId": append_id, "taskId": plan["taskId"], "windowId": plan["windowId"], "subAgentCount": len(confirmation["agents"])}, mutate)
+        result = commit_mutation(root, project_id, before, CENTRAL_WRITER, "C10_CONFIRM_SUB_AGENT_APPEND", {"dispatchId": dispatch_id, "appendId": append_id, "taskId": plan["taskId"], "windowId": plan["windowId"], "subAgentCount": len(confirmation["agents"])}, mutate, caller_thread_ref=args.caller_thread_ref)
         artifact = {"schemaVersion": SCHEMA_VERSION, "recordType": "C10_SUB_AGENT_APPEND_CONFIRMATION", "appendId": append_id, "dispatchId": dispatch_id, "projectId": project_id, "taskId": plan["taskId"], "windowId": plan["windowId"], "confirmedAt": utc_now(), "model": TASK_RUNTIME_MODEL, "subAgents": confirmation["agents"], "sourceConfirmationDigest": confirmation_digest, "ledgerReceiptId": result["receiptId"], "boundary": {"runtimeConfirmed": True, "terraModelEnforced": True, "boundedPermissionEnforced": True, "dangerFullAccessForbidden": True, "businessWritePerformed": False, "parentQualityGateRequired": True}}
         write_exclusive(target, artifact)
     return {"status": "SUB_AGENT_APPEND_CONFIRMED", "dispatchId": dispatch_id, "appendId": append_id, "windowId": plan["windowId"], "subAgentCount": len(confirmation["agents"]), "ledgerReceiptId": result["receiptId"], "writePerformed": True, "dispatchPerformed": True, "businessWritePerformed": False}, 0
@@ -862,8 +917,8 @@ def export_fallback(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             "请在派发单指定的 Codex 保存项目中按以下已批准任务包执行，不要另建自定义任务目录。"
             "在发送第一条任务指令前，必须在模型菜单明确选择 5.6 Terra；若菜单不能选择 Terra，立即停止，不要用 Sol 或其他模型代替。"
             "保留该选择的可核对证据引用，确认时只能填写 MANUAL_UI_TERRA_SELECTION_EVIDENCE。"
-            "同时把任务权限设为工作区受限模式；完整访问或 danger-full-access 必须停止，确认时填写 MANUAL_UI_PERMISSION_EVIDENCE。"
-            "创建后必须回读项目归属；若 Git worktree 的项目 ID 为空，先原生交接到保存项目根目录，再交接回同一 worktree 并重新回读。"
+            "同时把任务权限设为工作区受限模式；完整访问或 danger-full-access 必须停止。确认时填写 MANUAL_UI_PERMISSION_EVIDENCE、唯一项目可写根和 governanceDataRootAccess=DENIED。"
+            "新 Git 任务先在派发单指定的保存项目 local 环境建立归属，回读正确项目 ID 后再受控交接到同项目标准 worktree。任一步骤为空或不匹配立即停止，不要反复创建候选窗口。"
             "先复述目标、边界、写入占用和硬停条件；"
             "不得扩大范围，不得自行宣布 DONE。任务包：\n"
             + json.dumps(plan["taskPackage"], ensure_ascii=False, indent=2, sort_keys=True)
@@ -957,7 +1012,7 @@ def record_return(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         )
         def mutate(after: Dict[str, Any]) -> None:
             target_agent = after["subAgents"][sub_agent_id]; target_agent["status"] = "RETURNED"; target_agent["returnId"] = value["returnId"]; target_agent["returnedAt"] = utc_now()
-        result = commit_mutation(root, project_id, before, CENTRAL_WRITER, "C10_RECORD_SUB_AGENT_RETURN", {"dispatchId": dispatch_id, "subAgentId": sub_agent_id, "returnId": value["returnId"], "allSubAgentsReturned": all_returned}, mutate)
+        result = commit_mutation(root, project_id, before, CENTRAL_WRITER, "C10_RECORD_SUB_AGENT_RETURN", {"dispatchId": dispatch_id, "subAgentId": sub_agent_id, "returnId": value["returnId"], "allSubAgentsReturned": all_returned}, mutate, caller_thread_ref=args.caller_thread_ref)
         artifact = {"schemaVersion": SCHEMA_VERSION, "recordType": "C10_VERIFIED_SUB_AGENT_RETURN", "dispatchId": dispatch_id, "subAgentId": sub_agent_id, "returnId": value["returnId"], "recordedAt": utc_now(), "submittedToWindowId": confirmation["windowId"], "status": value["status"], "scope": value["scope"], "confirmedFacts": value["confirmedFacts"], "completedWork": value["completedWork"], "evidenceRefs": value["evidenceRefs"], "unresolvedRefs": value["unresolvedRefs"], "scopeDeviation": value["scopeDeviation"], "risksAndConflicts": value["risksAndConflicts"], "recommendedParentAction": value["recommendedParentAction"], "sourceReturnDigest": return_digest, "ledgerReceiptId": result["receiptId"], "allSubAgentsReturned": all_returned, "boundary": {"taskDoneDeclared": False, "parentWindowMustAggregate": True, "parentQualityGateRequired": True, "parentCompletionAllowed": False}}
         write_exclusive(target, artifact)
     return {"status": "SUB_AGENT_RETURN_RECORDED", "dispatchId": dispatch_id, "subAgentId": sub_agent_id, "allSubAgentsReturned": all_returned, "parentQualityGateRequired": True, "parentCompletionAllowed": False, "taskDoneDeclared": False, "writePerformed": True}, 0
@@ -1041,7 +1096,7 @@ def record_parent_quality_review(args: argparse.Namespace) -> Tuple[Dict[str, An
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="C10 task-window dispatcher")
     root = parser.add_mutually_exclusive_group(required=True); root.add_argument("--data-root"); root.add_argument("--config")
-    parser.add_argument("--project-id", required=True); parser.add_argument("--writer-id")
+    parser.add_argument("--project-id", required=True); parser.add_argument("--writer-id"); parser.add_argument("--caller-thread-ref")
     commands = parser.add_subparsers(dest="command", required=True)
     prepare_parser = commands.add_parser("prepare"); prepare_parser.add_argument("--package-id", required=True); prepare_parser.add_argument("--review-id", required=True); prepare_parser.add_argument("--request", required=True)
     confirm_parser = commands.add_parser("confirm"); confirm_parser.add_argument("--dispatch-id", required=True); confirm_parser.add_argument("--confirmation", required=True)
