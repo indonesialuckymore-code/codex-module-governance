@@ -1,6 +1,6 @@
 # 安装说明
 
-本地候选已有安装和部分原生验证，尚未作为稳定版发布；验收边界统一见[候选版状态](../plugins/codex-module-governance/references/release-status.md)。下列稳定版命令安装的是旧标签，不是当前候选；安装或升级前先备份并核对范围与兼容性。
+Boss 已批准将 `0.23.0-rc.1` 作为 GitHub 默认使用版本；下列命令从 `main` 安装新版，不再指向旧标签 `v0.22.0`。保留候选版本号，不把默认选用等同全部环境验收；验收边界统一见[候选版状态](../plugins/codex-module-governance/references/release-status.md)。安装或升级前先备份并核对范围与兼容性。
 
 候选主版本为 `0.23.0-rc.1`，本地更新可带 `+codex.<标记>` 刷新缓存；配置合同仍为兼容的 `0.22.1`，这些不是同一概念。程序更新不自动改全局权限；历史机器维修工具不随产品分发，不用旧安装入口覆盖候选，也不恢复退役自定义权限。
 
@@ -24,7 +24,7 @@
 前提：电脑已安装 Codex CLI，GitHub 账号已获准访问私有仓库 `indonesialuckymore-code/codex-module-governance`。
 
 ```bash
-codex plugin marketplace add indonesialuckymore-code/codex-module-governance --ref v0.22.0
+codex plugin marketplace add indonesialuckymore-code/codex-module-governance --ref main
 codex plugin add codex-module-governance@qianyi-codex-governance
 ```
 
@@ -47,12 +47,12 @@ codex plugin add codex-module-governance@qianyi-codex-governance
 
 ## 升级
 
-新稳定版发布后，先移除当前程序插件和旧 Marketplace 引用，再按新版本标签重新注册并安装。这个操作只处理程序缓存，不处理仓库外私有总账：
+已有安装若固定旧标签或本地来源，不会因为 GitHub 更新就自动切换。完成备份、停写和兼容核对后，移除当前程序插件和旧 Marketplace 引用，再按默认 `main` 注册安装；不要删除私有总账。需要复现固定版本时，可将 `main` 替换为核实过的提交号。这个操作只处理程序缓存，不处理仓库外私有总账：
 
 ```bash
 codex plugin remove codex-module-governance@qianyi-codex-governance
 codex plugin marketplace remove qianyi-codex-governance
-codex plugin marketplace add indonesialuckymore-code/codex-module-governance --ref <新版本标签>
+codex plugin marketplace add indonesialuckymore-code/codex-module-governance --ref main
 codex plugin add codex-module-governance@qianyi-codex-governance
 ```
 

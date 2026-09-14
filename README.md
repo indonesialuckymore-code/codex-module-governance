@@ -76,4 +76,11 @@ Codex 原生任务控制与权限优化见 [v0.22 原生运行优化回执](docs
 
 ## 安装入口
 
-先按 [安装说明](docs/INSTALLATION.md) 从固定稳定标签 `v0.22.0` 注册本人 GitHub Marketplace，再安装 `codex-module-governance@qianyi-codex-governance`。私有仓库用户必须先获得 GitHub 访问权限；安装或升级后需要新开 Codex 任务加载新版能力。
+默认使用 GitHub `main` 中的新版 `0.23.0-rc.1`，不再默认安装旧标签 `v0.22.0`。Boss 已批准将候选作为默认使用版本，保留候选版本号及未验证边界，不冒充所有环境均已验收。私有仓库用户必须先获得 GitHub 访问权限；详见[安装说明](docs/INSTALLATION.md)。
+
+```bash
+codex plugin marketplace add indonesialuckymore-code/codex-module-governance --ref main
+codex plugin add codex-module-governance@qianyi-codex-governance
+```
+
+安装或升级后新开 Codex 任务加载新版能力；已有项目通过受控中央交接接续。旧标签仅作历史保留，不建议直接降级。
