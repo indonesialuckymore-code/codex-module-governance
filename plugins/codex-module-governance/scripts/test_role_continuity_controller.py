@@ -13,6 +13,7 @@ from pathlib import Path
 SCRIPTS = Path(__file__).parent
 C02 = SCRIPTS / "initialize_project.py"
 C03 = SCRIPTS / "ledger_manager.py"
+C08 = SCRIPTS / "disconnection_recovery_controller.py"
 C08C = SCRIPTS / "role_continuity_controller.py"
 PROJECT = "continuity-demo-project"
 TASK = "C-003"
@@ -44,6 +45,14 @@ def continuity(root, command, *args, writer=True):
     if writer:
         base += ["--writer-id", "codex-module-central"]
     return invoke(C08C, [*base, command, *args])
+
+
+def recovery(root, command, *args):
+    return invoke(C08, [
+        "--data-root", str(root), "--project-id", PROJECT,
+        "--writer-id", "codex-module-central", "--caller-thread-ref", "central-thread-g1",
+        command, *args,
+    ])
 
 
 def setup(root):
@@ -118,6 +127,56 @@ def return_handback(ticket_id="return-ticket-c003-001", handback_id="handback-c0
 
 
 class RoleContinuityTests(unittest.TestCase):
+    def test_boss_prepared_disconnected_task_can_return_without_resuming_business(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "private"; setup(root)
+            code, output = c03(root, "claim-object", "--object-key", "base:fictional-c003", "--owner-type", "task", "--owner-id", TASK, "--intent", "WRITE")
+            self.assertEqual(code, 0, output)
+            occupancy_before = json.loads((root / "module-ledgers" / PROJECT / "ledger.json").read_text())["objectOccupancies"]
+
+            incident = write(root / "c08-inputs" / "incident.json", {
+                "incidentSchemaVersion": "0.8.0", "recordType": "C08_DISCONNECTION_INCIDENT",
+                "caseId": "recovery-c003-return-only", "projectId": PROJECT, "incidentType": "TASK_WINDOW",
+                "targetId": WINDOW, "taskId": TASK, "detectedBy": "codex-module-central",
+                "detectionRefs": ["task-window-usage-limit-c003"], "reasonRef": "task-window-disconnected-c003",
+            })
+            code, output = recovery(root, "freeze", "--incident", str(incident), "--apply")
+            self.assertEqual(code, 0, output)
+            takeover = write(root / "c08-inputs" / "takeover.json", {
+                "takeoverSchemaVersion": "0.8.0", "recordType": "C08_CENTRAL_TAKEOVER_INPUT",
+                "caseId": "recovery-c003-return-only", "expectedRecoveryEpoch": 1,
+                "successorInstanceRef": "central-thread-g1",
+                "bossAuthorization": {"status": "APPROVED", "reference": "boss-approved-c003-takeover"},
+            })
+            code, output = recovery(root, "takeover", "--case-id", "recovery-c003-return-only", "--authorization", str(takeover))
+            self.assertEqual(code, 0, output)
+            decision = write(root / "c08-inputs" / "decision.json", {
+                "decisionSchemaVersion": "0.8.0", "recordType": "C08_RECOVERY_DECISION_INPUT",
+                "caseId": "recovery-c003-return-only", "action": "PREPARE_RESUME",
+                "bossDecisionRef": "boss-approved-c003-return-only", "reasonRef": "finish-governance-return-only",
+            })
+            code, output = recovery(root, "decide", "--case-id", "recovery-c003-return-only", "--decision", str(decision))
+            self.assertEqual(code, 0, output)
+
+            ledger = json.loads((root / "module-ledgers" / PROJECT / "ledger.json").read_text())
+            self.assertEqual(ledger["tasks"][TASK]["status"], "BLOCKED")
+            self.assertEqual(ledger["windows"][WINDOW]["status"], "DISCONNECTED")
+            self.assertFalse(ledger["recovery"]["businessExecutionResumed"])
+
+            handback = write(root / "continuity-inputs" / "return-after-recovery.json", return_handback())
+            code, queued = continuity(root, "submit-return", "--handback", str(handback), writer=False)
+            self.assertEqual(code, 0, queued)
+            self.assertEqual(queued["status"], "TASK_EVENT_QUEUED")
+            code, admitted = continuity(root, "admit-return", "--return-ticket-id", "return-ticket-c003-001", "--current-thread-ref", "central-thread-g1", "--admission-ref", "central-admission-c003-recovery")
+            self.assertEqual(code, 0, admitted)
+
+            ledger = json.loads((root / "module-ledgers" / PROJECT / "ledger.json").read_text())
+            self.assertEqual(ledger["tasks"][TASK]["status"], "NEEDS_REVIEW")
+            self.assertEqual(ledger["windows"][WINDOW]["status"], "DISCONNECTED")
+            self.assertEqual(ledger["recovery"]["state"], "CLOSED")
+            self.assertFalse(ledger["recovery"]["businessExecutionResumed"])
+            self.assertEqual(ledger["objectOccupancies"], occupancy_before)
+
     def test_initial_central_must_be_the_calling_task_not_a_new_second_central(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "private"
@@ -254,16 +313,17 @@ class RoleContinuityTests(unittest.TestCase):
             self.assertEqual(continuity(root, "admit-return", "--return-ticket-id", first_ticket, "--current-thread-ref", "central-thread-g1", "--admission-ref", "central-admission-c003-aborted")[0], 0)
             code, first_reservation = continuity(root, "reserve-next-return", "--current-thread-ref", "central-thread-g1", "--validator-thread-ref", "validator-thread-c003-aborted")
             self.assertEqual(code, 0, first_reservation)
-            reservation_path = root / "return-inbox" / PROJECT / "tickets" / first_ticket / "receipt-000003-validation-reservation.json"
-            reservation = json.loads(reservation_path.read_text(encoding="utf-8"))
-            write(reservation_path.parent / "receipt-000004-validation-aborted.json", {
-                "returnSchemaVersion": "0.18.0", "recordType": "C08_RETURN_VALIDATION_ABORT", "createdAt": "2026-08-13T04:05:41Z",
-                "projectId": PROJECT, "returnTicketId": first_ticket, "taskId": TASK, "handbackId": "handback-c003-aborted",
-                "validatorThreadRef": "validator-thread-c003-aborted", "centralThreadRef": "central-thread-g2",
-                "bossAuthorizationRef": "boss-approved-validation-slot-release", "reasonRef": "superseded-return-ticket",
-                "reservationDigest": digest(reservation),
-                "boundary": {"validationReservationAborted": True, "validationResultRecorded": False, "returnEvidencePreserved": True, "taskStatusChanged": False, "businessWritePerformed": False},
-            })
+            code, aborted = continuity(
+                root, "abort-return-validation",
+                "--return-ticket-id", first_ticket,
+                "--current-thread-ref", "central-thread-g1",
+                "--validator-thread-ref", "validator-thread-c003-aborted",
+                "--boss-authorization-ref", "boss-approved-validation-slot-release",
+                "--reason-ref", "superseded-return-ticket",
+            )
+            self.assertEqual(code, 0, aborted)
+            self.assertEqual(aborted["status"], "RETURN_VALIDATION_ABORTED")
+            self.assertFalse(aborted["businessWritePerformed"])
 
             second_task = "C-004"; second_window = "window-c004-g1"; second_ticket = "return-ticket-c004-next"
             for command in [

@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import sys
+import subprocess
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
@@ -21,6 +23,8 @@ from ledger_manager import (
     commit_mutation,
     ledger_lock,
     load_ledger,
+    direction_context,
+    require_current_direction,
     utc_now,
     window_assignment_count,
     window_assignments,
@@ -28,6 +32,10 @@ from ledger_manager import (
 )
 from occupancy_conflict_checker import OccupancyError, verify_decision_data
 from task_package_generator import TaskPackageError, load_package, verify_package
+from runtime_model_policy import (
+    DEFAULT_TASK_MODEL, FULL_ACCESS_PROFILES, MANUAL_MODEL_METHOD,
+    READBACK_MODEL_METHOD, runtime_model_is_recorded, valid_model,
+)
 
 
 SCHEMA_VERSION = "0.17.0"
@@ -35,13 +43,16 @@ ROOT = Path("dispatches")
 REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
 WINDOW_ID = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{2,127}$")
 DIGEST = re.compile(r"^[a-f0-9]{64}$")
-TASK_RUNTIME_MODEL = "gpt-5.6-terra"
+TASK_RUNTIME_MODEL = DEFAULT_TASK_MODEL
 WINDOW_CREATE_MODEL_METHOD = "NATIVE_CREATE_THREAD_MODEL_PARAMETER"
 WINDOW_REUSE_MODEL_METHOD = "NATIVE_SEND_MESSAGE_MODEL_OVERRIDE"
 MANUAL_WINDOW_MODEL_METHOD = "MANUAL_UI_TERRA_SELECTION_EVIDENCE"
 SUB_AGENT_MODEL_METHOD = "NATIVE_SPAWN_AGENT_MODEL_PARAMETER"
-TASK_PERMISSION_CLASS = "WORKTREE_SCOPED"
-ALLOWED_TASK_PERMISSION_PROFILES = {":workspace", "qianyi-task-terra"}
+DEFAULT_TASK_PERMISSION_CLASS = "FULL_ACCESS"
+DEFAULT_TASK_PERMISSION_PROFILE = "full-access"
+WORKTREE_SCOPED_PERMISSION_PROFILES = {":workspace"}
+FULL_ACCESS_PERMISSION_PROFILES = FULL_ACCESS_PROFILES
+ALLOWED_TASK_PERMISSION_PROFILES = WORKTREE_SCOPED_PERMISSION_PROFILES | FULL_ACCESS_PERMISSION_PROFILES
 WINDOW_PERMISSION_METHODS = {
     "PERMISSION_PROFILE_READBACK",
     "LEGACY_WORKSPACE_SANDBOX_READBACK",
@@ -74,37 +85,53 @@ def exact(value: Any, keys: set[str], error: str) -> Dict[str, Any]:
 
 
 def validate_model_control(raw: Any, allowed_methods: set[str], error: str) -> Dict[str, str]:
-    """Require a real platform-level Terra selection, not a prose-only claim."""
+    """Record actual platform selection; a default is not an identity gate."""
     value = exact(raw, {"model", "method", "evidenceRef"}, error)
-    if value["model"] != TASK_RUNTIME_MODEL:
-        raise DispatchError("C10_RUNTIME_MODEL_MUST_BE_TERRA")
+    model = require_ref(value["model"], "C10_RUNTIME_MODEL_INVALID")
+    if not valid_model(model):
+        raise DispatchError("C10_RUNTIME_MODEL_INVALID")
     method = str(value["method"]).strip().upper()
     if method not in allowed_methods:
         raise DispatchError(error)
+    if method == MANUAL_WINDOW_MODEL_METHOD and model != TASK_RUNTIME_MODEL:
+        raise DispatchError("C10_LEGACY_MODEL_EVIDENCE_MISMATCH")
     return {
-        "model": TASK_RUNTIME_MODEL,
+        "model": model,
         "method": method,
         "evidenceRef": require_ref(value["evidenceRef"], error),
     }
 
 
 def validate_permission_control(raw: Any, allowed_methods: set[str], error: str, governance_data_root: Path) -> Dict[str, Any]:
-    """Require bounded workspace permission evidence; full access is never eligible."""
+    """Record the selected runtime permission; full access is the default, scoped access remains optional."""
     value = exact(raw, {"permissionClass", "profile", "method", "evidenceRef", "writableRoots", "governanceDataRootAccess"}, error)
     permission_class = str(value["permissionClass"]).strip().upper()
     profile = str(value["profile"]).strip()
     method = str(value["method"]).strip().upper()
-    if permission_class != TASK_PERMISSION_CLASS:
-        raise DispatchError("C10_RUNTIME_PERMISSION_MUST_BE_WORKTREE_SCOPED")
-    if profile.lower() in {":danger-full-access", "danger-full-access", "full-access"}:
-        raise DispatchError("C10_DANGER_FULL_ACCESS_FORBIDDEN")
     if profile not in ALLOWED_TASK_PERMISSION_PROFILES:
         raise DispatchError("C10_RUNTIME_PERMISSION_PROFILE_NOT_ALLOWED")
     if method not in allowed_methods:
         raise DispatchError(error)
-    if str(value["governanceDataRootAccess"]).strip().upper() != "DENIED":
+    expected_class = "FULL_ACCESS" if profile in FULL_ACCESS_PERMISSION_PROFILES else "WORKTREE_SCOPED"
+    if permission_class != expected_class:
+        raise DispatchError("C10_RUNTIME_PERMISSION_CLASS_PROFILE_MISMATCH")
+    if not isinstance(value["writableRoots"], list) or len(value["writableRoots"]) > 8:
+        raise DispatchError(error)
+    governance_access = str(value["governanceDataRootAccess"]).strip().upper()
+    if permission_class == "FULL_ACCESS":
+        if value["writableRoots"] or governance_access != "NOT_RESTRICTED":
+            raise DispatchError("C10_FULL_ACCESS_EVIDENCE_INVALID")
+        return {
+            "permissionClass": "FULL_ACCESS",
+            "profile": profile,
+            "method": method,
+            "evidenceRef": require_ref(value["evidenceRef"], error),
+            "writableRoots": [],
+            "governanceDataRootAccess": "NOT_RESTRICTED",
+        }
+    if governance_access != "DENIED":
         raise DispatchError("C10_GOVERNANCE_DATA_ROOT_EXPOSED_TO_TASK_WINDOW")
-    if not isinstance(value["writableRoots"], list) or not value["writableRoots"] or len(value["writableRoots"]) > 8:
+    if not value["writableRoots"]:
         raise DispatchError(error)
     writable_roots: List[str] = []
     for raw_root in value["writableRoots"]:
@@ -120,7 +147,7 @@ def validate_permission_control(raw: Any, allowed_methods: set[str], error: str,
     if len(writable_roots) != len(set(writable_roots)):
         raise DispatchError(error)
     return {
-        "permissionClass": TASK_PERMISSION_CLASS,
+        "permissionClass": "WORKTREE_SCOPED",
         "profile": profile,
         "method": method,
         "evidenceRef": require_ref(value["evidenceRef"], error),
@@ -130,33 +157,27 @@ def validate_permission_control(raw: Any, allowed_methods: set[str], error: str,
 
 
 def terra_model_is_enforced(record: Dict[str, Any]) -> bool:
-    """Only runtime/model-selection evidence makes a window eligible for reuse."""
-    control = record.get("modelEnforcement")
-    return (
-        record.get("model") == TASK_RUNTIME_MODEL
-        and record.get("runtimeModel") == TASK_RUNTIME_MODEL
-        and isinstance(control, dict)
-        and control.get("model") == TASK_RUNTIME_MODEL
-        and control.get("method") in {
-            WINDOW_CREATE_MODEL_METHOD,
-            WINDOW_REUSE_MODEL_METHOD,
-            MANUAL_WINDOW_MODEL_METHOD,
-        }
-        and isinstance(control.get("evidenceRef"), str)
-        and bool(control["evidenceRef"].strip())
-    )
+    """Legacy callable name retained for callers; no model identity restriction."""
+    return runtime_model_is_recorded(record)
 
 
-def bounded_permission_is_enforced(record: Dict[str, Any]) -> bool:
-    """Only bounded permission evidence makes an existing window reusable."""
+def runtime_permission_is_recorded(record: Dict[str, Any]) -> bool:
+    """A reusable window needs real permission readback, in either supported mode."""
     control = record.get("permissionEnforcement")
-    return (
+    common = (
         isinstance(control, dict)
-        and control.get("permissionClass") == TASK_PERMISSION_CLASS
         and control.get("profile") in ALLOWED_TASK_PERMISSION_PROFILES
         and control.get("method") in WINDOW_PERMISSION_METHODS
         and isinstance(control.get("evidenceRef"), str)
         and bool(control["evidenceRef"].strip())
+    )
+    if not common:
+        return False
+    if control.get("permissionClass") == "FULL_ACCESS":
+        return control.get("profile") in FULL_ACCESS_PERMISSION_PROFILES and control.get("writableRoots") == [] and control.get("governanceDataRootAccess") == "NOT_RESTRICTED"
+    return (
+        control.get("permissionClass") == "WORKTREE_SCOPED"
+        and control.get("profile") in WORKTREE_SCOPED_PERMISSION_PROFILES
         and control.get("governanceDataRootAccess") == "DENIED"
         and isinstance(control.get("writableRoots"), list)
         and bool(control["writableRoots"])
@@ -176,6 +197,9 @@ def confirmation_path(root: Path, project_id: str, dispatch_id: str) -> Path:
 
 
 def fallback_path(root: Path, project_id: str, dispatch_id: str) -> Path:
+    current = dispatch_dir(root, project_id, dispatch_id) / "manual-task-package-v2.json"
+    if current.is_file():
+        return current
     return dispatch_dir(root, project_id, dispatch_id) / "manual-task-package.json"
 
 
@@ -298,7 +322,11 @@ def validate_sub_agent_specs(raw_agents: Any, error: str = "C10_SUB_AGENT_SCHEMA
     allowed_modes = {"READ_ONLY", "ISOLATED_WORK", "INDEPENDENT_VALIDATION"}
     normalized: List[Dict[str, str]] = []
     for agent in raw_agents:
-        item = exact(agent, {"subAgentId", "role", "level", "delegationReason", "executionMode", "scope"}, error)
+        fields = {"subAgentId", "role", "level", "delegationReason", "executionMode", "scope"}
+        item = exact(agent, fields | ({"model"} if isinstance(agent, dict) and "model" in agent else set()), error)
+        agent_model = item.get("model", TASK_RUNTIME_MODEL)
+        if not valid_model(agent_model):
+            raise DispatchError("C10_RUNTIME_MODEL_INVALID")
         if item["level"] != 1:
             raise DispatchError("C10_GRANDCHILD_SUB_AGENT_FORBIDDEN")
         role = str(item["role"]).strip()
@@ -318,6 +346,7 @@ def validate_sub_agent_specs(raw_agents: Any, error: str = "C10_SUB_AGENT_SCHEMA
             "delegationReason": reason,
             "executionMode": mode,
             "scope": scope,
+            "model": agent_model,
         })
     if len({x["subAgentId"] for x in normalized}) != len(normalized):
         raise DispatchError("C10_DUPLICATE_SUB_AGENT_ID")
@@ -325,7 +354,8 @@ def validate_sub_agent_specs(raw_agents: Any, error: str = "C10_SUB_AGENT_SCHEMA
 
 
 def validate_request(raw: Dict[str, Any], project_id: str, package_id: str, review_id: str) -> Dict[str, Any]:
-    value = exact(raw, {"dispatchSchemaVersion", "recordType", "dispatchId", "projectId", "packageId", "reviewId", "taskId", "runtimeProject", "bossDispatchAuthorization", "subAgents"}, "C10_DISPATCH_REQUEST_SCHEMA_UNSUPPORTED")
+    required = {"dispatchSchemaVersion", "recordType", "dispatchId", "projectId", "packageId", "reviewId", "taskId", "runtimeProject", "bossDispatchAuthorization", "subAgents"}
+    value = exact(raw, required | ({"model"} if isinstance(raw, dict) and "model" in raw else set()), "C10_DISPATCH_REQUEST_SCHEMA_UNSUPPORTED")
     if value["dispatchSchemaVersion"] != SCHEMA_VERSION or value["recordType"] != "C10_DISPATCH_REQUEST" or value["projectId"] != project_id or value["packageId"] != package_id or value["reviewId"] != review_id:
         raise DispatchError("C10_DISPATCH_REQUEST_SCHEMA_UNSUPPORTED")
     task_id = require_ref(value["taskId"], "C10_TASK_ID_INVALID", WINDOW_ID)
@@ -342,18 +372,169 @@ def validate_request(raw: Dict[str, Any], project_id: str, package_id: str, revi
         "authorizationScope": authorization["scope"],
         "runtimeProject": runtime_project,
         "subAgents": normalized,
+        "model": require_ref(value["model"], "C10_RUNTIME_MODEL_INVALID") if "model" in value else None,
     }
 
 
+def c05_task_occupancy_digest(ledger: Dict[str, Any], decision: Dict[str, Any], task_id: str) -> Optional[str]:
+    """Return the current C05 task-claim digest only when it still matches the immutable review."""
+    requests = decision.get("requestedOccupancies")
+    claim_ids = decision.get("reservedClaimIds")
+    review_id = decision.get("reviewId")
+    if (
+        decision.get("taskId") != task_id
+        or decision.get("status") != "ELIGIBLE_FOR_DISPATCH_APPROVAL"
+        or decision.get("executionBoundary", {}).get("occupancyReserved") is not True
+        or not isinstance(requests, list)
+        or not isinstance(claim_ids, list)
+        or len(requests) != len(claim_ids)
+        or not isinstance(review_id, str)
+        or not DIGEST.fullmatch(str(decision.get("source", {}).get("reviewDigest", "")))
+    ):
+        return None
+
+    expected = []
+    for request, claim_id in zip(requests, claim_ids):
+        if not isinstance(request, dict) or not isinstance(claim_id, str):
+            return None
+        try:
+            expected.append({
+                "objectKey": request["objectKey"],
+                "claimId": claim_id,
+                "ownerType": "task",
+                "ownerId": task_id,
+                "intent": request["intent"],
+                "conflictKey": request["conflictKey"],
+                "resourceClass": request["resourceClass"],
+                "exclusive": request["exclusive"],
+                "c05ReviewId": review_id,
+            })
+        except KeyError:
+            return None
+
+    actual = []
+    for object_key, occupancy in ledger.get("objectOccupancies", {}).items():
+        if not isinstance(occupancy, dict) or not isinstance(occupancy.get("claims"), list):
+            return None
+        for claim in occupancy["claims"]:
+            if not isinstance(claim, dict):
+                return None
+            if claim.get("ownerType") == "task" and claim.get("ownerId") == task_id:
+                actual.append({
+                    "objectKey": object_key,
+                    "claimId": claim.get("claimId"),
+                    "ownerType": claim.get("ownerType"),
+                    "ownerId": claim.get("ownerId"),
+                    "intent": claim.get("intent"),
+                    "conflictKey": claim.get("conflictKey"),
+                    "resourceClass": claim.get("resourceClass"),
+                    "exclusive": claim.get("exclusive"),
+                    "c05ReviewId": claim.get("c05ReviewId"),
+                })
+    order = lambda item: (str(item.get("objectKey")), str(item.get("claimId")))
+    expected.sort(key=order)
+    actual.sort(key=order)
+    expected_digest = canonical_digest(expected)
+    return expected_digest if canonical_digest(actual) == expected_digest else None
+
+
+def replacement_dispatch_context(ledger: Dict[str, Any], decision: Dict[str, Any], task_id: str) -> Optional[Dict[str, str]]:
+    """Validate the complete C08 replacement boundary without requiring a C06 conflict."""
+    task = ledger.get("tasks", {}).get(task_id)
+    if not isinstance(task, dict) or task.get("status") != "READY":
+        return None
+    history = task.get("history", [])
+    if not isinstance(history, list):
+        return None
+    events = [
+        item for item in history
+        if isinstance(item, dict)
+        and item.get("event") == "C08_TASK_WINDOW_REPLACEMENT_AUTHORIZED"
+        and item.get("from") == "BLOCKED"
+        and item.get("to") == "READY"
+    ]
+    if not events:
+        return None
+    event = events[-1]
+    case_id = event.get("caseId")
+    window_id = event.get("disconnectedWindowId")
+    if not isinstance(case_id, str) or not isinstance(window_id, str):
+        return None
+    recovery = ledger.get("recovery", {})
+    if (
+        not isinstance(recovery, dict)
+        or recovery.get("state") != "CLOSED"
+        or recovery.get("newDispatchAllowed") is not True
+        or recovery.get("activeCaseId") != case_id
+        or recovery.get("occupancyReleaseStatus") != "PRESERVED_FOR_REPLACEMENT"
+    ):
+        return None
+    old_window = ledger.get("windows", {}).get(window_id)
+    if (
+        not isinstance(old_window, dict)
+        or old_window.get("status") != "REPLACED_READ_ONLY"
+        or old_window.get("currentTaskId") is not None
+        or old_window.get("replacementAuthorizedAt") != event.get("at")
+    ):
+        return None
+    assignments = old_window.get("assignmentHistory")
+    if not isinstance(assignments, list) or not any(
+        isinstance(item, dict)
+        and item.get("taskId") == task_id
+        and item.get("status") == "DISCONNECTED_REPLACED"
+        and item.get("replacementAuthorizedAt") == event.get("at")
+        for item in assignments
+    ):
+        return None
+    window_decision = decision.get("windowDecision", {})
+    if (
+        isinstance(window_decision, dict)
+        and window_decision.get("status") == "REUSE_EXISTING_WINDOW"
+        and window_decision.get("windowId") != window_id
+    ):
+        return None
+    occupancy_digest = c05_task_occupancy_digest(ledger, decision, task_id)
+    if occupancy_digest is None:
+        return None
+    stops = ledger.get("hardStops", [])
+    if stops and not (
+        len(stops) == 1
+        and stops[0].get("code") == "C06_VALIDATION_CONFLICT"
+        and stops[0].get("taskId") == task_id
+    ):
+        return None
+    return {
+        "caseId": case_id,
+        "disconnectedWindowId": window_id,
+        "c05ReviewDigest": decision["source"]["reviewDigest"],
+        "c05TaskOccupancyDigest": occupancy_digest,
+    }
+
+
+def replacement_dispatch_allowed(ledger: Dict[str, Any], decision: Dict[str, Any], task_id: str) -> bool:
+    return replacement_dispatch_context(ledger, decision, task_id) is not None
+
+
+def has_task_replacement_history(task: Any) -> bool:
+    return isinstance(task, dict) and any(
+        isinstance(item, dict) and item.get("event") == "C08_TASK_WINDOW_REPLACEMENT_AUTHORIZED"
+        for item in task.get("history", [])
+    )
+
+
 def verified_sources(root: Path, project_id: str, package_id: str, review_id: str, task_id: str) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    from acceptance_policy import verify_approved_contract, AcceptancePolicyError
     try:
         _, package_code = verify_package(argparse.Namespace(data_root=str(root), config=None, project_id=project_id, package_id=package_id))
         if package_code != 0:
             raise DispatchError("C10_C04_PACKAGE_INTEGRITY_UNVERIFIED")
         package = load_package(root, project_id, package_id)
         decision = verify_decision_data(root, project_id, review_id)
+        verify_approved_contract(package, decision, canonical_digest(package))
         ledger = load_ledger(root, project_id)
-    except (C02Error, LedgerError, OccupancyError, TaskPackageError) as error:
+        from ledger_manager import require_direction_ready
+        require_direction_ready(ledger, task_id)
+    except (C02Error, LedgerError, OccupancyError, TaskPackageError, AcceptancePolicyError) as error:
         raise DispatchError(f"C10_SOURCE_{error}")
     if package.get("taskId") != task_id or decision.get("taskId") != task_id or decision.get("packageId") != package_id:
         raise DispatchError("C10_SOURCE_TASK_OR_PACKAGE_MISMATCH")
@@ -370,10 +551,16 @@ def verified_sources(root: Path, project_id: str, package_id: str, review_id: st
         raise DispatchError("C10_C05_DISPATCH_ELIGIBILITY_REQUIRED")
     if ledger.get("recovery", {}).get("state") not in {"NORMAL", "CLOSED"}:
         raise DispatchError("C10_RECOVERY_STATE_BLOCKS_DISPATCH")
-    if ledger.get("hardStops"):
+    replacement_allowed = replacement_dispatch_allowed(ledger, decision, task_id)
+    if has_task_replacement_history(task) and not replacement_allowed:
+        raise DispatchError("C10_REPLACEMENT_BOUNDARY_INVALID")
+    if ledger.get("hardStops") and not replacement_allowed:
         raise DispatchError("C10_LEDGER_HARD_STOP_BLOCKS_DISPATCH")
     if ledger.get("tasks", {}).get(task_id, {}).get("status") != "READY":
         raise DispatchError("C10_TASK_MUST_BE_READY")
+    from ledger_manager import execution_arrangement_waits
+    if execution_arrangement_waits(ledger, task_id):
+        raise DispatchError("C10_WAITING_FOR_EXECUTION_ARRANGEMENT")
     return package, decision, ledger
 
 
@@ -394,7 +581,7 @@ def next_task_generation(ledger: Dict[str, Any], task_id: str) -> int:
 
 
 def window_ready_for_second_assignment(window: Dict[str, Any], ledger: Dict[str, Any], task_id: str, reservation_id: Optional[str]) -> bool:
-    if not terra_model_is_enforced(window) or not bounded_permission_is_enforced(window):
+    if not terra_model_is_enforced(window) or not runtime_permission_is_recorded(window):
         return False
     if window_assignment_count(window) != 1:
         return False
@@ -420,9 +607,12 @@ def prepare(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     raw, request_digest = load_private(args.request, root, "C10_DISPATCH_REQUEST_INVALID_JSON")
     request = validate_request(raw, project_id, package_id, review_id)
     if args.writer_id != CENTRAL_WRITER: raise DispatchError("C10_WRITER_NOT_AUTHORIZED")
+    from ledger_manager import require_direction_ready
+    require_direction_ready(load_ledger(root, project_id), request["taskId"])
     target = plan_path(root, project_id, request["dispatchId"])
     if target.exists():
         existing = read_json(target, "C10_EXISTING_PLAN_INVALID")
+        require_current_direction(load_ledger(root, project_id), request["taskId"], existing)
         if existing.get("source", {}).get("requestDigest") == request_digest:
             return {
                 "status": "IDEMPOTENT_EXISTING_DISPATCH_PLAN",
@@ -437,18 +627,28 @@ def prepare(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     package, decision, ledger = verified_sources(root, project_id, package_id, review_id, request["taskId"])
     if decision.get("bossApprovalRef") != request["bossApprovalRef"]:
         raise DispatchError("C10_BOSS_AUTHORIZATION_NOT_BOUND_TO_C05_REVIEW")
-    window = decision["windowDecision"]
+    window = dict(decision["windowDecision"])
+    # A C05 decision is an immutable occupancy review, so it may still point at
+    # the window that C08 has since retired.  Only the narrowly authorized C08
+    # replacement path may supersede that stale reuse choice; scope, claims,
+    # package and Boss dispatch authorization remain bound to the original C05.
+    replacement_context = replacement_dispatch_context(ledger, decision, request["taskId"])
+    if replacement_context is not None:
+        window = {
+            "status": "OPEN_NEW_WINDOW",
+            "reasonRef": "C08_TASK_WINDOW_REPLACEMENT_AUTHORIZED",
+        }
     if window.get("status") not in {"OPEN_NEW_WINDOW", "REUSE_EXISTING_WINDOW"}:
         raise DispatchError("C10_WINDOW_DECISION_NOT_ACTIONABLE")
     light = classify(decision)
     environment_type = request["runtimeProject"]["environment"].lower()
     if window["status"] == "OPEN_NEW_WINDOW" and request["runtimeProject"]["environment"] == "WORKTREE":
         association_protocol = {
-            "primary": "CREATE_PROJECT_LOCAL_THEN_HANDOFF_TO_WORKTREE",
-            "requiredMethod": "LOCAL_BOOTSTRAP_TO_WORKTREE",
-            "initialTarget": {"type": "project", "projectId": request["runtimeProject"]["codexProjectId"], "environment": {"type": "local"}},
+            "primary": "CREATE_PROJECT_WORKTREE",
+            "requiredMethod": "DIRECT",
+            "initialTarget": {"type": "project", "projectId": request["runtimeProject"]["codexProjectId"], "environment": {"type": "worktree"}},
             "finalTarget": {"type": "project", "projectId": request["runtimeProject"]["codexProjectId"], "environment": {"type": "worktree"}},
-            "onMissingProjectId": "STOP_AND_RETIRE_UNCONFIRMED_CANDIDATE",
+            "onMissingProjectId": "VERIFY_NATIVE_CREATION_AND_GIT_COMMON_DIR_OR_STOP",
             "requiresFinalProjectReadback": True,
         }
     elif window["status"] == "OPEN_NEW_WINDOW":
@@ -466,7 +666,7 @@ def prepare(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             "requiredMethod": "EXISTING_REGISTERED_WINDOW",
             "initialTarget": None,
             "finalTarget": {"type": "project", "projectId": request["runtimeProject"]["codexProjectId"], "environment": {"type": environment_type}},
-            "onMissingProjectId": "STOP_AND_REPLACE_WINDOW_THROUGH_C08_RECOVERY",
+            "onMissingProjectId": "VERIFY_NATIVE_CREATION_AND_GIT_COMMON_DIR_OR_STOP" if request["runtimeProject"]["environment"] == "WORKTREE" else "STOP_AND_REPLACE_WINDOW_THROUGH_C08_RECOVERY",
             "requiresFinalProjectReadback": True,
         }
     task = ledger["tasks"][request["taskId"]]
@@ -496,27 +696,36 @@ def prepare(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
                 raise DispatchError("C10_WINDOW_NOT_ELIGIBLE_FOR_SECOND_ASSIGNMENT")
             generation = next_task_generation(ledger, request["taskId"])
     runtime_title = f"{canonical_title}｜G{generation}"
+    selected_model = request["model"] or (existing_window["runtimeModel"] if window["status"] != "OPEN_NEW_WINDOW" else TASK_RUNTIME_MODEL)
+    if not valid_model(selected_model):
+        raise DispatchError("C10_RUNTIME_MODEL_INVALID")
+    preserve_model = window["status"] != "OPEN_NEW_WINDOW" and request["model"] is None
     task_identity = {"taskId": request["taskId"], "canonicalTitle": canonical_title, "runtimeTitle": runtime_title, "generation": generation, "assignmentNumber": assignment_number}
+    source = {"requestDigest": request_digest, "packageDigest": canonical_digest(package), "c05DecisionDigest": canonical_digest(decision), "ledgerRevision": ledger["revision"], "ledgerDigest": canonical_digest(ledger)}
+    if replacement_context is not None:
+        source["replacementAuthorization"] = replacement_context
     plan = {
         "schemaVersion": SCHEMA_VERSION, "recordType": "C10_DISPATCH_PLAN", "dispatchId": request["dispatchId"],
+        **({"directionContext": direction_context(task), "directionInstructionRef": task["directionCorrections"][-1]["instructionRef"]} if task.get("directionCorrections") else {}),
         "createdAt": utc_now(), "projectId": project_id, "packageId": package_id, "reviewId": review_id,
         "taskId": request["taskId"], "status": "PENDING_RUNTIME_CONFIRMATION", "trafficLight": light,
         "taskIdentity": task_identity,
-        "source": {"requestDigest": request_digest, "packageDigest": canonical_digest(package), "c05DecisionDigest": canonical_digest(decision), "ledgerRevision": ledger["revision"], "ledgerDigest": canonical_digest(ledger)},
+        "source": source,
         "bossApprovalRef": request["bossApprovalRef"],
         "authorizationScope": request["authorizationScope"],
         "runtimeProject": request["runtimeProject"],
         "runtimeTarget": {"type": "project", "projectId": request["runtimeProject"]["codexProjectId"], "environment": {"type": environment_type}},
         "projectAssociationProtocol": association_protocol,
-        "windowAction": {"action": "CREATE_TASK" if window["status"] == "OPEN_NEW_WINDOW" else "SEND_TO_EXISTING_TASK", "windowId": window.get("windowId"), "model": TASK_RUNTIME_MODEL, "modelEnforcement": {"requiredModel": TASK_RUNTIME_MODEL, "requiredMethod": WINDOW_CREATE_MODEL_METHOD if window["status"] == "OPEN_NEW_WINDOW" else WINDOW_REUSE_MODEL_METHOD, "manualFallbackMethod": MANUAL_WINDOW_MODEL_METHOD if window["status"] == "OPEN_NEW_WINDOW" else None}, "permissionEnforcement": {"requiredClass": TASK_PERMISSION_CLASS, "allowedProfiles": sorted(ALLOWED_TASK_PERMISSION_PROFILES), "allowedMethods": sorted(WINDOW_PERMISSION_METHODS), "dangerFullAccessForbidden": True, "evidenceRequired": True}, "contextMode": "NEW" if window["status"] == "OPEN_NEW_WINDOW" else "REUSED", "generation": generation, "runtimeTitle": runtime_title, "assignmentNumber": assignment_number, "maxAssignments": MAX_TASKS_PER_WINDOW, "reuseType": reuse_type, "reuseReservationId": window.get("reuseReservationId"), "previousTaskId": previous_task_id, "renameRequired": bool(previous_task_id)},
-        "subAgents": [{**item, "model": TASK_RUNTIME_MODEL, "modelEnforcement": {"requiredModel": TASK_RUNTIME_MODEL, "requiredMethod": SUB_AGENT_MODEL_METHOD}, "permissionEnforcement": {"requiredClass": TASK_PERMISSION_CLASS, "allowedProfiles": sorted(ALLOWED_TASK_PERMISSION_PROFILES), "allowedMethods": sorted(SUB_AGENT_PERMISSION_METHODS), "dangerFullAccessForbidden": True, "evidenceRequired": True}, "parent": "TASK_WINDOW"} for item in request["subAgents"]],
+        "windowAction": {"action": "CREATE_TASK" if window["status"] == "OPEN_NEW_WINDOW" else "SEND_TO_EXISTING_TASK", "windowId": window.get("windowId"), "model": selected_model, "modelEnforcement": {"requiredModel": None if preserve_model else selected_model, "requiredMethod": READBACK_MODEL_METHOD if preserve_model else (WINDOW_CREATE_MODEL_METHOD if window["status"] == "OPEN_NEW_WINDOW" else WINDOW_REUSE_MODEL_METHOD), "manualFallbackMethod": MANUAL_MODEL_METHOD}, "permissionEnforcement": {"defaultClass": DEFAULT_TASK_PERMISSION_CLASS, "defaultProfile": DEFAULT_TASK_PERMISSION_PROFILE, "allowedClasses": ["FULL_ACCESS", "WORKTREE_SCOPED"], "allowedProfiles": sorted(ALLOWED_TASK_PERMISSION_PROFILES), "allowedMethods": sorted(WINDOW_PERMISSION_METHODS), "restrictedModeOptional": True, "dangerFullAccessForbidden": False, "evidenceRequired": True}, "contextMode": "NEW" if window["status"] == "OPEN_NEW_WINDOW" else "REUSED", "generation": generation, "runtimeTitle": runtime_title, "assignmentNumber": assignment_number, "maxAssignments": MAX_TASKS_PER_WINDOW, "reuseType": reuse_type, "reuseReservationId": window.get("reuseReservationId"), "previousTaskId": previous_task_id, "renameRequired": bool(previous_task_id)},
+        "subAgents": [{**item, "model": item["model"], "modelEnforcement": {"requiredModel": item["model"], "requiredMethod": SUB_AGENT_MODEL_METHOD}, "permissionEnforcement": {"defaultClass": DEFAULT_TASK_PERMISSION_CLASS, "defaultProfile": DEFAULT_TASK_PERMISSION_PROFILE, "allowedClasses": ["FULL_ACCESS", "WORKTREE_SCOPED"], "allowedProfiles": sorted(ALLOWED_TASK_PERMISSION_PROFILES), "allowedMethods": sorted(SUB_AGENT_PERMISSION_METHODS), "restrictedModeOptional": True, "dangerFullAccessForbidden": False, "evidenceRequired": True}, "parent": "TASK_WINDOW"} for item in request["subAgents"]],
         "nativeRuntime": {
             "windowOperation": {
                 "tool": "codex_app__create_thread" if window["status"] == "OPEN_NEW_WINDOW" else "codex_app__send_message_to_thread",
                 "initialTarget": association_protocol["initialTarget"],
                 "handoffTool": "codex_app__handoff_thread" if association_protocol["requiredMethod"] == "LOCAL_BOOTSTRAP_TO_WORKTREE" else None,
                 "finalTarget": association_protocol["finalTarget"],
-                "requiredModel": TASK_RUNTIME_MODEL,
+                "requiredModel": None if preserve_model else selected_model,
+                "preserveCurrentModel": preserve_model,
                 "requiredProjectId": request["runtimeProject"]["codexProjectId"],
                 "requiredEnvironment": request["runtimeProject"]["environment"],
                 "requiredTitle": runtime_title,
@@ -529,19 +738,135 @@ def prepare(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             "uiProjectionIsNotTaskState": True,
         },
         "taskPackage": {key: package[key] for key in ("displayName", "taskIdentity", "task", "requiredReading", "realTimeChecks", "allowedActions", "forbiddenActions", "preflightSnapshot", "executionSequence", "acceptance", "hardStops", "rollbackPlan", "deliverables", "handbackRule")},
-        "boundary": {"runtimeCallPerformed": False, "ledgerUpdated": False, "businessWritePerformed": False, "requiresAllRuntimeResultsBeforeConfirm": True, "requiresTerraModelEnforcement": True, "requiresBoundedPermissionEnforcement": True, "dangerFullAccessForbidden": True, "completionReturnsToParentWindow": True},
+        "boundary": {"runtimeCallPerformed": False, "ledgerUpdated": False, "businessWritePerformed": False, "requiresAllRuntimeResultsBeforeConfirm": True, "requiresRuntimeModelEvidence": True, "requiresRuntimePermissionEvidence": True, "restrictedPermissionOptional": True, "dangerFullAccessForbidden": False, "completionReturnsToParentWindow": True},
     }
+    if "acceptancePolicy" in package:
+        plan["taskPackage"]["acceptancePolicy"] = package["acceptancePolicy"]
+    if task.get("directionCorrections"):
+        context = direction_context(task)
+        instruction = task["directionCorrections"][-1]["instructionRef"]
+        plan["nativeRuntime"]["windowOperation"].update({"requiredDirectionContext": context,
+            "requiredDirectionInstructionRef": instruction})
+        plan["taskPackage"]["directionContext"] = context
+        plan["taskPackage"]["requiredReading"] = [*plan["taskPackage"]["requiredReading"],
+            {"reference": instruction, "purpose": "Apply the verified current execution direction while preserving the approved contract."}]
     with dispatch_lock(root, project_id):
         if target.exists(): raise DispatchError("C10_DISPATCH_PLAN_RACE_DETECTED")
         write_exclusive(target, plan)
     return {"status": "READY_FOR_RUNTIME_DISPATCH", "dispatchId": request["dispatchId"], "trafficLight": light, "taskIdentity": task_identity, "windowAction": plan["windowAction"], "runtimeTarget": plan["runtimeTarget"], "nativeRuntime": plan["nativeRuntime"], "projectAssociationProtocol": association_protocol, "authorizationScope": plan["authorizationScope"], "subAgentCount": len(plan["subAgents"]), "writePerformed": True, "dispatchPerformed": False, "businessWritePerformed": False}, 0
 
 
+def verify_project_evidence(window: Dict[str, Any], project: Dict[str, Any], root: Path) -> Dict[str, Any]:
+    """Cross-check retained native observations; never invent a direct project readback."""
+    proof = exact(window.get("projectAssociationEvidence"), {"method", "creation", "threadReadback", "savedProject"}, "C10_PROJECT_EVIDENCE_INVALID")
+    if proof["method"] != "NATIVE_CREATION_AND_GIT_COMMON_DIR":
+        raise DispatchError("C10_PROJECT_EVIDENCE_INVALID")
+    def read_evidence(ref: Dict[str, Any]) -> Any:
+        if not isinstance(ref.get("file"), str) or not isinstance(ref.get("sha256"), str):
+            raise DispatchError("C10_PROJECT_EVIDENCE_INVALID")
+        if not Path(ref["file"]).is_absolute():
+            raise DispatchError("C10_PROJECT_EVIDENCE_FILE_INVALID")
+        try:
+            path = Path(ref["file"]).expanduser().resolve()
+            if not path.is_absolute() or not is_within(path, root.resolve()) or not path.is_file():
+                raise DispatchError("C10_PROJECT_EVIDENCE_FILE_INVALID")
+            data = path.read_bytes()
+        except (OSError, RuntimeError):
+            raise DispatchError("C10_PROJECT_EVIDENCE_FILE_INVALID") from None
+        if hashlib.sha256(data).hexdigest() != ref["sha256"]:
+            raise DispatchError("C10_PROJECT_EVIDENCE_DIGEST_MISMATCH")
+        try:
+            return json.loads(data)
+        except (ValueError, UnicodeDecodeError):
+            raise DispatchError("C10_PROJECT_EVIDENCE_INVALID") from None
+    observations = {}
+    readback_state = "NULL" if window["runtimeProjectId"] is None else "EMPTY" if window["runtimeProjectId"] == "" else "VALUE"
+    for name in ("creation", "threadReadback", "savedProject"):
+        ref = exact(proof[name], {"file", "sha256", "source", "extraction"}, "C10_PROJECT_EVIDENCE_INVALID")
+        observation = read_evidence(ref)
+        source = read_evidence(exact(ref["source"], {"file", "sha256"}, "C10_PROJECT_EVIDENCE_INVALID"))
+        mapping = ref["extraction"]
+        if not isinstance(observation, dict) or not isinstance(mapping, dict) or set(mapping) != set(observation):
+            raise DispatchError("C10_PROJECT_EVIDENCE_EXTRACTION_INVALID")
+        for key, pointer in mapping.items():
+            absent_as_null = False
+            if isinstance(pointer, dict):
+                descriptor = exact(pointer, {"pointer", "absentAsNull"}, "C10_PROJECT_EVIDENCE_EXTRACTION_INVALID")
+                absent_as_null = name == "threadReadback" and key == "projectId" and descriptor["absentAsNull"] is True and observation[key] is None
+                if not absent_as_null:
+                    raise DispatchError("C10_PROJECT_EVIDENCE_EXTRACTION_INVALID")
+                pointer = descriptor["pointer"]
+            if not isinstance(pointer, str) or not pointer.startswith("/"):
+                raise DispatchError("C10_PROJECT_EVIDENCE_EXTRACTION_INVALID")
+            if absent_as_null and pointer.split("/")[-1] != "projectId":
+                raise DispatchError("C10_PROJECT_EVIDENCE_EXTRACTION_INVALID")
+            selected = source
+            try:
+                parts = pointer[1:].split("/")
+                for index, part in enumerate(parts):
+                    part = part.replace("~1", "/").replace("~0", "~")
+                    if absent_as_null and index == len(parts) - 1 and isinstance(selected, dict) and part not in selected:
+                        selected = None
+                        readback_state = "ABSENT"
+                        break
+                    if isinstance(selected, list):
+                        if not re.fullmatch(r"0|[1-9][0-9]*", part):
+                            raise DispatchError("C10_PROJECT_EVIDENCE_EXTRACTION_INVALID")
+                        selected = selected[int(part)]
+                    else:
+                        selected = selected[part]
+            except (KeyError, IndexError, ValueError, TypeError):
+                raise DispatchError("C10_PROJECT_EVIDENCE_EXTRACTION_INVALID") from None
+            if selected != observation[key]:
+                raise DispatchError("C10_PROJECT_EVIDENCE_SOURCE_MISMATCH")
+        observations[name] = observation
+    creation = observations["creation"]
+    readback = observations["threadReadback"]
+    saved = observations["savedProject"]
+    expected_target = {"type": "project", "projectId": project["codexProjectId"], "environment": {"type": project["environment"].lower()}}
+    if (not all(isinstance(item, dict) for item in (creation, readback, saved))
+        or creation.get("target") != expected_target
+        or creation.get("threadId") != window["runtimeThreadRef"]
+        or readback.get("threadId") != window["runtimeThreadRef"]
+        or "projectId" not in readback
+        or readback["projectId"] != window["runtimeProjectId"]
+        or readback.get("cwd") != window["runtimeCwd"]
+        or saved.get("projectId") != project["codexProjectId"]
+        or saved.get("path") != project["projectPath"]
+        or saved.get("isGitRepository") is not True):
+        raise DispatchError("C10_PROJECT_EVIDENCE_IDENTITY_MISMATCH")
+    if project["environment"] != "WORKTREE" or not project["isGitRepository"]:
+        raise DispatchError("C10_PROJECT_EVIDENCE_UNSUPPORTED_ENVIRONMENT")
+    def git_path(directory: str, flag: str) -> Path:
+        try:
+            git_env = {key: value for key, value in os.environ.items() if key not in {"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"}}
+            result = subprocess.run(["git", "-C", directory, "rev-parse", "--path-format=absolute", flag], check=True, capture_output=True, text=True, timeout=10, env=git_env)
+            return Path(result.stdout.strip()).resolve(strict=True)
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            raise DispatchError("C10_PROJECT_GIT_RELATIONSHIP_UNVERIFIED") from None
+    try:
+        saved_root = Path(project["projectPath"]).resolve(strict=True)
+        runtime_root = Path(window["runtimeCwd"]).resolve(strict=True)
+    except (OSError, RuntimeError, TypeError):
+        raise DispatchError("C10_PROJECT_GIT_RELATIONSHIP_UNVERIFIED") from None
+    common = git_path(str(saved_root), "--git-common-dir")
+    if (git_path(str(runtime_root), "--git-common-dir") != common
+        or git_path(str(saved_root), "--show-toplevel") != saved_root
+        or git_path(str(runtime_root), "--show-toplevel") != runtime_root
+        or runtime_root == saved_root
+        or git_path(str(runtime_root), "--git-dir") == common):
+        raise DispatchError("C10_PROJECT_GIT_RELATIONSHIP_MISMATCH")
+    return {**proof, "verifiedGitCommonDir": str(common), "directProjectReadbackState": readback_state, "sidebarVisibility": "UNVERIFIED"}
+
+
 def validate_confirmation(raw: Dict[str, Any], dispatch_id: str, plan: Dict[str, Any], root: Path) -> Dict[str, Any]:
     value = exact(raw, {"confirmationSchemaVersion", "recordType", "dispatchId", "taskWindow", "subAgents"}, "C10_CONFIRMATION_SCHEMA_UNSUPPORTED")
     if value["confirmationSchemaVersion"] != SCHEMA_VERSION or value["recordType"] != "C10_RUNTIME_CONFIRMATION" or value["dispatchId"] != dispatch_id:
         raise DispatchError("C10_CONFIRMATION_SCHEMA_UNSUPPORTED")
-    window = exact(value["taskWindow"], {"status", "taskId", "runtimeTitle", "generation", "windowId", "runtimeThreadRef", "runtimeProjectId", "runtimeCwd", "environmentType", "associationMethod", "associationHandoffRefs", "modelControl", "permissionControl"}, "C10_WINDOW_CONFIRMATION_INVALID")
+    window_keys = {"status", "taskId", "runtimeTitle", "generation", "windowId", "runtimeThreadRef", "runtimeProjectId", "runtimeCwd", "environmentType", "associationMethod", "associationHandoffRefs", "modelControl", "permissionControl"}
+    if isinstance(value["taskWindow"], dict) and "projectAssociationEvidence" in value["taskWindow"]:
+        window_keys.add("projectAssociationEvidence")
+    window = exact(value["taskWindow"], window_keys, "C10_WINDOW_CONFIRMATION_INVALID")
     expected = "CREATED" if plan["windowAction"]["action"] == "CREATE_TASK" else "REUSED"
     if window["status"] != expected: raise DispatchError("C10_WINDOW_RUNTIME_NOT_CONFIRMED")
     if (
@@ -553,9 +878,15 @@ def validate_confirmation(raw: Dict[str, Any], dispatch_id: str, plan: Dict[str,
     window_id = require_ref(window["windowId"], "C10_WINDOW_ID_INVALID", WINDOW_ID)
     if expected == "REUSED" and window_id != plan["windowAction"]["windowId"]: raise DispatchError("C10_REUSED_WINDOW_MISMATCH")
     runtime_ref = require_ref(window["runtimeThreadRef"], "C10_RUNTIME_THREAD_REF_INVALID")
-    allowed_window_methods = {WINDOW_CREATE_MODEL_METHOD, MANUAL_WINDOW_MODEL_METHOD} if expected == "CREATED" else {WINDOW_REUSE_MODEL_METHOD}
+    allowed_window_methods = {
+        WINDOW_CREATE_MODEL_METHOD,
+        WINDOW_REUSE_MODEL_METHOD,
+        MANUAL_WINDOW_MODEL_METHOD,
+        MANUAL_MODEL_METHOD,
+        READBACK_MODEL_METHOD,
+    } if expected == "CREATED" else {WINDOW_REUSE_MODEL_METHOD, READBACK_MODEL_METHOD, MANUAL_MODEL_METHOD}
     model_control = validate_model_control(window["modelControl"], allowed_window_methods, "C10_WINDOW_MODEL_CONTROL_INVALID")
-    if model_control["method"] != MANUAL_WINDOW_MODEL_METHOD and model_control["evidenceRef"] != runtime_ref:
+    if model_control["method"] not in {MANUAL_WINDOW_MODEL_METHOD, MANUAL_MODEL_METHOD} and model_control["evidenceRef"] != runtime_ref:
         raise DispatchError("C10_MODEL_CONTROL_RECEIPT_MISMATCH")
     permission_control = validate_permission_control(window["permissionControl"], WINDOW_PERMISSION_METHODS, "C10_WINDOW_PERMISSION_CONTROL_INVALID", root)
     if permission_control["method"] != "MANUAL_UI_PERMISSION_EVIDENCE" and permission_control["evidenceRef"] != runtime_ref:
@@ -572,11 +903,17 @@ def validate_confirmation(raw: Dict[str, Any], dispatch_id: str, plan: Dict[str,
     if association_method in {"DIRECT", "EXISTING_REGISTERED_WINDOW"} and handoff_refs:
         raise DispatchError("C10_PROJECT_ASSOCIATION_REPAIR_EVIDENCE_INVALID")
     if association_method == "LOCAL_BOOTSTRAP_TO_WORKTREE":
-        if len(handoff_refs) != 1 or runtime_ref in handoff_refs:
+        # Native handoff moves the existing thread; its identity may stay the same.
+        # Keep one bootstrap reference and validate the final project/environment below.
+        if len(handoff_refs) != 1:
             raise DispatchError("C10_PROJECT_ASSOCIATION_REPAIR_EVIDENCE_INVALID")
     runtime_project = plan.get("runtimeProject", {})
-    if require_ref(window["runtimeProjectId"], "C10_RUNTIME_PROJECT_ID_INVALID") != runtime_project.get("codexProjectId"):
+    direct_project_id = window["runtimeProjectId"]
+    if direct_project_id not in (None, "") and require_ref(direct_project_id, "C10_RUNTIME_PROJECT_ID_INVALID") != runtime_project.get("codexProjectId"):
         raise DispatchError("C10_RUNTIME_PROJECT_ASSOCIATION_MISMATCH")
+    association_evidence = {"method": "DIRECT_RUNTIME_PROJECT_READBACK", "directProjectReadbackState": "VALUE"}
+    if direct_project_id in (None, "") or "projectAssociationEvidence" in window:
+        association_evidence = verify_project_evidence(window, runtime_project, root)
     environment_type = str(window["environmentType"]).strip().upper()
     if environment_type != runtime_project.get("environment"):
         raise DispatchError("C10_RUNTIME_ENVIRONMENT_MISMATCH")
@@ -593,7 +930,7 @@ def validate_confirmation(raw: Dict[str, Any], dispatch_id: str, plan: Dict[str,
         parts = runtime_cwd.parts
         if runtime_cwd == project_path or ".codex" not in parts or "worktrees" not in parts or runtime_cwd.name != runtime_project["projectName"]:
             raise DispatchError("C10_NONSTANDARD_WORKTREE_TASK_LOCATION")
-    if not any(is_within(runtime_cwd.resolve(), Path(item)) for item in permission_control["writableRoots"]):
+    if permission_control["permissionClass"] == "WORKTREE_SCOPED" and not any(is_within(runtime_cwd.resolve(), Path(item)) for item in permission_control["writableRoots"]):
         raise DispatchError("C10_RUNTIME_CWD_NOT_IN_DECLARED_WRITABLE_ROOTS")
     agents = value["subAgents"]
     if not isinstance(agents, list) or len(agents) != len(plan["subAgents"]): raise DispatchError("C10_SUB_AGENT_CONFIRMATION_COUNT_MISMATCH")
@@ -610,13 +947,16 @@ def validate_confirmation(raw: Dict[str, Any], dispatch_id: str, plan: Dict[str,
         expected_permission_ref = runtime_ref if agent_permission_control["method"] == "INHERITED_FROM_PARENT_WINDOW" else agent_runtime_ref
         if agent_permission_control["evidenceRef"] != expected_permission_ref:
             raise DispatchError("C10_PERMISSION_CONTROL_RECEIPT_MISMATCH")
-        if agent_permission_control["profile"] != permission_control["profile"] and agent_permission_control["method"] == "INHERITED_FROM_PARENT_WINDOW":
-            raise DispatchError("C10_SUB_AGENT_PERMISSION_INHERITANCE_MISMATCH")
-        if agent_permission_control["method"] == "INHERITED_FROM_PARENT_WINDOW" and agent_permission_control["writableRoots"] != permission_control["writableRoots"]:
+        if agent_permission_control["method"] == "INHERITED_FROM_PARENT_WINDOW" and (
+            agent_permission_control["permissionClass"] != permission_control["permissionClass"]
+            or agent_permission_control["profile"] != permission_control["profile"]
+            or agent_permission_control["writableRoots"] != permission_control["writableRoots"]
+            or agent_permission_control["governanceDataRootAccess"] != permission_control["governanceDataRootAccess"]
+        ):
             raise DispatchError("C10_SUB_AGENT_PERMISSION_INHERITANCE_MISMATCH")
         normalized.append({"subAgentId": agent_id, "runtimeAgentRef": agent_runtime_ref, "modelControl": agent_model_control, "permissionControl": agent_permission_control})
     if len({x["subAgentId"] for x in normalized}) != len(normalized): raise DispatchError("C10_DUPLICATE_SUB_AGENT_CONFIRMATION")
-    return {"taskId": window["taskId"], "runtimeTitle": window["runtimeTitle"], "generation": window["generation"], "windowId": window_id, "runtimeThreadRef": runtime_ref, "runtimeProjectId": runtime_project["codexProjectId"], "runtimeCwd": str(runtime_cwd), "environmentType": environment_type, "associationMethod": association_method, "associationHandoffRefs": handoff_refs, "modelControl": model_control, "permissionControl": permission_control, "agents": normalized}
+    return {"taskId": window["taskId"], "runtimeTitle": window["runtimeTitle"], "generation": window["generation"], "windowId": window_id, "runtimeThreadRef": runtime_ref, "runtimeProjectId": direct_project_id, "verifiedProjectId": runtime_project["codexProjectId"], "projectAssociationEvidence": association_evidence, "runtimeCwd": str(runtime_cwd), "environmentType": environment_type, "associationMethod": association_method, "associationHandoffRefs": handoff_refs, "modelControl": model_control, "permissionControl": permission_control, "agents": normalized}
 
 
 def confirm(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
@@ -626,10 +966,10 @@ def confirm(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     raw, confirmation_digest = load_private(args.confirmation, root, "C10_CONFIRMATION_INVALID_JSON")
     confirmation = validate_confirmation(raw, dispatch_id, plan, root)
     if (
-        confirmation["modelControl"]["method"] == MANUAL_WINDOW_MODEL_METHOD
+        confirmation["modelControl"]["method"] in {MANUAL_WINDOW_MODEL_METHOD, MANUAL_MODEL_METHOD}
         and not fallback_path(root, project_id, dispatch_id).is_file()
     ):
-        raise DispatchError("C10_MANUAL_TERRA_EVIDENCE_REQUIRES_FALLBACK_PACKAGE")
+        raise DispatchError("C10_MANUAL_MODEL_EVIDENCE_REQUIRES_FALLBACK_PACKAGE")
     if (
         confirmation["permissionControl"]["method"] == "MANUAL_UI_PERMISSION_EVIDENCE"
         and not fallback_path(root, project_id, dispatch_id).is_file()
@@ -643,16 +983,32 @@ def confirm(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         raise DispatchError("C10_CONFIRMATION_ALREADY_EXISTS_WITH_DIFFERENT_CONTENT")
     with dispatch_lock(root, project_id), ledger_lock(root, project_id):
         before = load_ledger(root, project_id)
+        from ledger_manager import require_direction_ready
+        require_current_direction(before, plan["taskId"], plan)
         if before.get("recovery", {}).get("state") not in {"NORMAL", "CLOSED"}: raise DispatchError("C10_RECOVERY_STATE_BLOCKS_CONFIRMATION")
         task = before.get("tasks", {}).get(plan["taskId"])
         if not isinstance(task, dict) or task.get("status") != "READY": raise DispatchError("C10_TASK_MUST_BE_READY_AT_CONFIRMATION")
+        replacement_source = plan.get("source", {}).get("replacementAuthorization")
+        has_replacement_history = has_task_replacement_history(task)
+        if has_replacement_history:
+            if not isinstance(replacement_source, dict) or plan["windowAction"]["action"] != "CREATE_TASK":
+                raise DispatchError("C10_REPLACEMENT_PLAN_REQUIRED_AFTER_C08_AUTHORIZATION")
+            try:
+                decision = verify_decision_data(root, project_id, plan["reviewId"])
+            except OccupancyError as error:
+                raise DispatchError(f"C10_REPLACEMENT_C05_{error}") from error
+            if (
+                canonical_digest(decision) != plan.get("source", {}).get("c05DecisionDigest")
+                or replacement_dispatch_context(before, decision, plan["taskId"]) != replacement_source
+            ):
+                raise DispatchError("C10_REPLACEMENT_BOUNDARY_CHANGED_BEFORE_CONFIRMATION")
         if plan["windowAction"]["action"] == "CREATE_TASK" and confirmation["windowId"] in before["windows"]: raise DispatchError("C10_WINDOW_ID_ALREADY_REGISTERED")
         if plan["windowAction"]["action"] == "SEND_TO_EXISTING_TASK" and confirmation["windowId"] not in before["windows"]: raise DispatchError("C10_REUSED_WINDOW_NOT_FOUND")
         if plan["windowAction"]["action"] == "SEND_TO_EXISTING_TASK":
             existing_window = before["windows"][confirmation["windowId"]]
             if not terra_model_is_enforced(existing_window):
                 raise DispatchError("C10_REUSED_WINDOW_TERRA_ENFORCEMENT_UNVERIFIED")
-            if not bounded_permission_is_enforced(existing_window):
+            if not runtime_permission_is_recorded(existing_window):
                 raise DispatchError("C10_REUSED_WINDOW_PERMISSION_ENFORCEMENT_UNVERIFIED")
             if plan["windowAction"].get("reuseType") == "CURRENT_ASSIGNMENT":
                 if window_current_task_id(existing_window) != plan["taskId"]:
@@ -669,7 +1025,7 @@ def confirm(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             assigned_at = utc_now()
             if plan["windowAction"]["action"] == "CREATE_TASK":
                 assignment = {"assignmentNumber": 1, "taskId": plan["taskId"], "canonicalTitle": plan["taskIdentity"]["canonicalTitle"], "generation": confirmation["generation"], "runtimeTitle": confirmation["runtimeTitle"], "contextMode": "NEW", "dispatchId": dispatch_id, "assignedAt": assigned_at, "completedAt": None, "status": "ACTIVE"}
-                after["windows"][confirmation["windowId"]] = {"windowId": confirmation["windowId"], "taskId": plan["taskId"], "currentTaskId": plan["taskId"], "canonicalTitle": plan["taskIdentity"]["canonicalTitle"], "generation": confirmation["generation"], "runtimeTitle": confirmation["runtimeTitle"], "model": TASK_RUNTIME_MODEL, "runtimeModel": TASK_RUNTIME_MODEL, "modelEnforcement": {**confirmation["modelControl"], "confirmedAt": assigned_at}, "permissionEnforcement": {**confirmation["permissionControl"], "confirmedAt": assigned_at}, "contextMode": "NEW", "status": "REGISTERED", "maxAssignments": MAX_TASKS_PER_WINDOW, "assignmentCount": 1, "assignmentHistory": [assignment], "runtimeThreadRef": confirmation["runtimeThreadRef"], "runtimeProjectId": confirmation["runtimeProjectId"], "environmentType": confirmation["environmentType"], "associationMethod": confirmation["associationMethod"], "dispatchId": dispatch_id, "registeredAt": assigned_at}
+                after["windows"][confirmation["windowId"]] = {"windowId": confirmation["windowId"], "taskId": plan["taskId"], "currentTaskId": plan["taskId"], "canonicalTitle": plan["taskIdentity"]["canonicalTitle"], "generation": confirmation["generation"], "runtimeTitle": confirmation["runtimeTitle"], "model": confirmation["modelControl"]["model"], "runtimeModel": confirmation["modelControl"]["model"], "modelEnforcement": {**confirmation["modelControl"], "confirmedAt": assigned_at}, "permissionEnforcement": {**confirmation["permissionControl"], "confirmedAt": assigned_at}, "contextMode": "NEW", "status": "REGISTERED", "maxAssignments": MAX_TASKS_PER_WINDOW, "assignmentCount": 1, "assignmentHistory": [assignment], "runtimeThreadRef": confirmation["runtimeThreadRef"], "runtimeProjectId": confirmation["runtimeProjectId"], "environmentType": confirmation["environmentType"], "associationMethod": confirmation["associationMethod"], "dispatchId": dispatch_id, "registeredAt": assigned_at}
             else:
                 target_window = after["windows"][confirmation["windowId"]]
                 if plan["windowAction"].get("reuseType") == "CURRENT_ASSIGNMENT":
@@ -694,18 +1050,23 @@ def confirm(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
                 target_window["runtimeProjectId"] = confirmation["runtimeProjectId"]
                 target_window["environmentType"] = confirmation["environmentType"]
                 target_window["associationMethod"] = confirmation["associationMethod"]
-                target_window["model"] = TASK_RUNTIME_MODEL
-                target_window["runtimeModel"] = TASK_RUNTIME_MODEL
+                target_window["model"] = confirmation["modelControl"]["model"]
+                target_window["runtimeModel"] = confirmation["modelControl"]["model"]
                 target_window["modelEnforcement"] = {**confirmation["modelControl"], "confirmedAt": assigned_at}
                 target_window["permissionEnforcement"] = {**confirmation["permissionControl"], "confirmedAt": assigned_at}
                 target_window["dispatchId"] = dispatch_id
+            after["windows"][confirmation["windowId"]].update({
+                "verifiedProjectId": confirmation["verifiedProjectId"],
+                "projectAssociationEvidence": confirmation["projectAssociationEvidence"],
+                "directProjectReadbackState": confirmation["projectAssociationEvidence"]["directProjectReadbackState"],
+            })
             for agent_id, agent_runtime_data in agent_runtime.items():
                 if agent_id in after["subAgents"]: raise DispatchError("C10_SUB_AGENT_ID_ALREADY_REGISTERED")
                 spec = plan_agents[agent_id]
                 after["subAgents"][agent_id] = {
                     "subAgentId": agent_id, "windowId": confirmation["windowId"], "taskId": plan["taskId"],
                     "role": spec["role"], "scope": spec["scope"], "delegationReason": spec["delegationReason"],
-                    "executionMode": spec["executionMode"], "model": TASK_RUNTIME_MODEL, "runtimeModel": TASK_RUNTIME_MODEL,
+                    "executionMode": spec["executionMode"], "model": agent_runtime_data["modelControl"]["model"], "runtimeModel": agent_runtime_data["modelControl"]["model"],
                     "modelEnforcement": {**agent_runtime_data["modelControl"], "confirmedAt": assigned_at}, "permissionEnforcement": {**agent_runtime_data["permissionControl"], "confirmedAt": assigned_at}, "level": 1,
                     "status": "REGISTERED", "runtimeAgentRef": agent_runtime_data["runtimeAgentRef"], "dispatchId": dispatch_id,
                     "registeredAt": utc_now(),
@@ -713,9 +1074,12 @@ def confirm(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             target_task = after["tasks"][plan["taskId"]]; target_task["status"] = "IN_PROGRESS"
             target_task["history"].append({"at": utc_now(), "event": "C10_RUNTIME_DISPATCH_CONFIRMED", "dispatchId": dispatch_id, "windowId": confirmation["windowId"], "from": "READY", "to": "IN_PROGRESS", "by": CENTRAL_WRITER})
         result = commit_mutation(root, project_id, before, CENTRAL_WRITER, "C10_CONFIRM_RUNTIME_DISPATCH", {"dispatchId": dispatch_id, "taskId": plan["taskId"], "windowId": confirmation["windowId"], "subAgentCount": len(confirmation["agents"])}, mutate, caller_thread_ref=args.caller_thread_ref)
-        artifact = {"schemaVersion": SCHEMA_VERSION, "recordType": "C10_DISPATCH_CONFIRMATION", "dispatchId": dispatch_id, "confirmedAt": utc_now(), "projectId": project_id, "taskId": plan["taskId"], "taskIdentity": plan["taskIdentity"], "windowId": confirmation["windowId"], "windowAssignment": {"assignmentNumber": plan["windowAction"]["assignmentNumber"], "maxAssignments": MAX_TASKS_PER_WINDOW, "isFinalAllowedAssignment": plan["windowAction"]["assignmentNumber"] == MAX_TASKS_PER_WINDOW}, "runtimeThreadRef": confirmation["runtimeThreadRef"], "runtimeProjectId": confirmation["runtimeProjectId"], "runtimeCwd": confirmation["runtimeCwd"], "environmentType": confirmation["environmentType"], "associationMethod": confirmation["associationMethod"], "associationHandoffRefs": confirmation["associationHandoffRefs"], "model": TASK_RUNTIME_MODEL, "modelEnforcement": confirmation["modelControl"], "permissionEnforcement": confirmation["permissionControl"], "authorizationScope": plan["authorizationScope"], "subAgents": confirmation["agents"], "sourceConfirmationDigest": confirmation_digest, "ledgerReceiptId": result["receiptId"], "boundary": {"runtimeConfirmed": True, "projectAssociationVerified": True, "terraModelEnforced": True, "boundedPermissionEnforced": True, "dangerFullAccessForbidden": True, "taskStatus": "IN_PROGRESS", "businessWritePerformed": False, "completionMustReturnToParentWindow": True, "parentQualityGateRequiredIfSubAgentsUsed": bool(confirmation["agents"])}}
+        artifact = {"schemaVersion": SCHEMA_VERSION, "recordType": "C10_DISPATCH_CONFIRMATION", "dispatchId": dispatch_id, "confirmedAt": utc_now(), "projectId": project_id, "taskId": plan["taskId"], "taskIdentity": plan["taskIdentity"], "windowId": confirmation["windowId"], "windowAssignment": {"assignmentNumber": plan["windowAction"]["assignmentNumber"], "maxAssignments": MAX_TASKS_PER_WINDOW, "isFinalAllowedAssignment": plan["windowAction"]["assignmentNumber"] == MAX_TASKS_PER_WINDOW}, "runtimeThreadRef": confirmation["runtimeThreadRef"], "runtimeProjectId": confirmation["runtimeProjectId"], "runtimeCwd": confirmation["runtimeCwd"], "environmentType": confirmation["environmentType"], "associationMethod": confirmation["associationMethod"], "associationHandoffRefs": confirmation["associationHandoffRefs"], "model": confirmation["modelControl"]["model"], "modelEnforcement": confirmation["modelControl"], "permissionEnforcement": confirmation["permissionControl"], "authorizationScope": plan["authorizationScope"], "subAgents": confirmation["agents"], "sourceConfirmationDigest": confirmation_digest, "ledgerReceiptId": result["receiptId"], "boundary": {"runtimeConfirmed": True, "projectAssociationVerified": True, "runtimeModelRecorded": True, "runtimePermissionRecorded": True, "restrictedPermissionOptional": True, "dangerFullAccessForbidden": False, "taskStatus": "IN_PROGRESS", "businessWritePerformed": False, "completionMustReturnToParentWindow": True, "parentQualityGateRequiredIfSubAgentsUsed": bool(confirmation["agents"])}}
+        artifact["verifiedProjectId"] = confirmation["verifiedProjectId"]
+        artifact["projectAssociationEvidence"] = confirmation["projectAssociationEvidence"]
+        artifact["directProjectReadbackState"] = confirmation["projectAssociationEvidence"]["directProjectReadbackState"]
         write_exclusive(target, artifact)
-    return {"status": "RUNTIME_DISPATCH_CONFIRMED", "dispatchId": dispatch_id, "windowId": confirmation["windowId"], "model": TASK_RUNTIME_MODEL, "modelEnforcement": confirmation["modelControl"]["method"], "permissionClass": TASK_PERMISSION_CLASS, "permissionProfile": confirmation["permissionControl"]["profile"], "assignmentNumber": plan["windowAction"]["assignmentNumber"], "maxAssignments": MAX_TASKS_PER_WINDOW, "associationMethod": confirmation["associationMethod"], "subAgentCount": len(confirmation["agents"]), "taskStatus": "IN_PROGRESS", "ledgerReceiptId": result["receiptId"], "writePerformed": True, "dispatchPerformed": True, "businessWritePerformed": False}, 0
+    return {"status": "RUNTIME_DISPATCH_CONFIRMED", "dispatchId": dispatch_id, "windowId": confirmation["windowId"], "model": confirmation["modelControl"]["model"], "modelEnforcement": confirmation["modelControl"]["method"], "permissionClass": confirmation["permissionControl"]["permissionClass"], "permissionProfile": confirmation["permissionControl"]["profile"], "assignmentNumber": plan["windowAction"]["assignmentNumber"], "maxAssignments": MAX_TASKS_PER_WINDOW, "associationMethod": confirmation["associationMethod"], "subAgentCount": len(confirmation["agents"]), "taskStatus": "IN_PROGRESS", "ledgerReceiptId": result["receiptId"], "writePerformed": True, "dispatchPerformed": True, "businessWritePerformed": False}, 0
 
 
 def task_window_agents(ledger: Dict[str, Any], window_id: str, task_id: str) -> Dict[str, Dict[str, Any]]:
@@ -759,13 +1123,18 @@ def prepare_append(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     raw, request_digest = load_private(args.append_request, root, "C10_APPEND_REQUEST_INVALID_JSON")
     request = validate_append_request(raw, project_id, dispatch_id, confirmation)
     target = append_plan_path(root, project_id, dispatch_id, request["appendId"])
+    from ledger_manager import require_direction_ready
+    require_direction_ready(load_ledger(root, project_id), request["taskId"])
     if target.exists():
         existing = read_json(target, "C10_EXISTING_APPEND_PLAN_INVALID")
+        require_current_direction(load_ledger(root, project_id), request["taskId"], existing)
         if existing.get("source", {}).get("requestDigest") == request_digest:
             return {"status": "IDEMPOTENT_EXISTING_SUB_AGENT_APPEND_PLAN", "dispatchId": dispatch_id, "appendId": request["appendId"], "writePerformed": False, "dispatchPerformed": False}, 0
         raise DispatchError("C10_APPEND_ID_REUSED_WITH_DIFFERENT_REQUEST")
     with dispatch_lock(root, project_id), ledger_lock(root, project_id):
         ledger = load_ledger(root, project_id)
+        from ledger_manager import require_direction_ready
+        require_direction_ready(ledger, request["taskId"])
         if ledger.get("recovery", {}).get("state") not in {"NORMAL", "CLOSED"} or ledger.get("hardStops"):
             raise DispatchError("C10_RECOVERY_OR_HARD_STOP_BLOCKS_APPEND")
         task = ledger.get("tasks", {}).get(request["taskId"])
@@ -774,7 +1143,7 @@ def prepare_append(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             raise DispatchError("C10_APPEND_REQUIRES_LIVE_TASK_WINDOW")
         if not terra_model_is_enforced(window):
             raise DispatchError("C10_APPEND_REQUIRES_TERRA_ENFORCED_WINDOW")
-        if not bounded_permission_is_enforced(window):
+        if not runtime_permission_is_recorded(window):
             raise DispatchError("C10_APPEND_REQUIRES_PERMISSION_ENFORCED_WINDOW")
         existing_agents = task_window_agents(ledger, request["windowId"], request["taskId"])
         if len(existing_agents) + len(request["subAgents"]) > 3:
@@ -783,19 +1152,27 @@ def prepare_append(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             raise DispatchError("C10_SUB_AGENT_ID_ALREADY_REGISTERED")
         plan = {
             "schemaVersion": SCHEMA_VERSION, "recordType": "C10_SUB_AGENT_APPEND_PLAN", "appendId": request["appendId"],
+            **({"directionContext": direction_context(task), "directionInstructionRef": task["directionCorrections"][-1]["instructionRef"]} if task.get("directionCorrections") else {}),
             "dispatchId": dispatch_id, "projectId": project_id, "taskId": request["taskId"], "windowId": request["windowId"],
             "parentRuntimeThreadRef": confirmation["runtimeThreadRef"],
+            "parentPermissionClass": confirmation["permissionEnforcement"]["permissionClass"],
             "parentPermissionProfile": confirmation["permissionEnforcement"]["profile"],
             "createdAt": utc_now(), "status": "PENDING_RUNTIME_CONFIRMATION", "trigger": request["trigger"],
-            "subAgents": [{**agent, "model": TASK_RUNTIME_MODEL, "modelEnforcement": {"requiredModel": TASK_RUNTIME_MODEL, "requiredMethod": SUB_AGENT_MODEL_METHOD}, "permissionEnforcement": {"requiredClass": TASK_PERMISSION_CLASS, "allowedProfiles": sorted(ALLOWED_TASK_PERMISSION_PROFILES), "allowedMethods": sorted(SUB_AGENT_PERMISSION_METHODS), "dangerFullAccessForbidden": True, "evidenceRequired": True}, "parent": "TASK_WINDOW"} for agent in request["subAgents"]],
+            "subAgents": [{**agent, "model": agent["model"], "modelEnforcement": {"requiredModel": agent["model"], "requiredMethod": SUB_AGENT_MODEL_METHOD}, "permissionEnforcement": {"inheritsParentClass": confirmation["permissionEnforcement"]["permissionClass"], "inheritsParentProfile": confirmation["permissionEnforcement"]["profile"], "allowedMethods": sorted(SUB_AGENT_PERMISSION_METHODS), "dangerFullAccessForbidden": False, "evidenceRequired": True}, "parent": "TASK_WINDOW"} for agent in request["subAgents"]],
             "source": {"requestDigest": request_digest, "dispatchConfirmationDigest": canonical_digest(confirmation), "ledgerRevision": ledger["revision"], "ledgerDigest": canonical_digest(ledger)},
-            "boundary": {"withinApprovedScope": True, "sharedWriteRisk": False, "businessWritePerformed": False, "requiresTerraModelEnforcement": True, "requiresBoundedPermissionEnforcement": True, "dangerFullAccessForbidden": True, "requiresParentQualityGate": True, "completionReturnsToParentWindow": True},
+            "boundary": {"withinApprovedScope": True, "sharedWriteRisk": False, "businessWritePerformed": False, "requiresRuntimeModelEvidence": True, "requiresRuntimePermissionEvidence": True, "restrictedPermissionOptional": True, "dangerFullAccessForbidden": False, "requiresParentQualityGate": True, "completionReturnsToParentWindow": True},
         }
         write_exclusive(target, plan)
     return {"status": "READY_FOR_RUNTIME_SUB_AGENT_APPEND", "dispatchId": dispatch_id, "appendId": request["appendId"], "windowId": request["windowId"], "subAgentCount": len(request["subAgents"]), "writePerformed": True, "dispatchPerformed": False, "businessWritePerformed": False}, 0
 
 
 def validate_append_confirmation(raw: Dict[str, Any], append_id: str, dispatch_id: str, plan: Dict[str, Any], root: Path) -> Dict[str, Any]:
+    parent_class = plan.get("parentPermissionClass")
+    if parent_class is None:
+        # Old sealed append plans only supported native workspace isolation.
+        if plan.get("parentPermissionProfile") not in {":workspace", "workspace-write"}:
+            raise DispatchError("C10_LEGACY_APPEND_PERMISSION_REQUIRES_REVIEW")
+        parent_class = "WORKTREE_SCOPED"
     value = exact(raw, {"appendConfirmationSchemaVersion", "recordType", "appendId", "dispatchId", "windowId", "subAgents"}, "C10_APPEND_CONFIRMATION_SCHEMA_UNSUPPORTED")
     if value["appendConfirmationSchemaVersion"] != SCHEMA_VERSION or value["recordType"] != "C10_SUB_AGENT_APPEND_RUNTIME_CONFIRMATION" or value["appendId"] != append_id or value["dispatchId"] != dispatch_id or value["windowId"] != plan["windowId"]:
         raise DispatchError("C10_APPEND_CONFIRMATION_SCOPE_MISMATCH")
@@ -814,7 +1191,7 @@ def validate_append_confirmation(raw: Dict[str, Any], append_id: str, dispatch_i
         agent_permission_control = validate_permission_control(agent["permissionControl"], SUB_AGENT_PERMISSION_METHODS, "C10_SUB_AGENT_PERMISSION_CONTROL_INVALID", root)
         if agent_permission_control["method"] != "INHERITED_FROM_PARENT_WINDOW" or agent_permission_control["evidenceRef"] != plan["parentRuntimeThreadRef"]:
             raise DispatchError("C10_PERMISSION_CONTROL_RECEIPT_MISMATCH")
-        if agent_permission_control["profile"] != plan["parentPermissionProfile"]:
+        if agent_permission_control["permissionClass"] != parent_class or agent_permission_control["profile"] != plan["parentPermissionProfile"]:
             raise DispatchError("C10_SUB_AGENT_PERMISSION_INHERITANCE_MISMATCH")
         normalized.append({"subAgentId": agent_id, "runtimeAgentRef": runtime_agent_ref, "modelControl": agent_model_control, "permissionControl": agent_permission_control})
     if len({agent["subAgentId"] for agent in normalized}) != len(normalized): raise DispatchError("C10_DUPLICATE_SUB_AGENT_CONFIRMATION")
@@ -836,13 +1213,15 @@ def confirm_append(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     with dispatch_lock(root, project_id), ledger_lock(root, project_id):
         before = load_ledger(root, project_id)
         task = before.get("tasks", {}).get(plan["taskId"]); window = before.get("windows", {}).get(plan["windowId"])
+        from ledger_manager import require_direction_ready
+        require_current_direction(before, plan["taskId"], plan)
         if before.get("recovery", {}).get("state") not in {"NORMAL", "CLOSED"} or before.get("hardStops"):
             raise DispatchError("C10_RECOVERY_OR_HARD_STOP_BLOCKS_APPEND")
         if not isinstance(task, dict) or task.get("status") != "IN_PROGRESS" or not isinstance(window, dict) or window_current_task_id(window) != plan["taskId"]:
             raise DispatchError("C10_APPEND_REQUIRES_LIVE_TASK_WINDOW")
         if not terra_model_is_enforced(window):
             raise DispatchError("C10_APPEND_REQUIRES_TERRA_ENFORCED_WINDOW")
-        if not bounded_permission_is_enforced(window):
+        if not runtime_permission_is_recorded(window):
             raise DispatchError("C10_APPEND_REQUIRES_PERMISSION_ENFORCED_WINDOW")
         existing_agents = task_window_agents(before, plan["windowId"], plan["taskId"])
         if len(existing_agents) + len(confirmation["agents"]) > 3: raise DispatchError("C10_FIRST_LEVEL_SUB_AGENT_LIMIT_EXCEEDED")
@@ -854,12 +1233,12 @@ def confirm_append(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
                 after["subAgents"][item["subAgentId"]] = {
                     "subAgentId": item["subAgentId"], "windowId": plan["windowId"], "taskId": plan["taskId"], "role": spec["role"],
                     "scope": spec["scope"], "delegationReason": spec["delegationReason"], "executionMode": spec["executionMode"],
-                    "model": TASK_RUNTIME_MODEL, "runtimeModel": TASK_RUNTIME_MODEL, "modelEnforcement": {**item["modelControl"], "confirmedAt": utc_now()}, "permissionEnforcement": {**item["permissionControl"], "confirmedAt": utc_now()}, "level": 1, "status": "REGISTERED", "runtimeAgentRef": item["runtimeAgentRef"],
+                    "model": item["modelControl"]["model"], "runtimeModel": item["modelControl"]["model"], "modelEnforcement": {**item["modelControl"], "confirmedAt": utc_now()}, "permissionEnforcement": {**item["permissionControl"], "confirmedAt": utc_now()}, "level": 1, "status": "REGISTERED", "runtimeAgentRef": item["runtimeAgentRef"],
                     "dispatchId": dispatch_id, "appendId": append_id, "registeredAt": utc_now(),
                 }
             after["tasks"][plan["taskId"]]["history"].append({"at": utc_now(), "event": "C10_SUB_AGENT_APPEND_CONFIRMED", "dispatchId": dispatch_id, "appendId": append_id, "windowId": plan["windowId"], "to": "IN_PROGRESS", "by": CENTRAL_WRITER})
         result = commit_mutation(root, project_id, before, CENTRAL_WRITER, "C10_CONFIRM_SUB_AGENT_APPEND", {"dispatchId": dispatch_id, "appendId": append_id, "taskId": plan["taskId"], "windowId": plan["windowId"], "subAgentCount": len(confirmation["agents"])}, mutate, caller_thread_ref=args.caller_thread_ref)
-        artifact = {"schemaVersion": SCHEMA_VERSION, "recordType": "C10_SUB_AGENT_APPEND_CONFIRMATION", "appendId": append_id, "dispatchId": dispatch_id, "projectId": project_id, "taskId": plan["taskId"], "windowId": plan["windowId"], "confirmedAt": utc_now(), "model": TASK_RUNTIME_MODEL, "subAgents": confirmation["agents"], "sourceConfirmationDigest": confirmation_digest, "ledgerReceiptId": result["receiptId"], "boundary": {"runtimeConfirmed": True, "terraModelEnforced": True, "boundedPermissionEnforced": True, "dangerFullAccessForbidden": True, "businessWritePerformed": False, "parentQualityGateRequired": True}}
+        artifact = {"schemaVersion": SCHEMA_VERSION, "recordType": "C10_SUB_AGENT_APPEND_CONFIRMATION", "appendId": append_id, "dispatchId": dispatch_id, "projectId": project_id, "taskId": plan["taskId"], "windowId": plan["windowId"], "confirmedAt": utc_now(), "models": {item["subAgentId"]: item["modelControl"]["model"] for item in confirmation["agents"]}, "subAgents": confirmation["agents"], "sourceConfirmationDigest": confirmation_digest, "ledgerReceiptId": result["receiptId"], "boundary": {"runtimeConfirmed": True, "runtimeModelRecorded": True, "runtimePermissionRecorded": True, "restrictedPermissionOptional": True, "dangerFullAccessForbidden": False, "businessWritePerformed": False, "parentQualityGateRequired": True}}
         write_exclusive(target, artifact)
     return {"status": "SUB_AGENT_APPEND_CONFIRMED", "dispatchId": dispatch_id, "appendId": append_id, "windowId": plan["windowId"], "subAgentCount": len(confirmation["agents"]), "ledgerReceiptId": result["receiptId"], "writePerformed": True, "dispatchPerformed": True, "businessWritePerformed": False}, 0
 
@@ -871,11 +1250,13 @@ def export_fallback(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     if args.writer_id != CENTRAL_WRITER:
         raise DispatchError("C10_WRITER_NOT_AUTHORIZED")
     plan = read_json(plan_path(root, project_id, dispatch_id), "C10_DISPATCH_PLAN_NOT_FOUND_OR_INVALID")
+    require_current_direction(load_ledger(root, project_id), plan["taskId"], plan)
     if plan.get("status") != "PENDING_RUNTIME_CONFIRMATION":
         raise DispatchError("C10_DISPATCH_PLAN_NOT_PENDING")
     if confirmation_path(root, project_id, dispatch_id).exists():
         raise DispatchError("C10_RUNTIME_ALREADY_CONFIRMED")
-    target = fallback_path(root, project_id, dispatch_id)
+    # Preserve sealed legacy exports; issue corrected instructions separately.
+    target = dispatch_dir(root, project_id, dispatch_id) / "manual-task-package-v2.json"
     if target.exists():
         existing = read_json(target, "C10_EXISTING_FALLBACK_INVALID")
         if existing.get("sourcePlanDigest") == canonical_digest(plan):
@@ -888,6 +1269,14 @@ def export_fallback(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
                 "ledgerUpdated": False,
             }, 0
         raise DispatchError("C10_FALLBACK_ALREADY_EXISTS_WITH_DIFFERENT_PLAN")
+    association_method = plan["projectAssociationProtocol"]["requiredMethod"]
+    association_instructions = {
+        "DIRECT": "按派发单 finalTarget 在指定保存项目直接建窗：Git 使用标准 worktree，非 Git 使用 local。项目编号缺失时按项目归属证据协议核验原生创建记录和真实 Git 关系；不强制 local 往返，不重复建窗。",
+        "LOCAL_BOOTSTRAP_TO_WORKTREE": "这是已封存的旧派发单：按原单 initialTarget 在保存项目 local 建立归属，回读项目 ID 后交接到 finalTarget 标准 worktree，保留两段原生引用。不要将此历史流程用于新单。",
+        "EXISTING_REGISTERED_WINDOW": "复用派发单指定的已登记窗口，不新建任务；读回当前模型、权限和项目归属，并核对本次任务身份。",
+    }
+    if association_method not in association_instructions:
+        raise DispatchError("C10_FALLBACK_ASSOCIATION_METHOD_UNSUPPORTED")
     package = {
         "schemaVersion": "0.13.0",
         "recordType": "C13_MANUAL_TASK_PACKAGE",
@@ -897,14 +1286,17 @@ def export_fallback(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         "createdAt": utc_now(),
         "model": plan["windowAction"]["model"],
         "modelEnforcement": {
-            "requiredModel": TASK_RUNTIME_MODEL,
-            "allowedManualMethod": MANUAL_WINDOW_MODEL_METHOD,
+            "requiredModel": plan["windowAction"]["model"],
+            "allowedManualMethod": MANUAL_MODEL_METHOD,
             "evidenceRequiredBeforeC10Confirm": True,
         },
         "permissionEnforcement": {
-            "requiredClass": TASK_PERMISSION_CLASS,
+            "defaultClass": DEFAULT_TASK_PERMISSION_CLASS,
+            "defaultProfile": DEFAULT_TASK_PERMISSION_PROFILE,
+            "allowedClasses": ["FULL_ACCESS", "WORKTREE_SCOPED"],
             "allowedProfiles": sorted(ALLOWED_TASK_PERMISSION_PROFILES),
-            "dangerFullAccessForbidden": True,
+            "restrictedModeOptional": True,
+            "dangerFullAccessForbidden": False,
             "allowedManualMethod": "MANUAL_UI_PERMISSION_EVIDENCE",
             "evidenceRequiredBeforeC10Confirm": True,
         },
@@ -915,10 +1307,10 @@ def export_fallback(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         "taskPackage": plan["taskPackage"],
         "copyablePrompt": (
             "请在派发单指定的 Codex 保存项目中按以下已批准任务包执行，不要另建自定义任务目录。"
-            "在发送第一条任务指令前，必须在模型菜单明确选择 5.6 Terra；若菜单不能选择 Terra，立即停止，不要用 Sol 或其他模型代替。"
-            "保留该选择的可核对证据引用，确认时只能填写 MANUAL_UI_TERRA_SELECTION_EVIDENCE。"
-            "同时把任务权限设为工作区受限模式；完整访问或 danger-full-access 必须停止。确认时填写 MANUAL_UI_PERMISSION_EVIDENCE、唯一项目可写根和 governanceDataRootAccess=DENIED。"
-            "新 Git 任务先在派发单指定的保存项目 local 环境建立归属，回读正确项目 ID 后再受控交接到同项目标准 worktree。任一步骤为空或不匹配立即停止，不要反复创建候选窗口。"
+            f"本派发单选择模型 {plan['windowAction']['model']}；未指定的新任务默认 5.6 Terra，Boss 可以更改。"
+            "保留实际选择的可核对证据引用，确认时填写 MANUAL_UI_MODEL_SELECTION_EVIDENCE，不伪写为默认模型。"
+            "任务权限默认使用完全访问；若这项任务需要更强隔离，可由 Boss 选择工作区受限模式。确认时填写 MANUAL_UI_PERMISSION_EVIDENCE，并如实记录实际权限：完全访问使用 FULL_ACCESS/full-access、空 writableRoots 和 governanceDataRootAccess=NOT_RESTRICTED；受限模式使用 WORKTREE_SCOPED、精确 writableRoots 和 governanceDataRootAccess=DENIED。"
+            + association_instructions[association_method] +
             "先复述目标、边界、写入占用和硬停条件；"
             "不得扩大范围，不得自行宣布 DONE。任务包：\n"
             + json.dumps(plan["taskPackage"], ensure_ascii=False, indent=2, sort_keys=True)
@@ -932,10 +1324,11 @@ def export_fallback(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             "taskStatusChanged": False,
             "businessWritePerformed": False,
             "terraModelEnforced": False,
-            "manualTerraEvidenceRequired": True,
-            "boundedPermissionEnforced": False,
+            "manualModelEvidenceRequired": True,
+            "runtimePermissionRecorded": False,
+            "restrictedPermissionOptional": True,
             "manualPermissionEvidenceRequired": True,
-            "dangerFullAccessForbidden": True,
+            "dangerFullAccessForbidden": False,
             "requiresNormalC10ConfirmationAfterManualCreation": True,
         },
     }

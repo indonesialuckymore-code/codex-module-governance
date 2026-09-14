@@ -10,7 +10,7 @@ import re
 import sys
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, Tuple
 
 from initialize_project import C02Error, PROJECT_ID_PATTERN, is_within, load_data_root
 from ledger_manager import CENTRAL_WRITER, LedgerError, canonical_digest, commit_mutation, ledger_lock, load_ledger, utc_now

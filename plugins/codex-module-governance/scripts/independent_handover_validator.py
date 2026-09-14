@@ -31,6 +31,7 @@ from ledger_manager import (
 )
 from occupancy_conflict_checker import OccupancyError, verify_decision_data as verify_c05_decision
 from task_package_generator import TaskPackageError, load_package, verify_package
+from acceptance_policy import EVIDENCE_CATEGORIES, AcceptancePolicyError, verify_approved_contract
 
 
 SCHEMA_VERSION = "0.8.0"
@@ -45,10 +46,6 @@ RECEIPTS_DIRECTORY = "receipts"
 INITIAL_RECEIPT_ID = "receipt-000000-validate"
 FINAL_RECEIPT_ID = "receipt-000001-finalize"
 REFERENCE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
-EVIDENCE_CATEGORIES = (
-    "beforeSnapshot", "afterSnapshot", "positiveCase", "negativeCase", "idempotency",
-    "rollback", "logsAndHistory", "upstreamReadback", "downstreamReadback", "testAndObjectIds",
-)
 
 
 class HandoverValidationError(Exception):
@@ -249,6 +246,11 @@ def validate_handback(payload: Any, project_id: str, package_id: str) -> Dict[st
         "taskId", "windowId", "completionSignalId", "submittedBy", "bossHandbackAuthorization",
         "executedScopeRefs", "evidenceRefs", "testAndObjectRefs", "parentQualityReviewRefs", "unresolvedRefs", "residualRiskRefs",
     }
+    direction = {}
+    if isinstance(payload, dict) and "directionContext" in payload:
+        from ledger_manager import validate_direction_context
+        direction = {"directionContext": validate_direction_context(payload["directionContext"])}
+        required = required | {"directionContext"}
     handback = require_exact_object(payload, required, "C06_HANDBACK_SCHEMA_UNSUPPORTED")
     if handback["handbackSchemaVersion"] != SCHEMA_VERSION or handback["recordType"] != "C06_TASK_WINDOW_HANDBACK":
         raise HandoverValidationError("C06_HANDBACK_SCHEMA_UNSUPPORTED")
@@ -269,6 +271,7 @@ def validate_handback(payload: Any, project_id: str, package_id: str) -> Dict[st
     if not isinstance(handback["routeRevisionSeen"], int) or handback["routeRevisionSeen"] < 1:
         raise HandoverValidationError("C06_RETURN_ROUTE_REVISION_INVALID")
     return {
+        **direction,
         "handbackId": require_reference(handback["handbackId"], "C06_HANDBACK_ID_INVALID"),
         "returnTicketId": require_return_ticket_id(handback["returnTicketId"], "C06_RETURN_TICKET_ID_INVALID"),
         "routeRevisionSeen": handback["routeRevisionSeen"],
@@ -292,11 +295,47 @@ def validate_handback(payload: Any, project_id: str, package_id: str) -> Dict[st
     }
 
 
-def validate_review(payload: Any, handback: Dict[str, Any]) -> Dict[str, Any]:
+def superseding_conflict_validation_id(
+    data_root: Path, project_id: str, ledger: Dict[str, Any], handback: Dict[str, Any]
+) -> Optional[str]:
+    """Verify the narrow path for an independent validation superseding one active C06 conflict."""
+    task = ledger.get("tasks", {}).get(handback.get("taskId"))
+    window = ledger.get("windows", {}).get(handback.get("windowId"))
+    authorization = handback.get("bossHandbackAuthorization", {})
+    if (
+        not isinstance(task, dict) or task.get("status") != "CONFLICT"
+        or not isinstance(window, dict) or window_current_task_id(window) != handback.get("taskId")
+        or authorization.get("status") != "APPROVED"
+        or handback.get("parentQualityReviewRefs") != []
+    ):
+        return None
+    matches = [
+        stop for stop in ledger.get("hardStops", [])
+        if stop.get("code") == "C06_VALIDATION_CONFLICT"
+        and stop.get("taskId") == handback.get("taskId")
+        and stop.get("validationId") in handback.get("executedScopeRefs", [])
+    ]
+    if len(matches) != 1:
+        return None
+    validation_id = matches[0].get("validationId")
+    try:
+        prior = verify_decision_data(data_root, project_id, validation_id)
+    except HandoverValidationError:
+        return None
+    if prior.get("taskId") != handback.get("taskId") or prior.get("outcome") != "CONFLICT":
+        return None
+    return validation_id
+
+
+def validate_review(payload: Any, handback: Dict[str, Any], acceptance_policy=None, outcome_contract=None) -> Dict[str, Any]:
     required = {
         "reviewSchemaVersion", "recordType", "validationId", "handbackId", "taskId", "centralReviewer",
         "scopeAssessment", "evidenceAssessment",
     }
+    if isinstance(payload, dict) and "feedbackAssessments" in payload:
+        required.add("feedbackAssessments")
+    if isinstance(payload, dict) and "outcomeAssessments" in payload:
+        required.add("outcomeAssessments")
     review = require_exact_object(payload, required, "C06_REVIEW_SCHEMA_UNSUPPORTED")
     if review["reviewSchemaVersion"] != SCHEMA_VERSION or review["recordType"] != "C06_INDEPENDENT_VALIDATION_REVIEW":
         raise HandoverValidationError("C06_REVIEW_SCHEMA_UNSUPPORTED")
@@ -319,14 +358,57 @@ def validate_review(payload: Any, handback: Dict[str, Any]) -> Dict[str, Any]:
         item = require_exact_object(evidence[category], {"reference", "verdict", "independentlyReadBack"}, "C06_EVIDENCE_ITEM_INVALID")
         reference = require_reference(item["reference"], "C06_EVIDENCE_REFERENCE_INVALID")
         verdict = str(item["verdict"]).upper()
-        if verdict not in {"PASS", "FAIL", "MISSING"} or type(item["independentlyReadBack"]) is not bool:
+        if verdict not in {"PASS", "FAIL", "MISSING", "NOT_APPLICABLE"} or type(item["independentlyReadBack"]) is not bool:
             raise HandoverValidationError("C06_EVIDENCE_ITEM_INVALID")
+        if verdict == "NOT_APPLICABLE" and (
+            acceptance_policy is None or category not in acceptance_policy["notApplicable"]
+        ):
+            raise HandoverValidationError("C06_NOT_APPLICABLE_NOT_IN_APPROVED_CONTRACT")
         if verdict != "MISSING" and reference not in handback_refs:
             raise HandoverValidationError("C06_EVIDENCE_NOT_DECLARED_BY_HANDBACK")
         normalized_evidence[category] = {
             "reference": reference, "verdict": verdict, "independentlyReadBack": item["independentlyReadBack"],
         }
+    feedback = review.get("feedbackAssessments", [])
+    if "feedbackAssessments" in review and (not isinstance(feedback, list) or not 1 <= len(feedback) <= 80):
+        raise HandoverValidationError("C06_FEEDBACK_ASSESSMENTS_INVALID")
+    seen = set()
+    for item in feedback:
+        require_exact_object(item, {"originalTaskId", "feedbackId", "feedbackDigest", "evidenceRef",
+                                   "issueResolved", "independentlyReadBack"}, "C06_FEEDBACK_ASSESSMENT_INVALID")
+        for key in ("originalTaskId", "feedbackId", "evidenceRef"):
+            require_reference(item[key], "C06_FEEDBACK_REFERENCE_INVALID")
+        if (not isinstance(item["feedbackDigest"], str) or re.fullmatch(r"[a-f0-9]{64}", item["feedbackDigest"]) is None
+                or type(item["issueResolved"]) is not bool or type(item["independentlyReadBack"]) is not bool):
+            raise HandoverValidationError("C06_FEEDBACK_ASSESSMENT_INVALID")
+        key = (item["originalTaskId"], item["feedbackId"])
+        if key in seen: raise HandoverValidationError("C06_FEEDBACK_DUPLICATE")
+        seen.add(key)
+        if item["evidenceRef"] not in handback_refs:
+            raise HandoverValidationError("C06_FEEDBACK_EVIDENCE_NOT_DECLARED")
+    outcomes = review.get("outcomeAssessments", [])
+    if outcome_contract is None and "outcomeAssessments" in review:
+        raise HandoverValidationError("C06_OUTCOME_CONTRACT_REQUIRED")
+    if outcome_contract is not None:
+        expected = {(item['outcomeId'], criterion['criterionId']) for item in outcome_contract['outcomes']
+                    for criterion in item['acceptanceCriteria']}
+        if not isinstance(outcomes, list) or len(outcomes) != len(expected):
+            raise HandoverValidationError("C06_OUTCOME_CRITERIA_INCOMPLETE")
+        seen = set()
+        for item in outcomes:
+            require_exact_object(item, {"outcomeId", "criterionId", "reference", "verdict", "independentlyReadBack"}, "C06_OUTCOME_ASSESSMENT_INVALID")
+            for key in ('outcomeId', 'criterionId', 'reference'):
+                require_reference(item[key], 'C06_OUTCOME_REFERENCE_INVALID')
+            pair = (item['outcomeId'], item['criterionId'])
+            if (pair not in expected or pair in seen or not isinstance(item['verdict'], str)
+                    or item['verdict'] not in {'PASS', 'FAIL', 'MISSING'}
+                    or type(item['independentlyReadBack']) is not bool
+                    or (item['verdict'] != 'MISSING' and item['reference'] not in handback_refs)):
+                raise HandoverValidationError('C06_OUTCOME_ASSESSMENT_INVALID')
+            seen.add(pair)
     return {
+        **({"outcomeAssessments": outcomes} if outcome_contract is not None else {}),
+        **({"feedbackAssessments": feedback} if feedback else {}),
         "validationId": require_reference(review["validationId"], "C06_VALIDATION_ID_INVALID"),
         "handbackId": handback["handbackId"],
         "taskId": handback["taskId"],
@@ -346,16 +428,39 @@ def derive_outcome(review: Dict[str, Any], handback: Dict[str, Any]) -> str:
     verdicts = [item["verdict"] for item in review["evidenceAssessment"].values()]
     if (
         "FAIL" in verdicts or scope["unexplainedErrorFound"] or scope["blockingResidualRiskFound"]
-        or not scope["rollbackExecutable"]
+        or any(item['verdict'] == 'FAIL' for item in review.get('outcomeAssessments', []))
+        or any(not item["issueResolved"] for item in review.get("feedbackAssessments", []))
+        or (not scope["rollbackExecutable"] and review["evidenceAssessment"]["rollback"]["verdict"] != "NOT_APPLICABLE")
     ):
         return "PARTIAL"
     if (
         "MISSING" in verdicts or handback["unresolvedRefs"]
+        or any(item['verdict'] == 'MISSING' or not item['independentlyReadBack'] for item in review.get('outcomeAssessments', []))
         or not review["centralReviewer"]["independentReadbackPerformed"]
         or any(not item["independentlyReadBack"] for item in review["evidenceAssessment"].values())
+        or any(not item["independentlyReadBack"] for item in review.get("feedbackAssessments", []))
     ):
         return "NEEDS_REVIEW"
     return "PASS_PENDING_BOSS_APPROVAL"
+
+
+def verify_feedback_assessments(data_root: Path, project_id: str, ledger: Dict[str, Any],
+                                task_id: str, artifact: Dict[str, Any]) -> None:
+    from ledger_manager import feedback_binding, feedback_repair_task
+    for item in artifact.get("feedbackAssessments", []):
+        original = ledger["tasks"].get(item["originalTaskId"], {})
+        entry = original.get("deliveryFeedback", {}).get(item["feedbackId"])
+        if (not entry or feedback_repair_task(entry) != task_id
+                or feedback_binding(entry) != item["feedbackDigest"]):
+            raise HandoverValidationError("C06_FEEDBACK_REPAIR_BINDING_MISMATCH")
+        original_decision = verify_decision_data(data_root, project_id, entry["originalValidationId"])
+        original_finalization = verify_finalization_data(data_root, project_id, entry["originalValidationId"])
+        if (canonical_digest(original_decision) != entry["originalDecisionDigest"]
+                or canonical_digest(original_finalization) != entry["originalFinalizationDigest"]
+                or original_finalization["bossDecision"] != "APPROVED"):
+            raise HandoverValidationError("C06_FEEDBACK_ORIGINAL_DECISION_MISMATCH")
+        if item["evidenceRef"] in {value["reference"] for value in original_decision["evidenceAssessment"].values()}:
+            raise HandoverValidationError("C06_FEEDBACK_NEW_EVIDENCE_REQUIRED")
 
 
 def require_writer(writer_id: Optional[str]) -> str:
@@ -446,8 +551,11 @@ def verified_sources(data_root: Path, project_id: str, package_id: str, handback
             raise HandoverValidationError("C06_SOURCE_INTEGRITY_UNVERIFIED")
         package = load_package(data_root, project_id, package_id)
         ledger = load_ledger(data_root, project_id)
+        from ledger_manager import require_current_direction
+        require_current_direction(ledger, handback["taskId"], handback)
         c05_decision = verify_c05_decision(data_root, project_id, handback["c05ReviewId"])
-    except (TaskPackageError, OccupancyError, LedgerError, C02Error) as error:
+        verify_approved_contract(package, c05_decision, canonical_digest(package))
+    except (TaskPackageError, OccupancyError, LedgerError, C02Error, AcceptancePolicyError) as error:
         raise HandoverValidationError(f"C06_SOURCE_{error}")
     if (
         package["taskId"] != handback["taskId"]
@@ -459,14 +567,121 @@ def verified_sources(data_root: Path, project_id: str, package_id: str, handback
         raise HandoverValidationError("C06_REQUIRES_ELIGIBLE_C05_DECISION")
     task = ledger["tasks"].get(handback["taskId"])
     window = ledger["windows"].get(handback["windowId"])
-    if not isinstance(task, dict) or task.get("status") != "NEEDS_REVIEW":
+    superseding_conflict_id = superseding_conflict_validation_id(
+        data_root, project_id, ledger, handback
+    )
+    if not isinstance(task, dict) or (
+        task.get("status") != "NEEDS_REVIEW" and superseding_conflict_id is None
+    ):
         raise HandoverValidationError("C06_REQUIRES_NEEDS_REVIEW_TASK")
     if not isinstance(window, dict) or window_current_task_id(window) != handback["taskId"]:
         raise HandoverValidationError("C06_HANDBACK_WINDOW_MISMATCH")
-    if handback["completionSignalId"] not in task.get("completionSignalIds", []):
+    if (
+        handback["completionSignalId"] not in task.get("completionSignalIds", [])
+        and not valid_completion_signal_reissue_after_abort(data_root, project_id, task, handback)
+    ):
         raise HandoverValidationError("C06_COMPLETION_SIGNAL_NOT_RECORDED")
     verify_parent_quality_reviews(data_root, project_id, ledger, handback)
     return package, c05_decision, ledger
+
+
+def valid_completion_signal_reissue_after_abort(
+    data_root: Path,
+    project_id: str,
+    task: Dict[str, Any],
+    handback: Dict[str, Any],
+) -> bool:
+    """Accept only the C08-supported immutable reissue after a valid abort.
+
+    C08 deliberately does not append a second completion signal when a ticket is
+    reissued for the same task/window after validation was aborted.  C06 may
+    accept that missing *new* signal only when the current admission explicitly
+    performed no ledger mutation and a fully linked predecessor has a recorded
+    completion signal, reservation, and immutable abort receipt.
+    """
+    ticket_id = handback.get("returnTicketId")
+    if not isinstance(ticket_id, str):
+        return False
+    tickets_root = data_root / RETURN_ROOT / project_id / "tickets"
+    current_root = tickets_root / ticket_id
+
+    def load(path: Path) -> Optional[Dict[str, Any]]:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return value if isinstance(value, dict) else None
+
+    current_submission = load(current_root / "submission.json")
+    current_receipt = load(current_root / "receipt-000000-submission.json")
+    current_admission = load(current_root / "receipt-000002-admission.json")
+    current_reservation = load(current_root / "receipt-000003-validation-reservation.json")
+    if not all(isinstance(item, dict) for item in (current_submission, current_receipt, current_admission, current_reservation)):
+        return False
+    current_digest = canonical_digest(current_submission)
+    if (
+        current_submission.get("returnTicketId") != ticket_id
+        or current_submission.get("taskId") != handback.get("taskId")
+        or current_submission.get("windowId") != handback.get("windowId")
+        or current_submission.get("handbackId") != handback.get("handbackId")
+        or current_submission.get("completionSignalId") != handback.get("completionSignalId")
+        or current_receipt.get("submission") != current_submission
+        or current_receipt.get("submissionDigest") != current_digest
+        or current_admission.get("returnTicketId") != ticket_id
+        or current_admission.get("taskId") != handback.get("taskId")
+        or current_admission.get("completionSignalId") != handback.get("completionSignalId")
+        or current_admission.get("ledgerReceiptId") is not None
+        or current_reservation.get("returnTicketId") != ticket_id
+        or current_reservation.get("taskId") != handback.get("taskId")
+        or current_reservation.get("handbackId") != handback.get("handbackId")
+        or current_reservation.get("submissionDigest") != current_digest
+    ):
+        return False
+
+    recorded_signals = task.get("completionSignalIds", [])
+    if not isinstance(recorded_signals, list):
+        return False
+    try:
+        prior_roots = sorted(path for path in tickets_root.iterdir() if path.is_dir() and path.name != ticket_id)
+    except OSError:
+        return False
+    for prior_root in prior_roots:
+        prior_submission = load(prior_root / "submission.json")
+        prior_receipt = load(prior_root / "receipt-000000-submission.json")
+        prior_admission = load(prior_root / "receipt-000002-admission.json")
+        prior_reservation = load(prior_root / "receipt-000003-validation-reservation.json")
+        prior_abort = load(prior_root / "receipt-000004-validation-aborted.json")
+        if not all(isinstance(item, dict) for item in (prior_submission, prior_receipt, prior_admission, prior_reservation, prior_abort)):
+            continue
+        if (prior_root / "receipt-000004-validation-result.json").exists():
+            continue
+        prior_ticket_id = prior_root.name
+        prior_digest = canonical_digest(prior_submission)
+        prior_signal = prior_submission.get("completionSignalId")
+        if (
+            prior_submission.get("returnTicketId") == prior_ticket_id
+            and prior_submission.get("taskId") == handback.get("taskId")
+            and prior_submission.get("windowId") == handback.get("windowId")
+            and prior_receipt.get("submission") == prior_submission
+            and prior_receipt.get("submissionDigest") == prior_digest
+            and prior_admission.get("returnTicketId") == prior_ticket_id
+            and prior_admission.get("taskId") == handback.get("taskId")
+            and prior_admission.get("completionSignalId") == prior_signal
+            and isinstance(prior_admission.get("ledgerReceiptId"), str)
+            and prior_reservation.get("returnTicketId") == prior_ticket_id
+            and prior_reservation.get("taskId") == handback.get("taskId")
+            and prior_reservation.get("submissionDigest") == prior_digest
+            and prior_reservation.get("validatorThreadRef") == current_reservation.get("validatorThreadRef")
+            and prior_abort.get("recordType") == "C08_RETURN_VALIDATION_ABORT"
+            and prior_abort.get("returnTicketId") == prior_ticket_id
+            and prior_abort.get("taskId") == handback.get("taskId")
+            and prior_abort.get("handbackId") == prior_submission.get("handbackId")
+            and prior_abort.get("validatorThreadRef") == prior_reservation.get("validatorThreadRef")
+            and prior_abort.get("reservationDigest") == canonical_digest(prior_reservation)
+            and prior_signal in recorded_signals
+        ):
+            return True
+    return False
 
 
 def linked_ledger_receipt(data_root: Path, project_id: str, mutation: Dict[str, Any], expected_operation: str, expected_status: str) -> Dict[str, Any]:
@@ -495,6 +710,7 @@ def build_decision(
     return {
         "schemaVersion": SCHEMA_VERSION,
         "recordType": "C06_VALIDATION_DECISION",
+        **({"directionContext": handback["directionContext"]} if "directionContext" in handback else {}),
         "validationId": review["validationId"],
         "projectId": project_id,
         "packageId": handback["packageId"],
@@ -506,6 +722,8 @@ def build_decision(
         "writerId": CENTRAL_WRITER,
         "outcome": outcome,
         "source": {
+            **({"outlineContractDigest": package['task']['outcomeContract']['digest']} if package.get('task', {}).get('outcomeContract') else {}),
+            **({"acceptancePolicyDigest": canonical_digest(package["acceptancePolicy"])} if "acceptancePolicy" in package else {}),
             "packageDigest": canonical_digest(package), "c05DecisionDigest": canonical_digest(c05_decision),
             "handbackDigest": handback_digest, "reviewDigest": review_digest,
             "returnTicketId": handback["returnTicketId"],
@@ -515,6 +733,8 @@ def build_decision(
         "bossHandbackAuthorizationRef": handback["bossHandbackAuthorization"]["reference"],
         "scopeAssessment": review["scopeAssessment"],
         "evidenceAssessment": review["evidenceAssessment"],
+        **({"outcomeAssessments": review["outcomeAssessments"]} if "outcomeAssessments" in review else {}),
+        **({"feedbackAssessments": review["feedbackAssessments"]} if "feedbackAssessments" in review else {}),
         "unresolvedRefs": handback["unresolvedRefs"],
         "residualRiskRefs": handback["residualRiskRefs"],
         "ledgerMutation": {
@@ -615,7 +835,19 @@ def assess(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     raw_review, review_digest = load_json_inside_data_root(
         args.review, data_root, "PRIVATE_C06_REVIEW_REQUIRED_INSIDE_DATA_ROOT", "C06_REVIEW_INVALID_JSON"
     )
-    review = validate_review(raw_review, handback)
+    # Bind exemptions to the sealed C04 contract, never to a late reviewer claim.
+    try:
+        _, package_exit = verify_package(argparse.Namespace(
+            data_root=str(data_root), config=None, project_id=project_id, package_id=package_id))
+        if package_exit != 0:
+            raise HandoverValidationError("C06_SOURCE_INTEGRITY_UNVERIFIED")
+        contract = load_package(data_root, project_id, package_id)
+        verify_approved_contract(contract, verify_c05_decision(data_root, project_id, handback["c05ReviewId"]), canonical_digest(contract))
+    except (TaskPackageError, C02Error, OccupancyError, AcceptancePolicyError) as error:
+        raise HandoverValidationError(f"C06_SOURCE_{error}")
+    review = validate_review(raw_review, handback, contract.get("acceptancePolicy"), contract.get('task', {}).get('outcomeContract'))
+    from ledger_manager import require_current_direction
+    require_current_direction(load_ledger(data_root, project_id), handback["taskId"], handback)
     outcome = derive_outcome(review, handback)
     if args.apply:
         require_writer(args.writer_id)
@@ -628,6 +860,7 @@ def assess(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             result["decisionOutcome"] = decision["outcome"]
             return result, 0
     package, c05_decision, ledger = verified_sources(data_root, project_id, package_id, handback)
+    verify_feedback_assessments(data_root, project_id, ledger, handback["taskId"], review)
     authorization_status = handback["bossHandbackAuthorization"]["status"]
     automatic_policy = authorization_status == "AUTO_APPROVED_BY_RETURN_POLICY"
     if automatic_policy:
@@ -656,16 +889,25 @@ def assess(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             return result, 0
         with ledger_lock(data_root, project_id):
             package, c05_decision, before = verified_sources(data_root, project_id, package_id, handback)
+            verify_feedback_assessments(data_root, project_id, before, handback["taskId"], review)
+            superseding_conflict_id = superseding_conflict_validation_id(
+                data_root, project_id, before, handback
+            )
+            if superseding_conflict_id is not None and outcome != "PASS_PENDING_BOSS_APPROVAL":
+                raise HandoverValidationError("C06_SUPERSEDING_CONFLICT_VALIDATION_MUST_PASS")
             target_status = {"PASS_PENDING_BOSS_APPROVAL": "NEEDS_REVIEW", "NEEDS_REVIEW": "NEEDS_REVIEW", "PARTIAL": "PARTIAL", "CONFLICT": "CONFLICT"}[outcome]
 
             def mutate(after: Dict[str, Any]) -> None:
                 task = after["tasks"][handback["taskId"]]
-                if task["status"] != "NEEDS_REVIEW":
+                allowed_status = "CONFLICT" if superseding_conflict_id is not None else "NEEDS_REVIEW"
+                if task["status"] != allowed_status:
                     raise HandoverValidationError("C06_REQUIRES_NEEDS_REVIEW_TASK")
                 task["status"] = target_status
                 task["history"].append({
                     "at": utc_now(), "event": "C06_INDEPENDENT_VALIDATION", "validationId": review["validationId"],
-                    "outcome": outcome, "to": target_status, "by": CENTRAL_WRITER,
+                    "outcome": outcome, "to": target_status,
+                    "supersedesConflictValidationId": superseding_conflict_id,
+                    "by": CENTRAL_WRITER,
                 })
                 if outcome == "CONFLICT":
                     after["hardStops"].append({
@@ -768,7 +1010,20 @@ def finalize(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         raise HandoverValidationError("C06_BOSS_FINAL_DECISION_INVALID")
     boss_ref = require_reference(args.boss_decision_ref, "C06_BOSS_FINAL_DECISION_REFERENCE_INVALID")
     decision = verify_decision_data(data_root, project_id, validation_id)
-    if decision["outcome"] != "PASS_PENDING_BOSS_APPROVAL":
+    exception_allowed = False
+    if (decision["outcome"] == "NEEDS_REVIEW" and boss_decision == "APPROVED"
+            and "acceptancePolicyDigest" not in decision["source"]):
+        evidence = decision.get("evidenceAssessment", {})
+        scope = decision.get("scopeAssessment", {})
+        exception_allowed = (
+            isinstance(evidence, dict)
+            and evidence.get("beforeSnapshot", {}).get("verdict") == "MISSING"
+            and all(evidence.get(key, {}).get("verdict") == "PASS" for key in EVIDENCE_CATEGORIES if key != "beforeSnapshot")
+            and isinstance(scope, dict)
+            and scope.get("packageScopeMatch") is True and scope.get("rollbackExecutable") is True
+            and all(scope.get(key) is False for key in ("parallelMechanismFound", "unknownWriterFound", "permissionExpansionFound", "unexplainedErrorFound", "duplicateDataFound", "blockingResidualRiskFound"))
+        )
+    if decision["outcome"] != "PASS_PENDING_BOSS_APPROVAL" and not exception_allowed:
         raise HandoverValidationError("C06_ONLY_PASSED_VALIDATION_CAN_BE_FINALIZED")
     if finalization_path(data_root, project_id, validation_id).exists():
         finalization = verify_finalization_data(data_root, project_id, validation_id)
@@ -800,7 +1055,14 @@ def finalize(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             if ledger_exit != 0:
                 raise HandoverValidationError("C06_SOURCE_LEDGER_INTEGRITY_UNVERIFIED")
             before = load_ledger(data_root, project_id)
-            if before["hardStops"]:
+            from ledger_manager import require_current_direction
+            require_current_direction(before, decision["taskId"], decision)
+            verify_feedback_assessments(data_root, project_id, before, decision["taskId"], decision)
+            allowed_conflict = exception_allowed and all(
+                stop.get("code") == "C06_VALIDATION_CONFLICT" and stop.get("taskId") == decision["taskId"]
+                for stop in before["hardStops"]
+            )
+            if before["hardStops"] and not allowed_conflict:
                 raise HandoverValidationError("C06_SOURCE_LEDGER_HAS_UNRESOLVED_HARD_STOP")
             task = before["tasks"].get(decision["taskId"])
             if not isinstance(task, dict) or task.get("status") != "NEEDS_REVIEW":
@@ -851,6 +1113,7 @@ def finalize(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             "validationId": validation_id, "projectId": project_id, "taskId": decision["taskId"],
             "createdAt": utc_now(), "writerId": CENTRAL_WRITER, "validationDecisionDigest": canonical_digest(decision),
             "bossDecision": boss_decision, "bossDecisionRef": boss_ref,
+            "bossException": {"kind": "HISTORICAL_BEFORE_SNAPSHOT_UNRECOVERABLE", "accepted": exception_allowed},
             "ledgerMutation": {
                 "receiptId": ledger_result["receiptId"], "afterRevision": after["revision"],
                 "afterLedgerDigest": canonical_digest(after), "taskId": decision["taskId"], "taskStatusAfter": target_status,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dependency-free preflight for the manifest and bundled governance Skills."""
+"""Preflight manifest, bundled Skills, and executable JSON Schema contracts."""
 
 import json
 import re
@@ -108,21 +108,34 @@ def main():
         fail("bundled central capability registry differs from the product source")
     if manifest.get("repository") != "https://github.com/indonesialuckymore-code/codex-module-governance":
         fail("plugin repository metadata is invalid")
-    if manifest.get("version") != "0.22.1":
-        fail("plugin version must match the v0.22.1 new-project repair candidate")
+    if manifest.get("version", "").split("+", 1)[0] != "0.23.0-rc.1":
+        fail("plugin version must match the v0.23.0-rc.1 redesign candidate")
     module_config = json.loads((repo_root / "config" / "module-config.example.json").read_text(encoding="utf-8"))
+    try:
+        from jsonschema import Draft202012Validator
+    except ImportError:
+        fail("install requirements-dev.txt in the validation environment; JSON Schema validation must not be skipped")
+    for schema_path in (repo_root / "schemas").glob("*.schema.json"):
+        Draft202012Validator.check_schema(json.loads(schema_path.read_text(encoding="utf-8")))
+    config_schema = json.loads((repo_root / "schemas/module-config.schema.json").read_text(encoding="utf-8"))
+    config_errors = list(Draft202012Validator(config_schema).iter_errors(module_config))
+    if config_errors:
+        fail("module config violates its schema: " + "; ".join(error.message for error in config_errors))
     permissions = module_config.get("runtimePermissions", {})
     native_runtime = module_config.get("nativeRuntime", {})
     if (
         module_config.get("schemaVersion") != "0.22.1"
-        or permissions.get("taskWindowClass") != "WORKTREE_SCOPED"
-        or permissions.get("forbidDangerFullAccess") is not True
+        or permissions.get("defaultTaskWindowClass") != "FULL_ACCESS"
+        or permissions.get("defaultTaskProfile") != "full-access"
+        or permissions.get("subAgentPermissionMode") != "INHERIT_PARENT"
+        or permissions.get("forbidDangerFullAccess") is not False
         or permissions.get("requireRuntimeEvidence") is not True
-        or permissions.get("allowedTaskProfiles") != [":workspace", "qianyi-task-terra"]
-        or permissions.get("requireDeclaredWritableRoots") is not True
-        or permissions.get("denyGovernanceDataRootAccess") is not True
+        or permissions.get("allowedTaskProfiles") != ["full-access", ":danger-full-access", "danger-full-access", ":workspace"]
+        or permissions.get("restrictedModeOptional") is not True
+        or permissions.get("restrictedModeRequiresDeclaredWritableRoots") is not True
+        or permissions.get("restrictedModeDeniesGovernanceDataRootAccess") is not True
     ):
-        fail("bounded runtime permission contract is missing")
+        fail("full-access-default runtime permission contract is missing")
     expected_native = {
         "createThreadTool": "codex_app__create_thread",
         "sendMessageTool": "codex_app__send_message_to_thread",
@@ -139,7 +152,7 @@ def main():
     if native_runtime.get("maxMonitoringBatch") != 8 or native_runtime.get("uiProjectionIsStateSource") is not False:
         fail("native task monitoring or UI-state boundary is invalid")
     dispatch = module_config.get("dispatch", {})
-    if dispatch.get("newGitTaskProjectBinding") != "LOCAL_BOOTSTRAP_TO_WORKTREE" or dispatch.get("rejectProjectlessTargets") is not True:
+    if dispatch.get("newGitTaskProjectBinding") != "DIRECT_PROJECT_WORKTREE" or dispatch.get("rejectProjectlessTargets") is not True:
         fail("new Git task project-binding contract is missing")
     print("Plugin manifest, marketplace, and C00-C12/C14 Skill contract preflight passed.")
 

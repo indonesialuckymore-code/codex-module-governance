@@ -13,6 +13,7 @@
     "packageId": { "type": "string" },
     "reviewId": { "type": "string" },
     "taskId": { "type": "string" },
+    "model": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$", "not": { "enum": ["UNKNOWN", "UNVERIFIED", "DEFAULT", "NONE"] } },
     "runtimeProject": {
       "type": "object",
       "additionalProperties": false,
@@ -55,6 +56,7 @@
         "properties": {
           "subAgentId": { "type": "string" },
           "role": { "type": "string", "minLength": 1, "maxLength": 160 },
+          "model": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$" },
           "level": { "const": 1 },
           "delegationReason": { "enum": ["LARGE_MATERIALS", "INDEPENDENT_SCOPE", "INDEPENDENT_VERIFICATION", "CROSS_CHECK"] },
           "executionMode": { "enum": ["READ_ONLY", "ISOLATED_WORK", "INDEPENDENT_VALIDATION"] },

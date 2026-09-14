@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-acceptance-policy.schema.json",
+  "title": "Effect-based acceptance policy, sealed with the approved task contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["effects", "notApplicable"],
+  "properties": {
+    "effects": {
+      "type": "object", "additionalProperties": false,
+      "required": ["changesState", "executableBehavior", "repeatableOperation", "upstreamDependency", "downstreamConsumer", "highRisk"],
+      "properties": {
+        "changesState": {"type": "boolean"}, "executableBehavior": {"type": "boolean"},
+        "repeatableOperation": {"type": "boolean"}, "upstreamDependency": {"type": "boolean"},
+        "downstreamConsumer": {"type": "boolean"}, "highRisk": {"type": "boolean"}
+      }
+    },
+    "notApplicable": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "beforeSnapshot": {"$ref": "#/$defs/reason"}, "negativeCase": {"$ref": "#/$defs/reason"},
+        "idempotency": {"$ref": "#/$defs/reason"}, "rollback": {"$ref": "#/$defs/reason"},
+        "upstreamReadback": {"$ref": "#/$defs/reason"}, "downstreamReadback": {"$ref": "#/$defs/reason"}
+      }
+    }
+  },
+  "allOf": [
+    {"if": {"properties": {"effects": {"properties": {"changesState": {"const": true}}}}}, "then": {"properties": {"notApplicable": {"not": {"anyOf": [{"required": ["beforeSnapshot"]}, {"required": ["rollback"]}]}}}}},
+    {"if": {"properties": {"effects": {"properties": {"executableBehavior": {"const": true}}}}}, "then": {"properties": {"notApplicable": {"not": {"required": ["negativeCase"]}}}}},
+    {"if": {"properties": {"effects": {"properties": {"repeatableOperation": {"const": true}}}}}, "then": {"properties": {"notApplicable": {"not": {"required": ["idempotency"]}}}}},
+    {"if": {"properties": {"effects": {"properties": {"upstreamDependency": {"const": true}}}}}, "then": {"properties": {"notApplicable": {"not": {"required": ["upstreamReadback"]}}}}},
+    {"if": {"properties": {"effects": {"properties": {"downstreamConsumer": {"const": true}}}}}, "then": {"properties": {"notApplicable": {"not": {"required": ["downstreamReadback"]}}}}},
+    {"if": {"properties": {"effects": {"properties": {"highRisk": {"const": true}}}}}, "then": {"properties": {"notApplicable": {"maxProperties": 0}}}}
+  ],
+  "$defs": {
+    "reason": {"type": "string", "minLength": 1, "maxLength": 600, "pattern": "\\S"},
+    "checks": {"type": "array", "maxItems": 20, "items": {"type": "string", "minLength": 1}},
+    "contract": {
+      "properties": {
+        "acceptancePolicy": {"$ref": "#"},
+        "acceptance": {
+          "type": "object", "additionalProperties": false,
+          "required": ["positiveCases", "negativeCases", "idempotencyChecks", "rollbackChecks", "logAndHistoryChecks", "readbackChecks"],
+          "properties": {
+            "positiveCases": {"$ref": "#/$defs/checks", "minItems": 1},
+            "negativeCases": {"$ref": "#/$defs/checks"},
+            "idempotencyChecks": {"$ref": "#/$defs/checks"},
+            "rollbackChecks": {"$ref": "#/$defs/checks"},
+            "logAndHistoryChecks": {"$ref": "#/$defs/checks", "minItems": 1},
+            "readbackChecks": {"$ref": "#/$defs/checks", "minItems": 1}
+          }
+        }
+      },
+      "allOf": [
+        {"if": {"required": ["acceptancePolicy"], "properties": {"acceptancePolicy": {"properties": {"notApplicable": {"required": ["negativeCase"]}}}}}, "then": {"properties": {"acceptance": {"properties": {"negativeCases": {"maxItems": 0}}}}}, "else": {"properties": {"acceptance": {"properties": {"negativeCases": {"minItems": 1}}}}}},
+        {"if": {"required": ["acceptancePolicy"], "properties": {"acceptancePolicy": {"properties": {"notApplicable": {"required": ["idempotency"]}}}}}, "then": {"properties": {"acceptance": {"properties": {"idempotencyChecks": {"maxItems": 0}}}}}, "else": {"properties": {"acceptance": {"properties": {"idempotencyChecks": {"minItems": 1}}}}}},
+        {"if": {"required": ["acceptancePolicy"], "properties": {"acceptancePolicy": {"properties": {"notApplicable": {"required": ["rollback"]}}}}}, "then": {"properties": {"acceptance": {"properties": {"rollbackChecks": {"maxItems": 0}}}}}, "else": {"properties": {"acceptance": {"properties": {"rollbackChecks": {"minItems": 1}}}}}}
+      ]
+    }
+  }
+}

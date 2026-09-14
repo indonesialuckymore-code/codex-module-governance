@@ -41,8 +41,8 @@ class C13Tests(unittest.TestCase):
             root = Path(temp); old = root / "old"; fictional_old(old)
             installed = root / "installed" / module.PLUGIN; installed.parent.mkdir(); shutil.copytree(module.plugin_root(old), installed)
             upgraded = module.upgrade(installed, REPO, root / "backups", False)
-            self.assertEqual(upgraded["fromVersion"], "0.13.0"); self.assertEqual(upgraded["toVersion"], module.CURRENT_VERSION)
-            rolled = module.rollback(installed, Path(upgraded["backupPath"]))
+            self.assertEqual(upgraded["fromVersion"], "0.13.0"); self.assertEqual(upgraded["toVersion"], module.manifest(REPO)["version"])
+            rolled = module.rollback(installed, Path(upgraded["backupPath"]), [root])
             self.assertEqual(rolled["toVersion"], "0.13.0")
 
     def test_failed_upgrade_keeps_old_program(self):
@@ -59,8 +59,24 @@ class C13Tests(unittest.TestCase):
             root = Path(temp); old = root / "old"; fictional_old(old)
             installed = root / "installed" / module.PLUGIN; installed.parent.mkdir(); shutil.copytree(module.plugin_root(old), installed)
             private = root / "private" / "ledger.json"; private.parent.mkdir(); private.write_text('{"fictional":"preserve"}\n', encoding="utf-8"); before = private.read_bytes()
-            upgraded = module.upgrade(installed, REPO, root / "backups", False); module.rollback(installed, Path(upgraded["backupPath"]))
+            upgraded = module.upgrade(installed, REPO, root / "backups", False); module.rollback(installed, Path(upgraded["backupPath"]), [root / 'private'])
             self.assertEqual(before, private.read_bytes())
+
+    def test_new_work_blocks_incompatible_rollback_without_deleting_evidence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); old = root / 'old'; fictional_old(old)
+            installed = root / 'installed' / module.PLUGIN
+            installed.parent.mkdir(); shutil.copytree(module.plugin_root(old), installed)
+            upgraded = module.upgrade(installed, REPO, root / 'backups', False)
+            private = root / 'private'; ledger = private / 'module-ledgers/fictional-project/ledger.json'
+            ledger.parent.mkdir(parents=True)
+            ledger.write_text(json.dumps({'tasks': {'C-new': {'externalWaits': {'wait-new': {'status': 'WAITING'}}}}}))
+            before = ledger.read_bytes(); program = module.tree_digest(installed)
+            with self.assertRaisesRegex(module.C13Error, 'ALL_PRIVATE_DATA_ROOTS_REQUIRED'):
+                module.rollback(installed, Path(upgraded['backupPath']))
+            with self.assertRaisesRegex(module.C13Error, 'NEW_WORK_REQUIRES_CURRENT_READER'):
+                module.rollback(installed, Path(upgraded['backupPath']), [private])
+            self.assertEqual(before, ledger.read_bytes()); self.assertEqual(program, module.tree_digest(installed))
 
     def test_marketplace_name_is_project_specific(self):
         market = module.marketplace(REPO)

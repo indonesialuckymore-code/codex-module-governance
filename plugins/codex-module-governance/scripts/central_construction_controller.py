@@ -4,19 +4,25 @@
 from __future__ import annotations
 
 import argparse
+import copy
+import fcntl
 import hashlib
 import json
 import re
 import sys
 from pathlib import Path
+from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
 
 from initialize_project import C02Error, PROJECT_ID_PATTERN, is_within, load_data_root
 from independent_handover_validator import HandoverValidationError, verify_finalization_data
-from ledger_manager import CENTRAL_WRITER, LedgerError, TASK_ID_PATTERN, load_ledger, verify_ledger
+from ledger_manager import (CENTRAL_WRITER, LedgerError, TASK_ID_PATTERN, load_ledger, verify_ledger,
+    ledger_lock, commit_mutation, require_current_central_thread, require_direction_ready,
+    require_current_direction, active_external_waits)
 from occupancy_conflict_checker import OccupancyError, evaluate as evaluate_occupancy
 from task_package_generator import TaskPackageError
-from task_window_dispatch_controller import DispatchError, prepare as prepare_dispatch
+from task_window_dispatch_controller import DispatchError, prepare as prepare_dispatch, plan_path
+from runtime_model_policy import DEFAULT_TASK_MODEL
 
 
 SCHEMA_VERSION = "0.12.0"
@@ -25,7 +31,6 @@ CENTRAL_SKILL = "central-construction-controller"
 BOSS_ENTRY_SKILL = "central-workbench"
 INTERNAL_PROTOCOL_SKILLS = {CENTRAL_SKILL, "codex-governance-gateway"}
 CENTRAL_MODEL = "gpt-5.6-sol"
-TASK_MODEL = "gpt-5.6-terra"
 REFERENCE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = PLUGIN_ROOT / "config" / "core-capability-registry.json"
@@ -144,6 +149,47 @@ def write_exclusive(path: Path, payload: Dict[str, Any]) -> None:
 
 
 def validate_execution_map(value: Dict[str, Any], project_id: str) -> Dict[str, Any]:
+    if isinstance(value, dict) and value.get("executionMapSchemaVersion") == "0.23.0":
+        required = {"executionMapSchemaVersion", "recordType", "planId", "projectId", "authorization",
+                    "executionPlan", "approvedPlan", "planRevision"}
+        if set(value) != required:
+            raise CentralRoutingError("C09_EXECUTION_MAP_SCHEMA_UNSUPPORTED")
+        baseline = {key: item for key, item in value.items() if key not in {"approvedPlan", "planRevision"}}
+        baseline.update(executionMapSchemaVersion="0.17.0", executionPlan=value["approvedPlan"])
+        validated = validate_execution_map(baseline, project_id)
+        revision = value["planRevision"]
+        if not isinstance(revision, dict) or set(revision) != {"revisionId", "parentDigest", "reasonRef"}:
+            raise CentralRoutingError("C09_PLAN_REVISION_INVALID")
+        for key in ("revisionId", "reasonRef"):
+            require_reference(revision[key], "C09_PLAN_REVISION_INVALID")
+        if not isinstance(revision["parentDigest"], str) or not re.fullmatch(r"[a-f0-9]{64}", revision["parentDigest"]):
+            raise CentralRoutingError("C09_PLAN_REVISION_INVALID")
+        plan = value["executionPlan"]
+        if not isinstance(plan, dict) or set(plan) != {"tasks"} or not isinstance(plan["tasks"], list):
+            raise CentralRoutingError("C09_ARRANGEMENT_INVALID")
+        expected = {item["taskId"]: item for item in validated["executionPlan"]["tasks"]}
+        if len(plan["tasks"]) != len(expected):
+            raise CentralRoutingError("C09_ARRANGEMENT_CHANGES_APPROVED_SCOPE")
+        seen = set()
+        graph = {}
+        for item in plan["tasks"]:
+            task_id = item.get("taskId") if isinstance(item, dict) else None
+            business_item = {key: val for key, val in item.items() if key != "schedulingDependencies"} if isinstance(item, dict) else None
+            if not isinstance(task_id, str) or task_id in seen or business_item != expected.get(task_id):
+                raise CentralRoutingError("C09_ARRANGEMENT_CHANGES_APPROVED_SCOPE")
+            seen.add(task_id)
+            scheduling = item.get("schedulingDependencies", [])
+            if (not isinstance(scheduling, list) or not all(isinstance(ref, str) for ref in scheduling)
+                    or len(set(scheduling)) != len(scheduling) or any(ref not in expected or ref == task_id for ref in scheduling)):
+                raise CentralRoutingError("C09_SCHEDULING_DEPENDENCIES_INVALID")
+            graph[task_id] = set(item["dependencies"]) | set(scheduling)
+        remaining = set(graph)
+        while remaining:
+            ready = {task_id for task_id in remaining if not graph[task_id].intersection(remaining)}
+            if not ready:
+                raise CentralRoutingError("C09_ARRANGEMENT_DEPENDENCY_CYCLE")
+            remaining -= ready
+        return copy.deepcopy(value)
     required = {"executionMapSchemaVersion", "recordType", "planId", "projectId", "authorization", "executionPlan"}
     if set(value) != required or value.get("executionMapSchemaVersion") != "0.17.0" or value.get("recordType") != "C09_APPROVED_EXECUTION_MAP" or value.get("projectId") != project_id:
         raise CentralRoutingError("C09_EXECUTION_MAP_SCHEMA_UNSUPPORTED")
@@ -174,7 +220,9 @@ def validate_execution_map(value: Dict[str, Any], project_id: str) -> Dict[str, 
             raise CentralRoutingError("C09_EXECUTION_MAP_TASK_ID_INVALID")
         seen.add(task_id)
         dependencies = raw.get("dependencies")
-        if not isinstance(dependencies, list) or len(dependencies) > 40 or len(dependencies) != len(set(dependencies)):
+        if (not isinstance(dependencies, list) or len(dependencies) > 40
+                or not all(isinstance(dependency, str) for dependency in dependencies)
+                or len(dependencies) != len(set(dependencies))):
             raise CentralRoutingError("C09_EXECUTION_MAP_DEPENDENCIES_INVALID")
         for dependency in dependencies:
             if not isinstance(dependency, str) or not TASK_ID_PATTERN.fullmatch(dependency):
@@ -194,6 +242,111 @@ def validate_execution_map(value: Dict[str, Any], project_id: str) -> Dict[str, 
             "c10RequestPath": raw["c10RequestPath"].strip(),
         })
     return {**value, "executionPlan": {"tasks": tasks}}
+
+
+@contextmanager
+def execution_plan_lock(args: argparse.Namespace):
+    data_root = load_data_root(args)
+    if not PROJECT_ID_PATTERN.fullmatch(args.project_id):
+        raise CentralRoutingError("C09_PROJECT_ID_INVALID")
+    if args.writer_id != CENTRAL_WRITER:
+        raise CentralRoutingError("C09_WRITER_NOT_AUTHORIZED")
+    source = load_private_json(data_root, args.execution_map, "C09_EXECUTION_MAP_INVALID_JSON")
+    validate_execution_map(source, args.project_id)
+    target = data_root / "execution-plan-locks" / args.project_id / (source["planId"] + ".lock")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("a+") as stream:
+        try:
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise CentralRoutingError("C09_PLAN_OPERATION_IN_PROGRESS")
+        try:
+            yield
+        finally:
+            fcntl.flock(stream, fcntl.LOCK_UN)
+
+
+def revise_plan(args: argparse.Namespace) -> Dict[str, Any]:
+    with execution_plan_lock(args):
+        return _revise_plan(args)
+
+
+def _revise_plan(args: argparse.Namespace) -> Dict[str, Any]:
+    data_root = load_data_root(args)
+    if args.writer_id != CENTRAL_WRITER:
+        raise CentralRoutingError("C09_WRITER_NOT_AUTHORIZED")
+    source = load_private_json(data_root, args.execution_map, "C09_EXECUTION_MAP_INVALID_JSON")
+    validate_execution_map(source, args.project_id)
+    source_digest = canonical_digest(source)
+    revision_id = require_reference(args.revision_id, "C09_PLAN_REVISION_INVALID")
+    reason_ref = require_reference(args.reason_ref, "C09_PLAN_REVISION_INVALID")
+    arrangement = load_private_json(data_root, args.arrangement, "C09_ARRANGEMENT_INVALID")
+    candidate = {**source, "executionMapSchemaVersion": "0.23.0",
+        "approvedPlan": source.get("approvedPlan", source["executionPlan"]), "executionPlan": arrangement,
+        "planRevision": {"revisionId": revision_id, "parentDigest": source_digest, "reasonRef": reason_ref}}
+    validate_execution_map(candidate, args.project_id)
+    candidate_digest = canonical_digest(candidate)
+    plan_id = source["planId"]
+    artifact = data_root / "execution-plan-revisions" / args.project_id / plan_id / (revision_id + ".json")
+    changed = False
+    with ledger_lock(data_root, args.project_id):
+        _, code = verify_ledger(argparse.Namespace(data_root=str(data_root), config=None, project_id=args.project_id))
+        if code:
+            raise CentralRoutingError("C09_LEDGER_INTEGRITY_UNVERIFIED")
+        ledger = load_ledger(data_root, args.project_id)
+        require_current_central_thread(data_root, args.project_id, args.caller_thread_ref)
+        record = ledger.get("executionPlanRevisions", {}).get(plan_id)
+        if record and any(item["revisionId"] == revision_id for item in record["versions"]):
+            version = next(item for item in record["versions"] if item["revisionId"] == revision_id)
+            if version["mapDigest"] != candidate_digest or record["currentDigest"] != candidate_digest:
+                raise CentralRoutingError("C09_PLAN_REVISION_ID_CONFLICT_OR_SUPERSEDED")
+        else:
+            if record and record["currentDigest"] != source_digest:
+                raise CentralRoutingError("C09_PLAN_SOURCE_SUPERSEDED")
+            if not record and source["executionMapSchemaVersion"] != "0.17.0":
+                raise CentralRoutingError("C09_PLAN_REVISION_NOT_REGISTERED")
+            if arrangement == source["executionPlan"]:
+                return {"status": "NO_EXECUTION_ARRANGEMENT_CHANGE", "writePerformed": False,
+                    "runtimeDispatchPerformed": False, "bossRepromptRequired": False, "artifact": str(Path(args.execution_map).resolve())}
+            if any(item["taskId"] not in ledger["tasks"] for item in arrangement["tasks"]):
+                raise CentralRoutingError("C09_EXECUTION_MAP_TASK_NOT_IN_LEDGER")
+            previous_tasks = {item["taskId"]: item for item in source["executionPlan"]["tasks"]}
+            for item in arrangement["tasks"]:
+                task_id = item["taskId"]
+                if (set(item.get("schedulingDependencies", [])) != set(previous_tasks[task_id].get("schedulingDependencies", []))
+                        and ledger["tasks"][task_id]["status"] != "PLANNED"):
+                    raise CentralRoutingError(f"C09_IN_FLIGHT_TASK_REQUIRES_COORDINATED_CHANGE:{task_id}")
+            def mutate(after):
+                plans = after.setdefault("executionPlanRevisions", {})
+                current = plans.setdefault(plan_id, {"originalMapDigest": source_digest,
+                    "authorization": source["authorization"], "versions": []})
+                current["versions"].append({"revisionId": revision_id, "mapDigest": candidate_digest,
+                    "parentDigest": source_digest, "reasonRef": reason_ref, "map": candidate})
+                current["currentDigest"] = candidate_digest
+            commit_mutation(data_root, args.project_id, ledger, CENTRAL_WRITER, "REVISE_EXECUTION_ARRANGEMENT",
+                {"planId": plan_id, "revisionId": revision_id, "reasonRef": reason_ref}, mutate,
+                caller_thread_ref=args.caller_thread_ref)
+            changed = True
+        # The ledger is authoritative; a failed export can be regenerated on the same request.
+        export_attempted = False
+        exported = False
+        try:
+            if artifact.exists():
+                if canonical_digest(load_json(artifact, "C09_PLAN_EXPORT_INVALID")) != candidate_digest:
+                    raise CentralRoutingError("C09_PLAN_EXPORT_CONFLICT")
+            else:
+                export_attempted = True
+                write_exclusive(artifact, candidate)
+                exported = True
+        except (OSError, CentralRoutingError) as error:
+            return {"status": "PLAN_RECORDED_EXPORT_PENDING", "reason": str(error),
+                "writePerformed": changed or export_attempted, "ledgerWritePerformed": changed,
+                "artifactExportStatus": "FAILED_OR_INCOMPLETE", "artifactWriteAttempted": export_attempted,
+                "runtimeDispatchPerformed": False, "bossRepromptRequired": False, "revisionId": revision_id}
+    return {"status": "EXECUTION_ARRANGEMENT_REVISED" if changed else "IDEMPOTENT_EXECUTION_ARRANGEMENT",
+        "artifact": str(artifact), "writePerformed": changed or exported, "ledgerWritePerformed": changed,
+        "artifactWritePerformed": exported, "bossRepromptRequired": False,
+        "runtimeDispatchPerformed": False, "approvalPreserved": True, "revisionId": revision_id}
 
 
 def validate_registry(registry: Dict[str, Any], check_files: bool = True) -> Dict[str, Any]:
@@ -273,6 +426,48 @@ def validate_request(request: Dict[str, Any]) -> Dict[str, Any]:
     return request
 
 
+def model_policy_summary() -> Dict[str, Any]:
+    return {
+        "models": {"central": CENTRAL_MODEL, "taskWindow": DEFAULT_TASK_MODEL, "subAgent": DEFAULT_TASK_MODEL},
+        "modelsAreDefaultsOnly": True,
+        "modelPolicy": {"central": "PRESERVE_USER_SELECTION", "newTask": "DEFAULT_UNLESS_SELECTED",
+            "continuation": "PRESERVE_CURRENT_MODEL", "roleRequiresDefaultModel": False,
+            "actualModelsSource": "RUNTIME_EVIDENCE"},
+    }
+
+
+def current_prepared_plan(data_root: Path, project_id: str, ledger: Dict[str, Any],
+                          task_id: str, original: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve an already prepared replacement without rewriting the approved map."""
+    try:
+        require_current_direction(ledger, task_id, original)
+        return original
+    except LedgerError as error:
+        if str(error) != "TASK_DIRECTION_VERSION_MISMATCH":
+            raise
+    matches = []
+    contract_keys = ("projectId", "taskId", "packageId", "reviewId", "bossApprovalRef",
+        "authorizationScope", "runtimeProject")
+    for path in plan_path(data_root, project_id, original["dispatchId"]).parent.parent.glob("*/dispatch-plan.json"):
+        candidate = load_json(path, "C09_PREPARED_PLAN_INVALID")
+        if (candidate.get("recordType") != "C10_DISPATCH_PLAN"
+                or candidate.get("status") != "PENDING_RUNTIME_CONFIRMATION"
+                or any(candidate.get(key) != original.get(key) for key in contract_keys)
+                or any(candidate.get("source", {}).get(key) != original.get("source", {}).get(key)
+                    for key in ("packageDigest", "c05DecisionDigest"))):
+            continue
+        try:
+            require_current_direction(ledger, task_id, candidate)
+        except LedgerError:
+            continue
+        matches.append(candidate)
+    if len(matches) > 1:
+        raise CentralRoutingError("C09_MULTIPLE_CURRENT_DIRECTION_DISPATCHES")
+    if not matches:
+        raise LedgerError("TASK_DIRECTION_VERSION_MISMATCH")
+    return matches[0]
+
+
 def decision_base(request: Dict[str, Any], registry: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "schemaVersion": SCHEMA_VERSION,
@@ -280,7 +475,7 @@ def decision_base(request: Dict[str, Any], registry: Dict[str, Any]) -> Dict[str
         "requestId": request["requestId"],
         "projectId": request["projectId"],
         "intent": request["intent"],
-        "models": {"central": CENTRAL_MODEL, "taskWindow": TASK_MODEL, "subAgent": TASK_MODEL},
+        **model_policy_summary(),
         "subAgentPolicy": {"maxConcurrentFirstLevel": 3, "allowGrandchildren": False},
         "windowPolicy": {"maxSequentialAssignments": 2, "allowConcurrentAssignments": False, "centralChoosesReuse": True},
         "boundaries": {
@@ -362,7 +557,7 @@ def status(registry: Dict[str, Any]) -> Dict[str, Any]:
         "centralEntryCount": 1,
         "readyStages": list(EXPECTED),
         "pendingStages": [],
-        "models": {"central": CENTRAL_MODEL, "taskWindow": TASK_MODEL, "subAgent": TASK_MODEL},
+        **model_policy_summary(),
         "subAgentPolicy": {"maxConcurrentFirstLevel": 3, "allowGrandchildren": False},
         "windowPolicy": {"maxSequentialAssignments": 2, "allowConcurrentAssignments": False, "centralChoosesReuse": True},
         "boundaries": {"naturalLanguageGatewayAvailable": True, "onePassExecutionMapAvailable": True, "scopedBatchApprovalAvailable": True, "automaticSuccessorDispatchAvailable": True, "twoPhaseDispatchAvailable": True, "twoTaskWindowLifecycleEnforced": True, "projectBoundDispatchRequired": True, "runtimeConfirmationRequired": True, "businessExecutionAvailable": False},
@@ -371,6 +566,11 @@ def status(registry: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def continue_successors(args: argparse.Namespace, registry: Dict[str, Any]) -> Dict[str, Any]:
+    with execution_plan_lock(args):
+        return _continue_successors(args, registry)
+
+
+def _continue_successors(args: argparse.Namespace, registry: Dict[str, Any]) -> Dict[str, Any]:
     data_root = load_data_root(args)
     project_id = require_reference(args.project_id, "C09_PROJECT_ID_INVALID")
     validation_id = require_reference(args.validation_id, "C09_VALIDATION_ID_INVALID")
@@ -379,9 +579,23 @@ def continue_successors(args: argparse.Namespace, registry: Dict[str, Any]) -> D
     execution_map_raw = load_private_json(data_root, args.execution_map, "C09_EXECUTION_MAP_INVALID_JSON")
     execution_map = validate_execution_map(execution_map_raw, project_id)
     map_digest = canonical_digest(execution_map_raw)
+    _, ledger_code = verify_ledger(argparse.Namespace(data_root=str(data_root), config=None, project_id=project_id))
+    if ledger_code:
+        raise CentralRoutingError("C09_LEDGER_INTEGRITY_UNVERIFIED")
+    current_ledger = load_ledger(data_root, project_id)
+    require_current_central_thread(data_root, project_id, args.caller_thread_ref)
+    plan_record = current_ledger.get("executionPlanRevisions", {}).get(execution_map["planId"])
+    compatible_map_digests = {map_digest}
+    if plan_record:
+        if plan_record["currentDigest"] != map_digest:
+            raise CentralRoutingError("C09_PLAN_SOURCE_SUPERSEDED")
+        compatible_map_digests.add(plan_record["originalMapDigest"])
+        compatible_map_digests.update(item["mapDigest"] for item in plan_record["versions"])
+    elif execution_map["executionMapSchemaVersion"] == "0.23.0":
+        raise CentralRoutingError("C09_PLAN_REVISION_NOT_REGISTERED")
     existing_paths = successor_batch_paths(data_root, project_id, validation_id)
     existing_batches = [load_json(path, "C09_SUCCESSOR_BATCH_INVALID") for path in existing_paths]
-    if any(batch.get("source", {}).get("executionMapDigest") != map_digest for batch in existing_batches):
+    if any(batch.get("source", {}).get("executionMapDigest") not in compatible_map_digests for batch in existing_batches):
         raise CentralRoutingError("C09_SUCCESSOR_BATCH_EXISTS_FOR_DIFFERENT_MAP")
     previously_prepared: Dict[str, Dict[str, Any]] = {}
     for batch in existing_batches:
@@ -454,11 +668,32 @@ def continue_successors(args: argparse.Namespace, registry: Dict[str, Any]) -> D
     for item in execution_map["executionPlan"]["tasks"]:
         task = ledger["tasks"][item["taskId"]]
         task_status = task.get("status")
+        external_waits = active_external_waits(task)
+        if external_waits:
+            waiting_tasks.append({"taskId": item["taskId"], "taskStatus": task_status,
+                "reason": "EXTERNAL_WAIT", "externalWaits": external_waits})
+            continue
         if task_status == "DONE":
             completed_tasks.append({"taskId": item["taskId"], "taskStatus": task_status})
             continue
         if task_status in {"IN_PROGRESS", "NEEDS_REVIEW", "PARTIAL"}:
             active_tasks.append({"taskId": item["taskId"], "taskStatus": task_status})
+            continue
+        try:
+            require_direction_ready(ledger, item["taskId"])
+            if item["taskId"] in previously_prepared:
+                # A cached batch is not authority to resume a superseded direction.
+                saved_plan = load_json(plan_path(data_root, project_id,
+                    previously_prepared[item["taskId"]]["dispatchId"]), "C09_PREPARED_PLAN_INVALID")
+                saved_plan = current_prepared_plan(data_root, project_id, ledger, item["taskId"], saved_plan)
+                previously_prepared[item["taskId"]] = {**previously_prepared[item["taskId"]],
+                    "dispatchId": saved_plan["dispatchId"], "windowAction": saved_plan["windowAction"]}
+        except (LedgerError, CentralRoutingError) as error:
+            blocked_tasks.append({"taskId": item["taskId"], "stage": "CURRENT_EXECUTION",
+                "reason": str(error), "taskStatus": task_status,
+                **({"nextAction": "PREPARE_CURRENT_DIRECTION_DISPATCH",
+                    "bossRepromptRequired": False, "preserveApprovedScope": True}
+                    if str(error) == "TASK_DIRECTION_VERSION_MISMATCH" else {})})
             continue
         if item["taskId"] in previously_prepared:
             if task_status != "READY":
@@ -478,8 +713,11 @@ def continue_successors(args: argparse.Namespace, registry: Dict[str, Any]) -> D
             })
             continue
         unmet = [dependency for dependency in item["dependencies"] if ledger.get("tasks", {}).get(dependency, {}).get("status") != "DONE"]
-        if unmet:
-            waiting_tasks.append({"taskId": item["taskId"], "taskStatus": task_status, "unmetDependencies": unmet})
+        unmet_scheduling = [dependency for dependency in item.get("schedulingDependencies", [])
+            if ledger.get("tasks", {}).get(dependency, {}).get("status") != "DONE"]
+        if unmet or unmet_scheduling:
+            waiting_tasks.append({"taskId": item["taskId"], "taskStatus": task_status,
+                "unmetDependencies": unmet, "unmetSchedulingDependencies": unmet_scheduling})
             continue
 
         review_path = successor_inputs[item["taskId"]]["reviewPath"]
@@ -624,6 +862,9 @@ def parse_args() -> argparse.Namespace:
     successor_parser.add_argument("--execution-map", required=True)
     successor_parser.add_argument("--writer-id", required=True)
     successor_parser.add_argument("--caller-thread-ref", required=True)
+    revision_parser = subparsers.add_parser("revise-plan")
+    for name in ("project-id", "execution-map", "arrangement", "revision-id", "reason-ref", "writer-id", "caller-thread-ref"):
+        revision_parser.add_argument("--" + name, required=True)
     return parser.parse_args()
 
 
@@ -634,6 +875,8 @@ def main() -> int:
         registry = load_registry()
         if args.command == "status":
             output = status(registry)
+        elif args.command == "revise-plan":
+            output = revise_plan(args)
         elif args.command == "route":
             request_path = Path(args.request).expanduser().resolve()
             if data_root != request_path and data_root not in request_path.parents:

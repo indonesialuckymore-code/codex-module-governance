@@ -24,7 +24,60 @@
       }
     },
     "partitions": { "type": "object" },
-    "tasks": { "type": "object" },
+    "tasks": { "type": "object", "additionalProperties": {
+      "type": "object", "properties": {
+      "externalWaits": {"type": "object", "additionalProperties": {"$ref": "#/$defs/externalWait"}},
+      "deliveryFeedback": {"type": "object", "additionalProperties": {"$ref": "#/$defs/deliveryFeedback"}},
+      "directionCorrections": {
+        "type": "array", "items": { "type": "object", "additionalProperties": false,
+          "required": ["correctionId", "instructionRef", "reasonRef", "bossDecisionRef", "retainedRequirementRefs", "supersededRequirementRefs", "expectedRevision", "revision", "requestDigest", "createdAt", "scope", "windowBindings"],
+          "properties": {
+            "correctionId": { "type": "string", "minLength": 3 },
+            "instructionRef": { "type": "string", "minLength": 3 },
+            "reasonRef": { "type": "string", "minLength": 3 },
+            "bossDecisionRef": { "type": "string", "minLength": 3 },
+            "retainedRequirementRefs": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string" } },
+            "supersededRequirementRefs": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string" } },
+            "expectedRevision": { "type": "integer", "minimum": 0 },
+            "revision": { "type": "integer", "minimum": 1 },
+            "requestDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "createdAt": { "type": "string" },
+            "scope": { "const": "EXECUTION_WITHIN_APPROVED_CONTRACT" },
+            "windowBindings": { "type": "array", "items": { "type": "object", "additionalProperties": false,
+              "required": ["windowId", "runtimeThreadRef", "generation"], "properties": {
+                "windowId": { "type": "string" }, "runtimeThreadRef": { "type": "string" },
+                "generation": { "type": "integer", "minimum": 1 }
+              } } }
+          }
+        }
+      }, "directionVerifications": { "type": "array", "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["verificationId", "projectId", "taskId", "correctionId", "revision", "correctionDigest", "verifiedByThreadRef", "checks", "evidence", "sourceDigest", "communication", "verifiedAt"],
+        "properties": {
+          "verificationId": { "type": "string" }, "projectId": { "type": "string" },
+          "taskId": { "type": "string" }, "correctionId": { "type": "string" },
+          "revision": { "type": "integer", "minimum": 1 },
+          "correctionDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "sourceDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "verifiedByThreadRef": { "type": "string" }, "verifiedAt": { "type": "string" },
+          "communication": { "type": "array", "items": { "type": "object" } },
+          "checks": { "type": "array", "minItems": 5, "maxItems": 5, "items": {
+            "type": "object", "additionalProperties": false, "required": ["check", "status", "evidenceRefs"],
+            "properties": { "check": { "enum": ["CURRENT_INSTRUCTION_APPLIED", "RETAINED_REQUIREMENTS_PRESERVED", "SUPERSEDED_WORK_STOPPED", "IN_FLIGHT_EFFECTS_RECONCILED", "APPROVED_CONTRACT_UNCHANGED"] },
+              "status": { "const": "PASS" }, "evidenceRefs": { "type": "array", "minItems": 1, "items": { "type": "string" } } }
+          } },
+          "evidence": { "type": "array", "minItems": 1, "items": {
+            "type": "object", "additionalProperties": false, "required": ["reference", "sha256"],
+            "properties": { "reference": { "type": "string" }, "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" } }
+          } }
+        }
+      } } }
+    } },
+    "executionPlanRevisions": { "type": "object" },
+    "outlineHistory": { "type": "object" },
+    "outlineRevisions": { "type": "array", "items": { "type": "object" } },
+    "outlineContract": { "type": "object", "required": ["digest", "handoff"], "additionalProperties": false,
+      "properties": { "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }, "handoff": { "type": "object" } } },
     "windows": { "type": "object" },
     "subAgents": { "type": "object" },
     "objectOccupancies": { "type": "object" },
@@ -33,7 +86,66 @@
     "skills": { "type": "object" },
     "recovery": { "type": "object" },
     "hardStops": { "type": "array" },
+    "resolvedHardStops": { "type": "array" },
+    "releasedOccupancies": { "type": "array" },
     "receiptIds": { "type": "array", "items": { "type": "string" } },
     "latestReceiptId": { "type": ["string", "null"] }
+  },
+  "$defs": {
+    "reference": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$"},
+    "digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "externalWait": {
+      "type": "object", "additionalProperties": false,
+      "required": ["waitId", "ownerRef", "conditionRef", "reasonRef", "status", "recordedAt", "followupStatus", "runtimeInterrupted"],
+      "properties": {
+        "waitId": {"$ref": "#/$defs/reference"}, "ownerRef": {"$ref": "#/$defs/reference"},
+        "conditionRef": {"$ref": "#/$defs/reference"}, "reasonRef": {"$ref": "#/$defs/reference"},
+        "status": {"enum": ["WAITING", "RESOLVED"]}, "recordedAt": {"type": "string"},
+        "followupStatus": {"enum": ["NOT_SCHEDULED", "SCHEDULED_RECEIPT_RECORDED"]}, "runtimeInterrupted": {"const": false},
+        "followupReceipt": {"type": "object"},
+        "followupRetargets": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+        "resolution": {
+          "type": "object", "additionalProperties": false,
+          "required": ["sourceDigest", "directionContext", "verifiedByThreadRef", "evidenceRef", "sha256", "resolvedAt"],
+          "properties": {
+            "sourceDigest": {"$ref": "#/$defs/digest"}, "sha256": {"$ref": "#/$defs/digest"},
+            "evidenceRef": {"$ref": "#/$defs/reference"}, "verifiedByThreadRef": {"type": ["string", "null"]},
+            "resolvedAt": {"type": "string"},
+            "directionContext": {"type": "object", "additionalProperties": false, "required": ["revision", "digest"],
+              "properties": {"revision": {"type": "integer", "minimum": 0}, "digest": {"type": "string"}}}
+          }
+        }
+      },
+      "allOf": [{"if": {"properties": {"status": {"const": "RESOLVED"}}},
+        "then": {"required": ["resolution"]}, "else": {"not": {"required": ["resolution"]}}}]
+    },
+    "deliveryFeedback": {
+      "type": "object", "additionalProperties": false,
+      "required": ["feedbackId", "originalValidationId", "issueRef", "affectedRef", "repairTaskId", "status", "recordedAt", "originalDecisionDigest", "originalFinalizationDigest", "originalPackageDigest", "originalOutcomeIds"],
+      "properties": {
+        "feedbackId": {"$ref": "#/$defs/reference"}, "originalValidationId": {"$ref": "#/$defs/reference"},
+        "issueRef": {"$ref": "#/$defs/reference"}, "affectedRef": {"$ref": "#/$defs/reference"},
+        "repairTaskId": {"type": ["string", "null"]}, "status": {"enum": ["REPORTED_REQUIRES_REVIEW", "CLOSED_VERIFIED"]},
+        "repairLink": {
+          "type": "object", "additionalProperties": false, "required": ["repairTaskId", "linkedAt"],
+          "properties": {"repairTaskId": {"$ref": "#/$defs/reference"}, "linkedAt": {"type": "string"}}
+        },
+        "repairRetargets": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+        "closure": {
+          "type": "object", "additionalProperties": false,
+          "required": ["validationId", "decisionDigest", "finalizationDigest", "feedbackDigest", "evidenceRef", "closedAt"],
+          "properties": {
+            "validationId": {"$ref": "#/$defs/reference"}, "decisionDigest": {"$ref": "#/$defs/digest"},
+            "finalizationDigest": {"$ref": "#/$defs/digest"}, "feedbackDigest": {"$ref": "#/$defs/digest"},
+            "evidenceRef": {"$ref": "#/$defs/reference"}, "closedAt": {"type": "string"}
+          }
+        },
+        "recordedAt": {"type": "string"}, "originalDecisionDigest": {"$ref": "#/$defs/digest"},
+        "originalFinalizationDigest": {"$ref": "#/$defs/digest"}, "originalPackageDigest": {"$ref": "#/$defs/digest"},
+        "originalOutcomeIds": {"type": "array", "items": {"type": "string"}}
+      },
+      "allOf": [{"if": {"properties": {"status": {"const": "CLOSED_VERIFIED"}}},
+        "then": {"required": ["closure"]}, "else": {"not": {"required": ["closure"]}}}]
+    }
   }
 }

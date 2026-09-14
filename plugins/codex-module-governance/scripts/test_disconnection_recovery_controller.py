@@ -24,7 +24,7 @@ CASE = "recovery-c08-001"
 
 def invoke(script, arguments):
     if script == C08 and "--caller-thread-ref" not in arguments:
-        command_index = next(index for index, value in enumerate(arguments) if value in {"freeze", "takeover", "decide", "release", "verify"})
+        command_index = next(index for index, value in enumerate(arguments) if value in {"freeze", "takeover", "decide", "resume", "release", "verify"})
         arguments = [*arguments[:command_index], "--caller-thread-ref", "central-thread-g1", *arguments[command_index:]]
     if script == c06_fixture.C06 and "--caller-thread-ref" not in arguments:
         command_index = next(index for index, value in enumerate(arguments) if value in {"assess", "finalize", "verify"})
@@ -87,6 +87,22 @@ def release_input(rollback=True, outstanding=False, validation=None):
     return {"releaseSchemaVersion": "0.8.0", "recordType": "C08_OCCUPANCY_RELEASE_INPUT", "caseId": CASE, "bossReleaseAuthorization": {"status": "APPROVED", "reference": "boss-release-c08"}, "validationId": validation, "rollbackConfirmed": rollback, "noBusinessWritesOutstanding": not outstanding}
 
 
+def replacement_resume_input(epoch=1, approved=True):
+    return {
+        "resumeSchemaVersion": "0.8.0",
+        "recordType": "C08_TASK_WINDOW_REPLACEMENT_AUTHORIZATION",
+        "caseId": CASE,
+        "expectedRecoveryEpoch": epoch,
+        "taskId": TASK,
+        "disconnectedWindowId": WINDOW,
+        "bossAuthorization": {
+            "status": "APPROVED" if approved else "PENDING",
+            "reference": "boss-resume-replacement-c08",
+        },
+        "reasonRef": "replace-disconnected-window-c08",
+    }
+
+
 class C08Tests(unittest.TestCase):
     def test_reserved_second_assignment_is_visible_to_controlled_recovery(self):
         ledger = {
@@ -120,6 +136,9 @@ class C08Tests(unittest.TestCase):
 
     def release(self, root, path):
         return invoke(C08, ["--data-root", str(root), "--project-id", PROJECT, "--writer-id", "codex-module-central", "release", "--case-id", CASE, "--release", str(path)])
+
+    def resume(self, root, path):
+        return invoke(C08, ["--data-root", str(root), "--project-id", PROJECT, "--writer-id", "codex-module-central", "resume", "--case-id", CASE, "--authorization", str(path)])
 
     def freeze_case(self, root, payload=None):
         path = write_json(root / "c08-inputs" / "incident.json", payload or incident())
@@ -225,6 +244,24 @@ class C08Tests(unittest.TestCase):
             ledger = json.loads((root / "module-ledgers" / PROJECT / "ledger.json").read_text())
             self.assertEqual(ledger["recovery"]["state"], "RESUME_REVIEW_REQUIRED")
             self.assertEqual(ledger["tasks"][TASK]["status"], "BLOCKED")
+
+    def test_boss_authorized_replacement_reopens_task_for_normal_dispatch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "private-data"; setup_project(root); self.freeze_case(root); self.takeover_case(root)
+            self.decide(root, write_json(root / "c08-inputs" / "decision.json", decision_input("PREPARE_RESUME")))
+            before = json.loads((root / "module-ledgers" / PROJECT / "ledger.json").read_text())
+            authorization = write_json(root / "c08-inputs" / "resume.json", replacement_resume_input())
+            code, output = self.resume(root, authorization)
+            self.assertEqual(code, 0, output)
+            self.assertEqual(output["status"], "TASK_WINDOW_REPLACEMENT_AUTHORIZED")
+            self.assertTrue(output["newDispatchAllowed"])
+            self.assertFalse(output["businessExecutionResumed"])
+            after = json.loads((root / "module-ledgers" / PROJECT / "ledger.json").read_text())
+            self.assertEqual(after["recovery"]["state"], "CLOSED")
+            self.assertEqual(after["tasks"][TASK]["status"], "READY")
+            self.assertEqual(after["windows"][WINDOW]["status"], "REPLACED_READ_ONLY")
+            self.assertIsNone(after["windows"][WINDOW]["currentTaskId"])
+            self.assertEqual(after["objectOccupancies"], before["objectOccupancies"])
 
     def test_cancel_retains_occupancy_until_separate_release(self):
         with tempfile.TemporaryDirectory() as temporary:

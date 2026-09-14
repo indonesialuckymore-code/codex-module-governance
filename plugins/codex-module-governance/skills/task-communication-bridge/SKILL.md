@@ -26,6 +26,10 @@ description: 在 Codex 唯一中央与已登记任务窗口之间，以持久信
 
 ## 中央下达任务窗口指令
 
+任务有[外部等待](../../references/task-followthrough.md)时，C14 普通施工指令暂停投递，包括已有积压；纠偏和取消通知仍按原协议核验。不要把等待登记当成原生中断证明，也不要把反馈登记当成已通知修复窗口。
+
+遇到 `DIRECTION_CORRECTION`，先读[纠偏候选协议](../../references/task-corrections.md)。使用 C03 生成的当前版本请求；不得将被取代的纠偏改编号重发或静默转给新代际。APPLIED 与结果消息确认仍不解锁任务，须由当前中央按证据核验。解除暂停后，旧版本积压施工消息仍不能发送；新消息绑定当前版本。验证范围见[候选版状态](../../references/release-status.md)。
+
 1. 中央必须仍是 `CURRENT_CENTRAL`，且只向 C03 已登记、当前承接该任务的窗口发送。
 2. 写 `C14_CENTRAL_TO_TASK_REQUEST`；指令正文保留在私有 `commandRef`，信封只保留编号、摘要哈希和任务身份。运行 `enqueue-central-command`。
 3. 中央依次运行 `prepare-delivery` -> 原生 `send_message_to_thread` -> `record-delivery`。`DELIVERED` 仅代表平台已接受发送，不代表窗口执行。
@@ -35,6 +39,9 @@ description: 在 Codex 唯一中央与已登记任务窗口之间，以持久信
 ## 重试、换代与假回传
 
 - 原生发送失败：记录 `FAILED` 投递回执，消息保持 `QUEUED`；重新 `prepare-delivery`，它会解析最新 `CURRENT_CENTRAL`，不向旧中央盲发。
+- 发送成功但登记调用中断：用同一份原生投递回执重试 `record-delivery`，已登记则零写入返回；不要为了补登记再次调用原生发送。同一编号、不同内容会拒绝覆盖。
+- 执行结果已封存但通知写入中断：用原来的结果请求重试 `record-command-result`，补齐缺失的通知信封。已有完整通知不重建；只有封存回执时，核验后按回执恢复，不覆盖原结果或回执。冲突、残损证据需保留现场处理，不能重写伪造成功。
+- 恢复通知只表示重新具备投递条件；仍须 `prepare-delivery` -> 原生发送 -> 投递回执 -> 中央确认。`APPLIED` 是任务窗口报告，不代表中央已经收到，也不代表独立验证了纠偏生效。
 - 中央换代：旧中央不能确认；未确认消息由新 `CURRENT_CENTRAL` 确认。同一任务窗口不需要重开。
 - 没有 C14 原生投递回执：只能称 `QUEUED`，不能称“已通知”。
 - 没有收件方 `MESSAGE_ACKNOWLEDGED`：只能称 `DELIVERED`，不能称“对方已收到”。
@@ -46,4 +53,4 @@ description: 在 Codex 唯一中央与已登记任务窗口之间，以持久信
 - 不把 C14 当作第二中央或第二工程总账；它只保存不可覆盖的通信回执。
 - 不因一条聊天文字、截图或模型自报而跳过投递/确认回执。
 - 收件线程、窗口、任务 ID、代际或路由不匹配时硬停；不得把消息转发给相似名称的任务。
-- 默认任务窗口是 `gpt-5.6-terra`、中央是 `gpt-5.6-sol`；本 Skill 不改变模型政策。
+- 模型规则统一引用 `../../references/runtime-model-policy.md`：新任务默认 Terra，可修改；续办保留当前选择，中央模型自由。通信不强制切换模型。

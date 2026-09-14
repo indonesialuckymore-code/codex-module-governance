@@ -6,6 +6,7 @@
   "additionalProperties": false,
   "required": ["schemaVersion", "module", "models", "runtimePermissions", "nativeRuntime", "subAgentPolicy", "storage", "projectInitialization", "ledger", "occupancy", "validation", "adjudication", "recovery", "centralIntegration", "dispatch", "externalSkills", "naturalLanguageGateway", "publishing"],
   "properties": {
+    "$schema": { "type": "string", "minLength": 1 },
     "schemaVersion": { "const": "0.22.1" },
     "module": {
       "type": "object",
@@ -21,33 +22,37 @@
       "additionalProperties": false,
       "required": ["central", "taskWindow", "subAgent"],
       "properties": {
-        "central": { "const": "gpt-5.6-sol" },
-        "taskWindow": { "const": "gpt-5.6-terra" },
-        "subAgent": { "const": "gpt-5.6-terra" }
+        "central": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$", "not": { "enum": ["UNKNOWN", "UNVERIFIED", "DEFAULT", "NONE"] } },
+        "taskWindow": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$", "not": { "enum": ["UNKNOWN", "UNVERIFIED", "DEFAULT", "NONE"] } },
+        "subAgent": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$", "not": { "enum": ["UNKNOWN", "UNVERIFIED", "DEFAULT", "NONE"] } }
       }
     },
     "runtimePermissions": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["taskWindowClass", "subAgentClass", "allowedTaskProfiles", "forbidDangerFullAccess", "requireRuntimeEvidence", "requireDeclaredWritableRoots", "denyGovernanceDataRootAccess", "allowManualUiEvidence", "autoReviewRequiresInteractiveApproval"],
+      "required": ["defaultTaskWindowClass", "defaultTaskProfile", "subAgentPermissionMode", "allowedTaskProfiles", "forbidDangerFullAccess", "requireRuntimeEvidence", "restrictedModeOptional", "restrictedModeRequiresDeclaredWritableRoots", "restrictedModeDeniesGovernanceDataRootAccess", "allowManualUiEvidence", "autoReviewRequiresInteractiveApproval"],
       "properties": {
-        "taskWindowClass": { "const": "WORKTREE_SCOPED" },
-        "subAgentClass": { "const": "WORKTREE_SCOPED" },
+        "defaultTaskWindowClass": { "const": "FULL_ACCESS" },
+        "defaultTaskProfile": { "const": "full-access" },
+        "subAgentPermissionMode": { "const": "INHERIT_PARENT" },
         "allowedTaskProfiles": {
           "type": "array",
-          "minItems": 2,
-          "maxItems": 2,
+          "minItems": 4,
+          "maxItems": 5,
           "uniqueItems": true,
-          "items": { "enum": [":workspace", "qianyi-task-terra"] },
+          "items": { "enum": ["full-access", ":danger-full-access", "danger-full-access", ":workspace", "disabled"] },
           "allOf": [
-            { "contains": { "const": ":workspace" } },
-            { "contains": { "const": "qianyi-task-terra" } }
+            { "contains": { "const": "full-access" } },
+            { "contains": { "const": ":danger-full-access" } },
+            { "contains": { "const": "danger-full-access" } },
+            { "contains": { "const": ":workspace" } }
           ]
         },
-        "forbidDangerFullAccess": { "const": true },
+        "forbidDangerFullAccess": { "const": false },
         "requireRuntimeEvidence": { "const": true },
-        "requireDeclaredWritableRoots": { "const": true },
-        "denyGovernanceDataRootAccess": { "const": true },
+        "restrictedModeOptional": { "const": true },
+        "restrictedModeRequiresDeclaredWritableRoots": { "const": true },
+        "restrictedModeDeniesGovernanceDataRootAccess": { "const": true },
         "allowManualUiEvidence": { "const": true },
         "autoReviewRequiresInteractiveApproval": { "const": true }
       }
@@ -184,7 +189,7 @@
         "allowPlanScopedBatchApproval": { "const": true },
         "releaseApprovedWavesWhenDependenciesDone": { "const": true },
         "requireSavedCodexProjectTarget": { "const": true },
-        "newGitTaskProjectBinding": { "const": "LOCAL_BOOTSTRAP_TO_WORKTREE" },
+        "newGitTaskProjectBinding": { "enum": ["DIRECT_PROJECT_WORKTREE", "LOCAL_BOOTSTRAP_TO_WORKTREE"] },
         "rejectProjectlessTargets": { "const": true },
         "maxThreadsPerMonitoringBatch": { "const": 8 },
         "greenSharedReadParallel": { "const": true },

@@ -4,6 +4,7 @@
   "title": "C04 Codex draft task package",
   "type": "object",
   "additionalProperties": false,
+  "allOf": [{"$ref": "codex-acceptance-policy.schema.json#/$defs/contract"}],
   "required": ["schemaVersion", "recordType", "packageId", "projectId", "taskId", "displayName", "taskIdentity", "generatedAt", "writerId", "status", "sourceLedger", "inputBriefDigest", "task", "windowRecommendation", "dependencies", "requiredReading", "realTimeChecks", "allowedActions", "forbiddenActions", "preflightSnapshot", "executionSequence", "acceptance", "hardStops", "rollbackPlan", "deliverables", "handbackRule", "approvalAndDispatchBoundary", "receiptIds", "latestReceiptId"],
   "properties": {
     "schemaVersion": { "const": "0.4.0" },
@@ -37,6 +38,7 @@
     "preflightSnapshot": { "type": "array", "items": { "type": "string" } },
     "executionSequence": { "type": "array", "items": { "type": "string" } },
     "acceptance": { "type": "object" },
+    "acceptancePolicy": {"$ref": "codex-acceptance-policy.schema.json"},
     "hardStops": { "type": "array", "items": { "type": "string" } },
     "rollbackPlan": { "type": "array", "items": { "type": "string" } },
     "deliverables": { "type": "array", "items": { "type": "string" } },

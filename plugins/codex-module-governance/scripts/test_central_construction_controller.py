@@ -93,6 +93,8 @@ class C09Tests(unittest.TestCase):
             self.assertIn("C00", output["readyStages"])
             self.assertIn("C14", output["readyStages"])
             self.assertEqual(output["models"], {"central": "gpt-5.6-sol", "taskWindow": "gpt-5.6-terra", "subAgent": "gpt-5.6-terra"})
+            self.assertTrue(output["modelsAreDefaultsOnly"])
+            self.assertFalse(output["modelPolicy"]["roleRequiresDefaultModel"])
             self.assertEqual(output["subAgentPolicy"], {"maxConcurrentFirstLevel": 3, "allowGrandchildren": False})
             self.assertEqual(output["windowPolicy"], {"maxSequentialAssignments": 2, "allowConcurrentAssignments": False, "centralChoosesReuse": True})
             self.assertTrue(output["boundaries"]["onePassExecutionMapAvailable"])
@@ -131,9 +133,9 @@ class C09Tests(unittest.TestCase):
 
     def test_central_requires_one_pass_execution_map_and_saved_project_dispatch(self):
         workbench_root = central.PLUGIN_SKILLS / "central-workbench"
-        protocol_root = central.PLUGIN_SKILLS / "central-construction-controller"
+        protocol_root = central.PLUGIN_ROOT / "references" / "central-construction"
         skill = (workbench_root / "SKILL.md").read_text(encoding="utf-8")
-        execution_map = (protocol_root / "references" / "project-execution-map.md").read_text(encoding="utf-8")
+        execution_map = (protocol_root / "project-execution-map.md").read_text(encoding="utf-8")
         self.assertFalse((protocol_root / "SKILL.md").exists())
         self.assertFalse((central.PLUGIN_SKILLS / "codex-governance-gateway" / "SKILL.md").exists())
         self.assertIn("Boss 唯一需要选择", skill)

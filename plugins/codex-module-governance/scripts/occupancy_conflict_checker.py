@@ -48,9 +48,12 @@ RESOURCE_CLASSES = {
     "PRODUCTION_SWITCH", "FACT_SOURCE", "ACCOUNT", "EXTERNAL_ENTRY",
     "TEST_SCOPE", "LOG_SCOPE", "ROLLBACK_SCOPE",
 }
-TASK_RUNTIME_MODEL = "gpt-5.6-terra"
-TASK_PERMISSION_CLASS = "WORKTREE_SCOPED"
-ALLOWED_TASK_PERMISSION_PROFILES = {":workspace", "qianyi-task-terra"}
+from runtime_model_policy import DEFAULT_TASK_MODEL, FULL_ACCESS_PROFILES, runtime_model_is_recorded
+
+TASK_RUNTIME_MODEL = DEFAULT_TASK_MODEL
+WORKTREE_SCOPED_PERMISSION_PROFILES = {":workspace"}
+FULL_ACCESS_PERMISSION_PROFILES = FULL_ACCESS_PROFILES
+ALLOWED_TASK_PERMISSION_PROFILES = WORKTREE_SCOPED_PERMISSION_PROFILES | FULL_ACCESS_PERMISSION_PROFILES
 WINDOW_PERMISSION_METHODS = {
     "PERMISSION_PROFILE_READBACK",
     "LEGACY_WORKSPACE_SANDBOX_READBACK",
@@ -96,28 +99,26 @@ def require_reference_list(value: Any, error: str, allow_empty: bool = False) ->
 
 
 def terra_model_is_enforced(window: Dict[str, Any]) -> bool:
-    """A label in the ledger is insufficient; reuse needs recorded model-selection evidence."""
-    control = window.get("modelEnforcement")
-    return (
-        window.get("model") == TASK_RUNTIME_MODEL
-        and window.get("runtimeModel") == TASK_RUNTIME_MODEL
-        and isinstance(control, dict)
-        and control.get("model") == TASK_RUNTIME_MODEL
-        and control.get("method") in TERRA_MODEL_ENFORCEMENT_METHODS
-        and isinstance(control.get("evidenceRef"), str)
-        and bool(control["evidenceRef"].strip())
-    )
+    """Legacy callable name; eligibility now depends on evidence, not Terra."""
+    return runtime_model_is_recorded(window)
 
 
-def bounded_permission_is_enforced(window: Dict[str, Any]) -> bool:
+def runtime_permission_is_recorded(window: Dict[str, Any]) -> bool:
     control = window.get("permissionEnforcement")
-    return (
+    common = (
         isinstance(control, dict)
-        and control.get("permissionClass") == TASK_PERMISSION_CLASS
         and control.get("profile") in ALLOWED_TASK_PERMISSION_PROFILES
         and control.get("method") in WINDOW_PERMISSION_METHODS
         and isinstance(control.get("evidenceRef"), str)
         and bool(control["evidenceRef"].strip())
+    )
+    if not common:
+        return False
+    if control.get("permissionClass") == "FULL_ACCESS":
+        return control.get("profile") in FULL_ACCESS_PERMISSION_PROFILES and control.get("writableRoots") == [] and control.get("governanceDataRootAccess") == "NOT_RESTRICTED"
+    return (
+        control.get("permissionClass") == "WORKTREE_SCOPED"
+        and control.get("profile") in WORKTREE_SCOPED_PERMISSION_PROFILES
         and control.get("governanceDataRootAccess") == "DENIED"
         and isinstance(control.get("writableRoots"), list)
         and bool(control["writableRoots"])
@@ -325,13 +326,22 @@ def verified_sources(data_root: Path, project_id: str, package_id: str, review: 
 
 
 def resolve_window(package: Dict[str, Any], ledger: Dict[str, Any], review: Dict[str, Any]) -> Dict[str, Any]:
+    decision = _resolve_window(package, ledger, review)
+    window = ledger["windows"].get(decision.get("windowId"), {})
+    is_new = decision["status"] == "OPEN_NEW_WINDOW"
+    decision["model"] = TASK_RUNTIME_MODEL if is_new else window.get("runtimeModel")
+    decision["modelIsDefault"] = is_new
+    return decision
+
+
+def _resolve_window(package: Dict[str, Any], ledger: Dict[str, Any], review: Dict[str, Any]) -> Dict[str, Any]:
     task_id = review["taskId"]
     current_matching = sorted(
         window_id for window_id, window in ledger["windows"].items()
         if window_current_task_id(window) == task_id
         and window.get("status") == "REGISTERED"
         and terra_model_is_enforced(window)
-        and bounded_permission_is_enforced(window)
+        and runtime_permission_is_recorded(window)
     )
     reusable = []
     for window_id, window in ledger["windows"].items():
@@ -348,7 +358,7 @@ def resolve_window(package: Dict[str, Any], ledger: Dict[str, Any], review: Dict
         if (
             count == 1
             and terra_model_is_enforced(window)
-            and bounded_permission_is_enforced(window)
+            and runtime_permission_is_recorded(window)
             and last_task.get("status") == "DONE"
             and (explicitly_available or legacy_available)
         ):
@@ -359,33 +369,33 @@ def resolve_window(package: Dict[str, Any], ledger: Dict[str, Any], review: Dict
     compatibility = review["windowReview"]["contextCompatibility"]
     if requested_mode == "AUTO":
         if len(current_matching) == 1:
-            return {"status": "REUSE_EXISTING_WINDOW", "windowId": current_matching[0], "model": "gpt-5.6-terra", "assignmentNumber": 1, "maxAssignments": MAX_TASKS_PER_WINDOW, "reuseType": "CURRENT_ASSIGNMENT"}
+            return {"status": "REUSE_EXISTING_WINDOW", "windowId": current_matching[0], "model": None, "assignmentNumber": 1, "maxAssignments": MAX_TASKS_PER_WINDOW, "reuseType": "CURRENT_ASSIGNMENT"}
         if len(current_matching) > 1:
-            return {"status": "CONFLICT_DUPLICATE_ACTIVE_WINDOWS", "windowIds": current_matching, "model": "gpt-5.6-terra"}
+            return {"status": "CONFLICT_DUPLICATE_ACTIVE_WINDOWS", "windowIds": current_matching, "model": None}
         if reusable and compatibility == "UNKNOWN":
-            return {"status": "WAITING_FOR_WINDOW_CONTEXT_COMPATIBILITY", "windowIds": reusable, "model": "gpt-5.6-terra"}
+            return {"status": "WAITING_FOR_WINDOW_CONTEXT_COMPATIBILITY", "windowIds": reusable, "model": None}
         if len(reusable) == 1 and compatibility == "COMPATIBLE":
             previous_task_id = ledger["windows"][reusable[0]].get("taskId")
-            return {"status": "REUSE_EXISTING_WINDOW", "windowId": reusable[0], "model": "gpt-5.6-terra", "assignmentNumber": 2, "maxAssignments": MAX_TASKS_PER_WINDOW, "reuseType": "SECOND_AND_FINAL_ASSIGNMENT", "previousTaskId": previous_task_id, "reuseReservationId": f"window-slot:{review['reviewId']}"}
+            return {"status": "REUSE_EXISTING_WINDOW", "windowId": reusable[0], "model": None, "assignmentNumber": 2, "maxAssignments": MAX_TASKS_PER_WINDOW, "reuseType": "SECOND_AND_FINAL_ASSIGNMENT", "previousTaskId": previous_task_id, "reuseReservationId": f"window-slot:{review['reviewId']}"}
         if len(reusable) > 1 and compatibility == "COMPATIBLE":
-            return {"status": "WAITING_FOR_CENTRAL_WINDOW_SELECTION", "windowIds": reusable, "model": "gpt-5.6-terra"}
-        return {"status": "OPEN_NEW_WINDOW", "windowId": None, "model": "gpt-5.6-terra", "assignmentNumber": 1, "maxAssignments": MAX_TASKS_PER_WINDOW}
+            return {"status": "WAITING_FOR_CENTRAL_WINDOW_SELECTION", "windowIds": reusable, "model": None}
+        return {"status": "OPEN_NEW_WINDOW", "windowId": None, "model": None, "assignmentNumber": 1, "maxAssignments": MAX_TASKS_PER_WINDOW}
     if requested_mode == "NEW":
         if current_matching:
-            return {"status": "CONFLICT_DUPLICATE_ACTIVE_WINDOW", "windowIds": current_matching, "model": "gpt-5.6-terra"}
-        return {"status": "OPEN_NEW_WINDOW", "windowId": None, "model": "gpt-5.6-terra", "assignmentNumber": 1, "maxAssignments": MAX_TASKS_PER_WINDOW}
+            return {"status": "CONFLICT_DUPLICATE_ACTIVE_WINDOW", "windowIds": current_matching, "model": None}
+        return {"status": "OPEN_NEW_WINDOW", "windowId": None, "model": None, "assignmentNumber": 1, "maxAssignments": MAX_TASKS_PER_WINDOW}
     if candidate is None:
-        return {"status": "WAITING_FOR_REUSABLE_WINDOW", "windowId": None, "model": "gpt-5.6-terra"}
+        return {"status": "WAITING_FOR_REUSABLE_WINDOW", "windowId": None, "model": None}
     window = ledger["windows"].get(candidate)
     if not isinstance(window, dict):
-        return {"status": "WAITING_FOR_REUSABLE_WINDOW", "windowId": candidate, "model": "gpt-5.6-terra"}
+        return {"status": "WAITING_FOR_REUSABLE_WINDOW", "windowId": candidate, "model": None}
     if candidate in current_matching:
-        return {"status": "REUSE_EXISTING_WINDOW", "windowId": candidate, "model": "gpt-5.6-terra", "assignmentNumber": 1, "maxAssignments": MAX_TASKS_PER_WINDOW, "reuseType": "CURRENT_ASSIGNMENT"}
+        return {"status": "REUSE_EXISTING_WINDOW", "windowId": candidate, "model": None, "assignmentNumber": 1, "maxAssignments": MAX_TASKS_PER_WINDOW, "reuseType": "CURRENT_ASSIGNMENT"}
     if window_assignment_count(window) >= MAX_TASKS_PER_WINDOW or window.get("status") == "RETIRED":
-        return {"status": "WAITING_WINDOW_REUSE_CAP_REACHED", "windowId": candidate, "model": "gpt-5.6-terra", "assignmentCount": window_assignment_count(window), "maxAssignments": MAX_TASKS_PER_WINDOW}
+        return {"status": "WAITING_WINDOW_REUSE_CAP_REACHED", "windowId": candidate, "model": None, "assignmentCount": window_assignment_count(window), "maxAssignments": MAX_TASKS_PER_WINDOW}
     if candidate not in reusable:
-        return {"status": "WAITING_FOR_REUSABLE_WINDOW", "windowId": candidate, "model": "gpt-5.6-terra"}
-    return {"status": "REUSE_EXISTING_WINDOW", "windowId": candidate, "model": "gpt-5.6-terra", "assignmentNumber": 2, "maxAssignments": MAX_TASKS_PER_WINDOW, "reuseType": "SECOND_AND_FINAL_ASSIGNMENT", "previousTaskId": window.get("taskId"), "reuseReservationId": f"window-slot:{review['reviewId']}"}
+        return {"status": "WAITING_FOR_REUSABLE_WINDOW", "windowId": candidate, "model": None}
+    return {"status": "REUSE_EXISTING_WINDOW", "windowId": candidate, "model": None, "assignmentNumber": 2, "maxAssignments": MAX_TASKS_PER_WINDOW, "reuseType": "SECOND_AND_FINAL_ASSIGNMENT", "previousTaskId": window.get("taskId"), "reuseReservationId": f"window-slot:{review['reviewId']}"}
 
 
 def claim_conflicts(candidate: Dict[str, Any], object_key: str, claim: Dict[str, Any]) -> bool:
@@ -402,6 +412,15 @@ def claim_conflicts(candidate: Dict[str, Any], object_key: str, claim: Dict[str,
 
 
 def analyse(package: Dict[str, Any], ledger: Dict[str, Any], review: Dict[str, Any]) -> Dict[str, Any]:
+    from ledger_manager import execution_arrangement_waits, require_direction_ready
+    require_direction_ready(ledger, review["taskId"])
+    from acceptance_policy import verify_occupancy_effects, AcceptancePolicyError
+    try:
+        verify_occupancy_effects(package, review["occupancyRequests"])
+    except AcceptancePolicyError as error:
+        raise OccupancyError(str(error))
+    if execution_arrangement_waits(ledger, review["taskId"]):
+        return {"status": "WAITING_FOR_EXECUTION_ARRANGEMENT", "windowDecision": None, "conflicts": []}
     if review["bossReview"]["status"] != "APPROVED":
         return {"status": "WAITING_FOR_BOSS_APPROVAL", "windowDecision": None, "conflicts": []}
     if review["dependencyGate"]["status"] != "SATISFIED":
@@ -744,7 +763,7 @@ def evaluate(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
                         raise OccupancyError("C05_REUSABLE_WINDOW_DISAPPEARED")
                     explicit_available = window.get("status") == "AVAILABLE_FOR_REUSE" and window_current_task_id(window) is None
                     legacy_available = "assignmentHistory" not in window and window.get("status") == "REGISTERED" and after["tasks"].get(window.get("taskId"), {}).get("status") == "DONE"
-                    if window_assignment_count(window) != 1 or not (explicit_available or legacy_available) or not terra_model_is_enforced(window) or not bounded_permission_is_enforced(window):
+                    if window_assignment_count(window) != 1 or not (explicit_available or legacy_available) or not terra_model_is_enforced(window) or not runtime_permission_is_recorded(window):
                         raise OccupancyError("C05_WINDOW_REUSE_SLOT_NO_LONGER_AVAILABLE")
                     window["status"] = "RESERVED_FOR_REUSE"
                     window["currentTaskId"] = None

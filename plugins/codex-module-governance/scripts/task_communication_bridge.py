@@ -27,7 +27,7 @@ SCHEMA_VERSION = "0.19.0"
 ROOT = Path("task-communication")
 MESSAGE_ID_MAXIMUM = 80
 HEX_DIGEST = re.compile(r"^[0-9a-f]{64}$")
-COMMAND_TYPES = {"TASK_INSTRUCTION", "VALIDATION_REQUEST", "RETRY_REQUEST", "CANCELLATION_NOTICE"}
+COMMAND_TYPES = {"TASK_INSTRUCTION", "VALIDATION_REQUEST", "RETRY_REQUEST", "CANCELLATION_NOTICE", "DIRECTION_CORRECTION"}
 RESULT_OUTCOMES = {"APPLIED", "REFUSED", "BLOCKED"}
 TRANSPORT = "CODEX_SEND_MESSAGE_TO_THREAD"
 
@@ -233,14 +233,18 @@ def queue_central_command(args: argparse.Namespace) -> Tuple[Dict[str, Any], int
     ledger = verified_ledger(data_root, project_id)
     task_identity = validate_task_identity(value["taskIdentity"], ledger)
     window_id = ref(value["windowId"], "C14_WINDOW_ID_INVALID")
-    _, window = task_and_window(ledger, task_identity["taskId"], window_id)
+    task, window = task_and_window(ledger, task_identity["taskId"], window_id)
+    from ledger_manager import direction_context
+    direction = {"directionContext": direction_context(task)} if task.get("directionCorrections") else {}
+    value = {**value, **direction}
+    validate_direction_command({**value, "commandType": command_type}, task, window, window_id)
     thread = ref(window.get("runtimeThreadRef", window_id), "C14_RUNTIME_THREAD_REF_INVALID")
     if envelope_path(data_root, project_id, message_id).exists():
         existing = load_envelope(data_root, project_id, message_id)
         if existing.get("sourceRequestDigest") == request_digest:
             return {"status": "IDEMPOTENT_MESSAGE_ENQUEUED", "messageId": message_id, "writePerformed": False, "ledgerUpdated": False}, 0
         raise BridgeError("C14_MESSAGE_ID_REUSED")
-    payload = {"type": "CENTRAL_TASK_COMMAND", "commandId": command_id, "commandType": command_type, "commandRef": command_ref, "commandDigest": command_digest, "summary": safe_text(value["summary"], "C14_MESSAGE_SUMMARY_INVALID")}
+    payload = {"type": "CENTRAL_TASK_COMMAND", "commandId": command_id, "commandType": command_type, "commandRef": command_ref, "commandDigest": command_digest, "summary": safe_text(value["summary"], "C14_MESSAGE_SUMMARY_INVALID"), **direction}
     envelope = {
         "schemaVersion": SCHEMA_VERSION, "recordType": "C14_MESSAGE_ENVELOPE", "createdAt": utc_now(),
         "messageId": message_id, "projectId": project_id, "direction": "CENTRAL_TO_TASK",
@@ -267,13 +271,35 @@ def source_is_current(envelope: Dict[str, Any], routing: Dict[str, Any], ledger:
     raise BridgeError("C14_SOURCE_ROLE_INVALID")
 
 
+def validate_direction_command(payload: Dict[str, Any], task: Dict[str, Any], window: Dict[str, Any], window_id: str) -> None:
+    from ledger_manager import active_external_waits
+    if active_external_waits(task) and payload.get("commandType") not in {"DIRECTION_CORRECTION", "CANCELLATION_NOTICE"}:
+        raise BridgeError("C14_TASK_EXTERNAL_WAIT_PENDING")
+    history = task.get("directionCorrections", [])
+    if payload.get("commandType") == "DIRECTION_CORRECTION":
+        current = history[-1] if history else {}
+        binding = {"windowId": window_id, "runtimeThreadRef": window.get("runtimeThreadRef", window_id),
+                   "generation": window.get("generation", 1)}
+        if (payload.get("commandId") != current.get("correctionId")
+            or payload.get("commandDigest") != current.get("requestDigest")
+            or payload.get("commandRef") != current.get("instructionRef")
+            or binding not in current.get("windowBindings", [])):
+            raise BridgeError("C14_DIRECTION_CORRECTION_SUPERSEDED_OR_MISMATCHED")
+    elif history and payload.get("commandType") != "CANCELLATION_NOTICE":
+        from ledger_manager import direction_hold, direction_context
+        if direction_hold(task): raise BridgeError("C14_TASK_DIRECTION_CORRECTION_PENDING")
+        if payload.get("directionContext") != direction_context(task):
+            raise BridgeError("C14_TASK_DIRECTION_VERSION_MISMATCH")
+
+
 def live_target(envelope: Dict[str, Any], routing: Dict[str, Any], ledger: Dict[str, Any]) -> Dict[str, Any]:
     if envelope["direction"] == "TASK_TO_CENTRAL":
         active = routing["roles"]["CURRENT_CENTRAL"]
         return {"role": "CURRENT_CENTRAL", "threadRef": active["activeThreadRef"], "generation": active["generation"], "routingRevision": routing["revision"]}
     target = envelope["targetAtEnqueue"]
     window_id = ref(target.get("windowId"), "C14_WINDOW_ID_INVALID")
-    _, window = task_and_window(ledger, envelope["taskIdentity"]["taskId"], window_id)
+    task, window = task_and_window(ledger, envelope["taskIdentity"]["taskId"], window_id)
+    validate_direction_command(envelope["payload"], task, window, window_id)
     return {"role": "TASK_WINDOW", "windowId": window_id, "threadRef": ref(window.get("runtimeThreadRef", window_id), "C14_RUNTIME_THREAD_REF_INVALID"), "generation": window.get("generation", 1)}
 
 
@@ -340,7 +366,6 @@ def record_delivery(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     envelope = load_envelope(data_root, project_id, message_id)
     routing = verify_routing(data_root, project_id); ledger = verified_ledger(data_root, project_id)
     source_is_current(envelope, routing, ledger, caller)
-    if message_state(data_root, project_id, message_id) != "QUEUED": raise BridgeError("C14_MESSAGE_ALREADY_DELIVERED_OR_COMPLETED")
     target = live_target(envelope, routing, ledger)
     raw, source_digest = private_json(args.receipt, data_root, "C14_DELIVERY_RECEIPT_INVALID_JSON")
     delivery = validate_delivery(raw, project_id, message_id, caller, target["threadRef"], envelope["payload"]["payloadDigest"])
@@ -350,6 +375,7 @@ def record_delivery(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         if existing.get("sourceReceiptDigest") == source_digest:
             return {"status": "IDEMPOTENT_RUNTIME_MESSAGE_DELIVERY", "messageId": message_id, "deliveryId": delivery["deliveryId"], "messageState": message_state(data_root, project_id, message_id), "writePerformed": False}, 0
         raise BridgeError("C14_DELIVERY_ID_REUSED")
+    if message_state(data_root, project_id, message_id) != "QUEUED": raise BridgeError("C14_MESSAGE_ALREADY_DELIVERED_OR_COMPLETED")
     artifact = {"schemaVersion": SCHEMA_VERSION, "recordType": "C14_RUNTIME_DELIVERY_RECEIPT", "createdAt": utc_now(), "projectId": project_id, "messageId": message_id, "deliveryId": delivery["deliveryId"], "sourceThreadRef": caller, "targetThreadRef": target["threadRef"], "payloadDigest": envelope["payload"]["payloadDigest"], "transport": TRANSPORT, "outcome": delivery["outcome"], "runtimeReceiptRef": delivery["runtimeReceiptRef"], "runtimeReceiptDigest": delivery["runtimeReceiptDigest"], "sourceReceiptDigest": source_digest, "boundary": {"nativeTransportReported": True, "deliveryIsNotAcknowledgement": delivery["outcome"] == "SUCCEEDED", "c03TaskStateChanged": False, "businessWritePerformed": False}}
     write_exclusive(path, artifact)
     if delivery["outcome"] == "FAILED":
@@ -397,20 +423,42 @@ def record_command_result(args: argparse.Namespace) -> Tuple[Dict[str, Any], int
     outcome = str(value["outcome"]).strip().upper()
     if outcome not in RESULT_OUTCOMES: raise BridgeError("C14_COMMAND_RESULT_OUTCOME_INVALID")
     path = command_result_path(data_root, project_id, message_id)
+    result_message_id = message_ref(f"result-{message_id}", "C14_RESULT_MESSAGE_ID_INVALID")
+    result_written = False
+    existing = None
     if path.exists():
         existing = read_json(path, "C14_COMMAND_RESULT_INVALID")
-        if existing.get("sourceResultDigest") == source_digest:
-            return {"status": "IDEMPOTENT_COMMAND_RESULT", "messageId": message_id, "messageState": existing["outcome"], "resultNotificationMessageId": f"result-{message_id}", "writePerformed": False}, 0
-        raise BridgeError("C14_COMMAND_RESULT_ALREADY_RECORDED")
+        if existing.get("sourceResultDigest") != source_digest:
+            raise BridgeError("C14_COMMAND_RESULT_ALREADY_RECORDED")
     result_id = message_ref(value["resultId"], "C14_RESULT_ID_INVALID")
     result = {"schemaVersion": SCHEMA_VERSION, "recordType": "C14_TASK_COMMAND_RESULT", "createdAt": utc_now(), "projectId": project_id, "messageId": message_id, "resultId": result_id, "commandId": envelope["payload"]["commandId"], "outcome": outcome, "resultRef": ref(value["resultRef"], "C14_RESULT_REF_INVALID"), "summary": safe_text(value["summary"], "C14_RESULT_SUMMARY_INVALID"), "sourceResultDigest": source_digest, "boundary": {"doesNotChangeTaskStatus": True, "doesNotDeclareDone": True, "businessWritePerformed": False}}
-    write_exclusive(path, result)
-    result_message_id = message_ref(f"result-{message_id}", "C14_RESULT_MESSAGE_ID_INVALID")
-    if envelope_path(data_root, project_id, result_message_id).exists(): raise BridgeError("C14_RESULT_NOTIFICATION_ALREADY_EXISTS")
+    if existing is None:
+        write_exclusive(path, result)
+        result_written = True
+    elif any(existing.get(key) != val for key, val in result.items() if key != "createdAt"):
+        raise BridgeError("C14_COMMAND_RESULT_INVALID")
     active = routing["roles"]["CURRENT_CENTRAL"]
     payload = {"type": "TASK_COMMAND_RESULT", "resultId": result_id, "commandId": result["commandId"], "outcome": outcome, "resultRef": result["resultRef"], "summary": result["summary"]}
     result_envelope = {"schemaVersion": SCHEMA_VERSION, "recordType": "C14_MESSAGE_ENVELOPE", "createdAt": utc_now(), "messageId": result_message_id, "projectId": project_id, "direction": "TASK_TO_CENTRAL", "source": {"role": "TASK_WINDOW", "windowId": target["windowId"], "runtimeThreadRef": caller, "generation": target["generation"]}, "targetAtEnqueue": {"role": "CURRENT_CENTRAL", "threadRef": active["activeThreadRef"], "generation": active["generation"], "routingRevision": routing["revision"]}, "taskIdentity": envelope["taskIdentity"], "payload": {**payload, "payloadDigest": canonical_digest(payload)}, "sourceRequestDigest": source_digest, "boundary": {"messageBodyContainsOnlyPointers": True, "doesNotChangeTaskStatus": True, "businessWritePerformed": False}}
-    write_envelope(data_root, project_id, result_envelope)
+    if envelope_path(data_root, project_id, result_message_id).exists():
+        saved = load_envelope(data_root, project_id, result_message_id)
+        if any(saved.get(key) != val for key, val in result_envelope.items() if key not in {"createdAt", "targetAtEnqueue"}):
+            raise BridgeError("C14_RESULT_NOTIFICATION_ALREADY_EXISTS")
+        return {"status": "IDEMPOTENT_COMMAND_RESULT", "messageId": message_id, "messageState": outcome, "resultNotificationMessageId": result_message_id, "writePerformed": result_written}, 0
+    sealed_path = envelope_receipt_path(data_root, project_id, result_message_id)
+    if sealed_path.exists():
+        sealed = read_json(sealed_path, "C14_ENVELOPE_RECEIPT_MISSING")
+        saved = sealed.get("artifact")
+        if (sealed.get("schemaVersion") != SCHEMA_VERSION
+            or sealed.get("recordType") != "C14_IMMUTABLE_MESSAGE_ENQUEUE_RECEIPT"
+            or sealed.get("projectId") != project_id or sealed.get("messageId") != result_message_id
+            or not isinstance(saved, dict) or sealed.get("artifactDigest") != canonical_digest(saved)
+            or any(saved.get(key) != val for key, val in result_envelope.items() if key not in {"createdAt", "targetAtEnqueue"})):
+            raise BridgeError("C14_ENVELOPE_INTEGRITY_INVALID")
+        # The sealed receipt is authoritative; do not regenerate historical metadata.
+        write_exclusive(envelope_path(data_root, project_id, result_message_id), saved)
+    else:
+        write_envelope(data_root, project_id, result_envelope)
     return {"status": "COMMAND_RESULT_RECORDED_AWAITING_RUNTIME_DELIVERY", "messageId": message_id, "messageState": outcome, "resultNotificationMessageId": result_message_id, "targetRole": "CURRENT_CENTRAL", "writePerformed": True, "message": "任务窗口结果已封存；还必须把结果指针真实发送并由中央确认，不能只在本窗口回复。"}, 0
 
 

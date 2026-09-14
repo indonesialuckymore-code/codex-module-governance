@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 
 import ledger_manager
+import independent_handover_validator as validator
 
 
 SCRIPTS = Path(__file__).parent
@@ -57,17 +58,25 @@ def write_json(path, payload):
     return path
 
 
-def setup_ready_for_validation(root):
+def setup_ready_for_validation(root, brief_mutation=None, occupancy_intent="WRITE", outline_handoff=None):
     code, output = invoke(C02, [
         "--data-root", str(root), "--project-id", PROJECT, "--display-name", "C06 Fictional Validation",
         "--scope-summary", "Isolated fictional handback validation only.", "--apply",
     ])
     if code != 0:
         raise AssertionError(output)
-    for command in [
-        ["initialize", "--apply"],
-        ["add-task", "--task-id", TASK, "--title", "Fictional validation task", "--business-goal", "Validate C06 gates.", "--plan-ref", "fable-plan-006"],
-    ]:
+    commands = [["initialize", "--apply"]]
+    extra = []
+    if outline_handoff:
+        import hashlib
+        value = json.loads(json.dumps(outline_handoff)); value['projectId'] = PROJECT
+        outline = root / 'outline.md'; outline.write_text('Fictional approved business outcome')
+        value['outline']['sha256'] = hashlib.sha256(outline.read_bytes()).hexdigest()
+        path = write_json(root / 'outline-handoff.json', value)
+        commands.append(['import-outline', '--handoff', str(path), '--outline-file', str(outline), '--boss-approval-ref', value['bossApproval']['reference']])
+        extra = ['--outcome-id', value['outcomes'][0]['outcomeId']]
+    commands.append(["add-task", "--task-id", TASK, "--title", "Fictional validation task", "--business-goal", "Validate C06 gates.", "--plan-ref", "fable-plan-006", *extra])
+    for command in commands:
         code, output = c03(root, command[0], *command[1:])
         if code != 0:
             raise AssertionError(output)
@@ -87,6 +96,8 @@ def setup_ready_for_validation(root):
         "hardStops": ["Stop on unknown writer."], "rollbackPlan": ["Use fictional snapshot."],
         "deliverables": ["Return fictional handback."], "handbackRule": "Boss authorizes handback before central review.",
     }
+    if brief_mutation:
+        brief_mutation(brief)
     brief_path = write_json(root / "briefs" / f"{TASK}.json", brief)
     code, output = invoke(C04, [
         "--data-root", str(root), "--project-id", PROJECT, "--writer-id", "codex-module-central",
@@ -103,7 +114,7 @@ def setup_ready_for_validation(root):
         "windowReview": {"mode": "AUTO", "candidateWindowId": None},
         "occupancyRequests": [{
             "objectKey": "file:fictional-c06", "conflictKey": "file:fictional-c06",
-            "resourceClass": "FILE", "intent": "WRITE", "exclusive": False,
+            "resourceClass": "FILE", "intent": occupancy_intent, "exclusive": False,
         }],
     }
     occupancy_path = write_json(root / "occupancy-inputs" / "c05-review-006.json", occupancy)
@@ -205,7 +216,159 @@ def queue_and_admit_return(root, handback):
     return output
 
 
+def correct_and_verify_direction(root):
+    from test_correction_resume import complete_roundtrip, verification
+    code, current = c03(root, "record-correction", "--task-id", TASK,
+        "--correction-id", "direction-c06-verified", "--expected-revision", "0",
+        "--instruction-ref", "new-direction", "--reason-ref", "focus-change",
+        "--boss-decision-ref", "boss-direction", "--retain-ref", "original-scope", "--supersede-ref", "old-emphasis")
+    if code: raise AssertionError(current)
+    complete_roundtrip(root, current["messageRequests"][0], PROJECT, "central-thread-g1", WINDOW)
+    report = verification(root, PROJECT, TASK, "central-thread-g1")
+    code, output = c03(root, "verify-correction", "--task-id", TASK, "--verification", str(report))
+    if code: raise AssertionError(output)
+    return current["current"]
+
+
 class IndependentHandoverValidatorTests(unittest.TestCase):
+    def test_current_direction_handback_can_finish_through_c08_c06_and_boss(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "private-data"
+            setup_ready_for_validation(root)
+            current = correct_and_verify_direction(root)
+            handback = create_handback(root)
+            value = json.loads(handback.read_text())
+            value["directionContext"] = {"revision": current["revision"], "digest": current["requestDigest"]}
+            write_json(handback, value)
+            code, output = self.assess(root, handback, create_review(root), "--apply", "codex-module-central")
+            self.assertEqual(code, 0, output)
+            code, final = invoke(C06, ["--data-root", str(root), "--project-id", PROJECT,
+                "--writer-id", "codex-module-central", "finalize", "--validation-id", VALIDATION,
+                "--boss-decision", "APPROVED", "--boss-decision-ref", "new-direction-final-approval"])
+            self.assertEqual(code, 0, final)
+            self.assertTrue(final["doneRecorded"])
+            code, retained = c03(root, "read-correction", "--task-id", TASK)
+            self.assertEqual(code, 0, retained)
+            self.assertEqual(retained["communicationSource"], "SEALED_VERIFICATION")
+            self.assertFalse(retained["governanceHold"])
+
+    def test_resumed_task_rejects_old_handback_without_current_direction(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "private-data"
+            setup_ready_for_validation(root)
+            correct_and_verify_direction(root)
+            code, output = self.assess(root, create_handback(root), create_review(root))
+            self.assertEqual(code, 2, output)
+            self.assertIn("TASK_DIRECTION_VERSION_MISMATCH", output["reason"])
+
+    def test_resumption_does_not_revalidate_an_old_pass_decision(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "private-data"
+            setup_ready_for_validation(root)
+            handback, review = create_handback(root), create_review(root)
+            self.assertEqual(self.assess(root, handback, review, "--apply", "codex-module-central")[0], 0)
+            correct_and_verify_direction(root)
+            code, output = invoke(C06, ["--data-root", str(root), "--project-id", PROJECT,
+                "--writer-id", "codex-module-central", "finalize", "--validation-id", VALIDATION,
+                "--boss-decision", "APPROVED", "--boss-decision-ref", "old-decision-must-not-finish"])
+            self.assertEqual(code, 2, output)
+            self.assertIn("TASK_DIRECTION_VERSION_MISMATCH", output["reason"])
+
+    def test_correction_after_pass_blocks_old_final_approval(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "private-data"
+            setup_ready_for_validation(root)
+            handback, review = create_handback(root), create_review(root)
+            self.assertEqual(self.assess(root, handback, review, "--apply", "codex-module-central")[0], 0)
+            self.assertEqual(c03(root, "record-correction", "--task-id", TASK,
+                "--correction-id", "direction-after-pass", "--expected-revision", "0",
+                "--instruction-ref", "new-direction", "--reason-ref", "boss-focus-change",
+                "--boss-decision-ref", "boss-correction", "--retain-ref", "original-scope",
+                "--supersede-ref", "old-emphasis")[0], 0)
+            code, final = invoke(C06, ["--data-root", str(root), "--project-id", PROJECT,
+                "--writer-id", "codex-module-central", "finalize", "--validation-id", VALIDATION,
+                "--boss-decision", "APPROVED", "--boss-decision-ref", "old-final-approval"])
+            self.assertEqual(code, 2, final)
+            self.assertIn("TASK_DIRECTION_CORRECTION_PENDING", final["reason"])
+
+    def test_direction_correction_blocks_assessment_of_late_old_result(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "private-data"
+            setup_ready_for_validation(root)
+            handback, review = create_handback(root), create_review(root)
+            code, recorded = c03(root, "record-correction", "--task-id", TASK,
+                "--correction-id", "direction-c06", "--expected-revision", "0",
+                "--instruction-ref", "new-direction", "--reason-ref", "boss-focus-change",
+                "--boss-decision-ref", "boss-correction", "--retain-ref", "original-scope",
+                "--supersede-ref", "old-emphasis")
+            self.assertEqual(code, 0, recorded)
+            code, output = self.assess(root, handback, review)
+            self.assertEqual(code, 2, output)
+            self.assertIn("TASK_DIRECTION_CORRECTION_PENDING", output["reason"])
+
+    def test_completion_signal_reissue_requires_linked_aborted_predecessor(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "private-data"
+            tickets = root / "return-inbox" / PROJECT / "tickets"
+            current_id = "return-c06-reissue-002"
+            prior_id = "return-c06-reissue-001"
+            current_handback = {
+                "returnTicketId": current_id, "taskId": TASK, "windowId": WINDOW,
+                "handbackId": "handback-c06-reissue-002", "completionSignalId": "completion-c06-reissue-002",
+            }
+            current_submission = {
+                **current_handback, "recordType": "C08_RETURN_SUBMISSION", "projectId": PROJECT,
+            }
+            current_digest = ledger_manager.canonical_digest(current_submission)
+            current_reservation = {
+                "returnTicketId": current_id, "taskId": TASK,
+                "handbackId": current_handback["handbackId"], "submissionDigest": current_digest,
+                "validatorThreadRef": "validator-c06-sol",
+            }
+            current_root = tickets / current_id
+            write_json(current_root / "submission.json", current_submission)
+            write_json(current_root / "receipt-000000-submission.json", {
+                "submission": current_submission, "submissionDigest": current_digest,
+            })
+            write_json(current_root / "receipt-000002-admission.json", {
+                "returnTicketId": current_id, "taskId": TASK,
+                "completionSignalId": current_handback["completionSignalId"], "ledgerReceiptId": None,
+            })
+            write_json(current_root / "receipt-000003-validation-reservation.json", current_reservation)
+
+            prior_submission = {
+                "returnTicketId": prior_id, "taskId": TASK, "windowId": WINDOW,
+                "handbackId": "handback-c06-reissue-001", "completionSignalId": "completion-c06-reissue-001",
+            }
+            prior_digest = ledger_manager.canonical_digest(prior_submission)
+            prior_reservation = {
+                "returnTicketId": prior_id, "taskId": TASK,
+                "handbackId": prior_submission["handbackId"], "submissionDigest": prior_digest,
+                "validatorThreadRef": "validator-c06-sol",
+            }
+            prior_root = tickets / prior_id
+            write_json(prior_root / "submission.json", prior_submission)
+            write_json(prior_root / "receipt-000000-submission.json", {
+                "submission": prior_submission, "submissionDigest": prior_digest,
+            })
+            write_json(prior_root / "receipt-000002-admission.json", {
+                "returnTicketId": prior_id, "taskId": TASK,
+                "completionSignalId": prior_submission["completionSignalId"], "ledgerReceiptId": "receipt-ledger-001",
+            })
+            write_json(prior_root / "receipt-000003-validation-reservation.json", prior_reservation)
+            abort_path = write_json(prior_root / "receipt-000004-validation-aborted.json", {
+                "recordType": "C08_RETURN_VALIDATION_ABORT", "returnTicketId": prior_id,
+                "taskId": TASK, "handbackId": prior_submission["handbackId"],
+                "validatorThreadRef": "validator-c06-sol",
+                "reservationDigest": ledger_manager.canonical_digest(prior_reservation),
+            })
+            task = {"completionSignalIds": [prior_submission["completionSignalId"]]}
+            self.assertTrue(validator.valid_completion_signal_reissue_after_abort(root, PROJECT, task, current_handback))
+            abort = json.loads(abort_path.read_text(encoding="utf-8"))
+            abort["reservationDigest"] = "0" * 64
+            write_json(abort_path, abort)
+            self.assertFalse(validator.valid_completion_signal_reissue_after_abort(root, PROJECT, task, current_handback))
+
     def assess(self, root, handback, review, mode="--dry-run", writer=None):
         queue_and_admit_return(root, handback)
         arguments = ["--data-root", str(root), "--project-id", PROJECT]
@@ -262,6 +425,28 @@ class IndependentHandoverValidatorTests(unittest.TestCase):
             self.assertEqual(ledger["windows"][WINDOW]["assignmentCount"], 1)
             self.assertIsNone(ledger["windows"][WINDOW]["currentTaskId"])
             self.assertIn("file:fictional-c06", ledger["objectOccupancies"])
+            code, released = c03(
+                root,
+                "release-done-task-occupancy",
+                "--task-id", TASK,
+                "--validation-id", VALIDATION,
+                "--boss-decision-ref", "boss-final-approval-006",
+            )
+            self.assertEqual(code, 0, released)
+            self.assertTrue(released["occupancyReleased"])
+            self.assertEqual(released["releasedClaimCount"], 1)
+            ledger = json.loads((root / "module-ledgers" / PROJECT / "ledger.json").read_text())
+            self.assertNotIn("file:fictional-c06", ledger["objectOccupancies"])
+            self.assertEqual(ledger["releasedOccupancies"][0]["taskId"], TASK)
+            code, repeated = c03(
+                root,
+                "release-done-task-occupancy",
+                "--task-id", TASK,
+                "--validation-id", VALIDATION,
+                "--boss-decision-ref", "boss-final-approval-006",
+            )
+            self.assertEqual(code, 0, repeated)
+            self.assertEqual(repeated["status"], "IDEMPOTENT_DONE_TASK_OCCUPANCY_ALREADY_RELEASED")
 
     def test_second_task_reuses_window_then_retires_it_and_emits_successor_trigger(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -402,9 +587,110 @@ class IndependentHandoverValidatorTests(unittest.TestCase):
             self.assertEqual(repeated["status"], "IDEMPOTENT_SUCCESSOR_BATCH")
             self.assertTrue(repeated["recomputedFromLiveLedger"])
             self.assertEqual({item["taskId"] for item in repeated["previouslyPreparedTasks"]}, {second_task, parallel_task})
+            code, correction = c03(root, "record-correction", "--task-id", parallel_task,
+                "--correction-id", "direction-parallel", "--expected-revision", "0",
+                "--instruction-ref", "new-instruction", "--reason-ref", "new-focus",
+                "--boss-decision-ref", "boss-direction", "--retain-ref", "original-scope",
+                "--supersede-ref", "old-emphasis")
+            self.assertEqual(0, code, correction)
+            code, corrected_batch = invoke(C09, ["--data-root", str(root), "continue-successors",
+                "--project-id", PROJECT, "--validation-id", VALIDATION,
+                "--execution-map", str(execution_map_path), "--writer-id", "codex-module-central",
+                "--caller-thread-ref", "central-thread-g1"])
+            self.assertEqual(0, code, corrected_batch)
+            self.assertNotIn(parallel_task, {item["taskId"] for item in corrected_batch["previouslyPreparedTasks"]})
+            self.assertIn(second_task, {item["taskId"] for item in corrected_batch["previouslyPreparedTasks"]})
+            self.assertIn(parallel_task, {item["taskId"] for item in corrected_batch["blockedTasks"]})
+            from test_correction_resume import verification
+            proof = verification(root, PROJECT, parallel_task, "central-thread-g1")
+            code, applied = c03(root, "verify-correction", "--task-id", parallel_task,
+                "--verification", str(proof))
+            self.assertEqual(0, code, applied)
+            code, stale_batch = invoke(C09, ["--data-root", str(root), "continue-successors",
+                "--project-id", PROJECT, "--validation-id", VALIDATION,
+                "--execution-map", str(execution_map_path), "--writer-id", "codex-module-central",
+                "--caller-thread-ref", "central-thread-g1"])
+            self.assertEqual(0, code, stale_batch)
+            stale = next(item for item in stale_batch["blockedTasks"] if item["taskId"] == parallel_task)
+            self.assertEqual("TASK_DIRECTION_VERSION_MISMATCH", stale["reason"])
+            self.assertEqual("PREPARE_CURRENT_DIRECTION_DISPATCH", stale["nextAction"])
+            self.assertIn(second_task, {item["taskId"] for item in stale_batch["previouslyPreparedTasks"]})
+            original_request = Path(next(item for item in execution_plan["tasks"]
+                if item["taskId"] == parallel_task)["c10RequestPath"])
+            new_request = json.loads(original_request.read_text())
+            new_request["dispatchId"] = "dispatch-parallel-new-direction"
+            new_request_path = write_json(root / "c10-inputs/new-direction.json", new_request)
+            code, new_prepared = invoke(C10, ["--data-root", str(root), "--project-id", PROJECT,
+                "--writer-id", "codex-module-central", "prepare", "--package-id", new_request["packageId"],
+                "--review-id", new_request["reviewId"], "--request", str(new_request_path)])
+            self.assertEqual(0, code, new_prepared)
+            code, current_batch = invoke(C09, ["--data-root", str(root), "continue-successors",
+                "--project-id", PROJECT, "--validation-id", VALIDATION,
+                "--execution-map", str(execution_map_path), "--writer-id", "codex-module-central",
+                "--caller-thread-ref", "central-thread-g1"])
+            self.assertEqual(0, code, current_batch)
+            current = next(item for item in current_batch["previouslyPreparedTasks"] if item["taskId"] == parallel_task)
+            self.assertEqual(new_request["dispatchId"], current["dispatchId"])
+            new_request["dispatchId"] = "dispatch-parallel-ambiguous-direction"
+            write_json(new_request_path, new_request)
+            self.assertEqual(0, invoke(C10, ["--data-root", str(root), "--project-id", PROJECT,
+                "--writer-id", "codex-module-central", "prepare", "--package-id", new_request["packageId"],
+                "--review-id", new_request["reviewId"], "--request", str(new_request_path)])[0])
+            code, ambiguous = invoke(C09, ["--data-root", str(root), "continue-successors",
+                "--project-id", PROJECT, "--validation-id", VALIDATION,
+                "--execution-map", str(execution_map_path), "--writer-id", "codex-module-central",
+                "--caller-thread-ref", "central-thread-g1"])
+            self.assertEqual(0, code, ambiguous)
+            self.assertNotIn(parallel_task, {item["taskId"] for item in ambiguous["previouslyPreparedTasks"]})
+            self.assertEqual("C09_MULTIPLE_CURRENT_DIRECTION_DISPATCHES",
+                next(item for item in ambiguous["blockedTasks"] if item["taskId"] == parallel_task)["reason"])
+            code, wait_record = c03(root, "record-wait", "--task-id", parallel_task, "--wait-id", "wait-parallel-material",
+                "--owner-ref", "owner-parallel", "--condition-ref", "condition-material", "--reason-ref", "reason-material")
+            self.assertEqual(0, code, wait_record)
+            code, waiting_batch = invoke(C09, ["--data-root", str(root), "continue-successors", "--project-id", PROJECT,
+                "--validation-id", VALIDATION, "--execution-map", str(execution_map_path),
+                "--writer-id", "codex-module-central", "--caller-thread-ref", "central-thread-g1"])
+            self.assertEqual(0, code, waiting_batch)
+            self.assertNotIn(parallel_task, {item["taskId"] for item in waiting_batch["previouslyPreparedTasks"]})
+            self.assertIn(second_task, {item["taskId"] for item in waiting_batch["previouslyPreparedTasks"]})
+            self.assertEqual("EXTERNAL_WAIT", waiting_batch["waitingTasks"][0]["reason"])
+            rearrangement = {"tasks": [dict(item) for item in reversed(execution_plan["tasks"])]}
+            next(item for item in rearrangement["tasks"] if item["taskId"] == blocked_task)["schedulingDependencies"] = [second_task]
+            rearranged_path = write_json(root / "c09-inputs" / "rearrangement.json", rearrangement)
+            code, revised = invoke(C09, ["--data-root", str(root), "revise-plan", "--project-id", PROJECT,
+                "--execution-map", str(execution_map_path), "--arrangement", str(rearranged_path),
+                "--revision-id", "revision-live-001", "--reason-ref", "priority-change-001",
+                "--writer-id", "codex-module-central", "--caller-thread-ref", "central-thread-g1"])
+            self.assertEqual(0, code, revised)
+            self.assertFalse(revised["bossRepromptRequired"])
+            code, stale = invoke(C09, ["--data-root", str(root), "continue-successors", "--project-id", PROJECT,
+                "--validation-id", VALIDATION, "--execution-map", str(execution_map_path),
+                "--writer-id", "codex-module-central", "--caller-thread-ref", "central-thread-g1"])
+            self.assertNotEqual(0, code, stale)
+            self.assertEqual("C09_PLAN_SOURCE_SUPERSEDED", stale["reason"])
+            execution_map_path = Path(revised["artifact"])
             blocked_occupancy["windowReview"] = {"mode": "AUTO", "candidateWindowId": None, "contextCompatibility": "INCOMPATIBLE", "compatibilityEvidenceRefs": []}
             blocked_occupancy["crossModuleGate"] = {"status": "NOT_APPLICABLE", "reference": "fable-handoff-009"}
             write_json(blocked_occupancy_path, blocked_occupancy)
+            code, waiting = invoke(C09, ["--data-root", str(root), "continue-successors", "--project-id", PROJECT,
+                "--validation-id", VALIDATION, "--execution-map", str(execution_map_path),
+                "--writer-id", "codex-module-central", "--caller-thread-ref", "central-thread-g1"])
+            self.assertEqual(0, code, waiting)
+            self.assertEqual(0, waiting["preparedCount"])
+            self.assertEqual([second_task], next(item for item in waiting["waitingTasks"] if item["taskId"] == blocked_task)["unmetSchedulingDependencies"])
+            code, bypass = invoke(SCRIPTS / "occupancy_conflict_checker.py", ["--data-root", str(root),
+                "--project-id", PROJECT, "--writer-id", "codex-module-central", "--caller-thread-ref", "central-thread-g1",
+                "evaluate", "--package-id", blocked_package, "--review", str(blocked_occupancy_path), "--apply"])
+            self.assertNotEqual(0, code, bypass)
+            self.assertEqual("C05_GATE_NOT_READY:WAITING_FOR_EXECUTION_ARRANGEMENT", bypass["reason"])
+            next(item for item in rearrangement["tasks"] if item["taskId"] == blocked_task).pop("schedulingDependencies")
+            write_json(rearranged_path, rearrangement)
+            code, revised = invoke(C09, ["--data-root", str(root), "revise-plan", "--project-id", PROJECT,
+                "--execution-map", str(execution_map_path), "--arrangement", str(rearranged_path),
+                "--revision-id", "revision-live-002", "--reason-ref", "priority-change-002",
+                "--writer-id", "codex-module-central", "--caller-thread-ref", "central-thread-g1"])
+            self.assertEqual(0, code, revised)
+            execution_map_path = Path(revised["artifact"])
             code, resumed = invoke(C09, [
                 "--data-root", str(root), "continue-successors", "--project-id", PROJECT,
                 "--validation-id", VALIDATION, "--execution-map", str(execution_map_path), "--writer-id", "codex-module-central", "--caller-thread-ref", "central-thread-g1",
@@ -523,6 +809,85 @@ class IndependentHandoverValidatorTests(unittest.TestCase):
             ledger = json.loads((root / "module-ledgers" / PROJECT / "ledger.json").read_text())
             self.assertEqual(ledger["tasks"][TASK]["status"], "CONFLICT")
             self.assertEqual(ledger["hardStops"][-1]["code"], "C06_VALIDATION_CONFLICT")
+
+    def test_boss_adjudicated_c06_conflict_moves_to_resolved_history(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "private-data"
+            setup_ready_for_validation(root)
+            handback = create_handback(root)
+            review = create_review(
+                root,
+                lambda value: value["scopeAssessment"].update({"unknownWriterFound": True}),
+            )
+            code, conflict = self.assess(root, handback, review, "--apply", "codex-module-central")
+            self.assertEqual(code, 0, conflict)
+            self.assertEqual(conflict["status"], "CONFLICT")
+
+            superseding_validation = "validation-c06-superseding-pass-002"
+            boss_decision = "boss-final-superseding-pass-002"
+            write_json(
+                root / "handover-validations" / PROJECT / superseding_validation / "validation-decision.json",
+                {
+                    "recordType": "C06_VALIDATION_DECISION",
+                    "projectId": PROJECT,
+                    "taskId": TASK,
+                    "validationId": superseding_validation,
+                    "outcome": "PASS_PENDING_BOSS_APPROVAL",
+                },
+            )
+            code, refused = c03(
+                root,
+                "resolve-c06-validation-conflict",
+                "--task-id", TASK,
+                "--conflict-validation-id", VALIDATION,
+                "--superseding-validation-id", superseding_validation,
+                "--boss-decision-ref", boss_decision,
+            )
+            self.assertEqual(code, 2)
+            self.assertEqual(refused["reason"], "C06_HARD_STOP_BOSS_DECISION_UNVERIFIED")
+            code, adjudication = c03(
+                root,
+                "record-adjudication",
+                "--adjudication-id", boss_decision,
+                "--request-ref", superseding_validation,
+                "--outcome", "BOSS_DECISION",
+            )
+            self.assertEqual(code, 0, adjudication)
+            code, resolved = c03(
+                root,
+                "resolve-c06-validation-conflict",
+                "--task-id", TASK,
+                "--conflict-validation-id", VALIDATION,
+                "--superseding-validation-id", superseding_validation,
+                "--boss-decision-ref", boss_decision,
+            )
+            self.assertEqual(code, 0, resolved)
+            self.assertEqual(resolved["hardStops"], [])
+            self.assertEqual(resolved["resolvedHardStopCount"], 1)
+
+            ledger = json.loads((root / "module-ledgers" / PROJECT / "ledger.json").read_text())
+            archived = ledger["resolvedHardStops"][0]
+            self.assertEqual(archived["originalHardStop"]["validationId"], VALIDATION)
+            self.assertEqual(archived["supersedingValidationId"], superseding_validation)
+            self.assertEqual(archived["bossDecisionRef"], boss_decision)
+            conflict_receipt = json.loads(
+                (root / "module-ledgers" / PROJECT / "receipts" / f"{conflict['ledgerReceiptId']}.json").read_text()
+            )
+            self.assertEqual(
+                conflict_receipt["afterLedger"]["hardStops"][0]["validationId"],
+                VALIDATION,
+            )
+
+            code, repeated = c03(
+                root,
+                "resolve-c06-validation-conflict",
+                "--task-id", TASK,
+                "--conflict-validation-id", VALIDATION,
+                "--superseding-validation-id", superseding_validation,
+                "--boss-decision-ref", boss_decision,
+            )
+            self.assertEqual(code, 2)
+            self.assertEqual(repeated["reason"], "C06_ACTIVE_CONFLICT_HARD_STOP_NOT_UNIQUE")
 
     def test_failed_evidence_is_partial_not_done(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -689,6 +1054,70 @@ class IndependentHandoverValidatorTests(unittest.TestCase):
             self.assertEqual(code, 0, repeated)
             self.assertEqual(repeated["status"], "IDEMPOTENT_EXISTING_C06_FINALIZATION")
             self.assertEqual(json.loads((root / "module-ledgers" / PROJECT / "ledger.json").read_text())["revision"], revision)
+
+    def test_conflict_task_accepts_only_a_bound_superseding_pass(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "private-data"
+            setup_ready_for_validation(root)
+            first_handback = create_handback(root)
+            first_review = create_review(
+                root, lambda review: review["scopeAssessment"].update({"parallelMechanismFound": True})
+            )
+            code, conflict = self.assess(root, first_handback, first_review, "--apply", "codex-module-central")
+            self.assertEqual(code, 0, conflict)
+            self.assertEqual(conflict["status"], "CONFLICT")
+
+            invalid_payload = json.loads(first_handback.read_text(encoding="utf-8"))
+            invalid_payload.update({
+                "handbackId": "handback-c06-unbound-002",
+                "returnTicketId": "return-ticket-c06-unbound-002",
+                "completionSignalId": "completion-signal-c06-unbound-002",
+                "executedScopeRefs": ["scope-without-conflict-reference"],
+            })
+            invalid_handback = write_json(root / "handbacks" / "handback-c06-unbound-002.json", invalid_payload)
+            code, refused = c08(root, "submit-return", "--handback", str(invalid_handback))
+            self.assertEqual(code, 2, refused)
+            self.assertEqual(refused["reason"], "C08C_RETURN_SOURCE_MISMATCH")
+
+            second_validation = "validation-c06-superseding-002"
+            second_handback_payload = json.loads(first_handback.read_text(encoding="utf-8"))
+            second_handback_payload.update({
+                "handbackId": "handback-c06-superseding-002",
+                "returnTicketId": "return-ticket-c06-superseding-002",
+                "completionSignalId": "completion-signal-c06-superseding-002",
+                "executedScopeRefs": [VALIDATION, "scope-executed-c06-superseding-002"],
+            })
+            second_handback = write_json(
+                root / "handbacks" / "handback-c06-superseding-002.json", second_handback_payload
+            )
+            code, queued = c08(root, "submit-return", "--handback", str(second_handback))
+            self.assertEqual(code, 0, queued)
+            code, admitted = c08(
+                root, "admit-return", "--return-ticket-id", queued["returnTicketId"],
+                "--current-thread-ref", "central-thread-g1",
+                "--admission-ref", "central-return-admission-c06-superseding-002", writer=True,
+            )
+            self.assertEqual(code, 0, admitted)
+            ledger = ledger_manager.load_ledger(root, PROJECT)
+            self.assertEqual(ledger["tasks"][TASK]["status"], "CONFLICT")
+            self.assertIn(second_handback_payload["completionSignalId"], ledger["tasks"][TASK]["completionSignalIds"])
+
+            second_review_payload = json.loads(create_review(root).read_text(encoding="utf-8"))
+            second_review_payload.update({
+                "validationId": second_validation,
+                "handbackId": second_handback_payload["handbackId"],
+            })
+            second_review = write_json(
+                root / "validation-inputs" / f"{second_validation}.json", second_review_payload
+            )
+            code, passed = invoke(C06, [
+                "--data-root", str(root), "--project-id", PROJECT,
+                "--writer-id", "codex-module-central", "assess", "--package-id", PACKAGE,
+                "--handback", str(second_handback), "--review", str(second_review), "--apply",
+            ])
+            self.assertEqual(code, 0, passed)
+            self.assertEqual(passed["status"], "PASS_PENDING_BOSS_APPROVAL")
+            self.assertEqual(ledger_manager.load_ledger(root, PROJECT)["tasks"][TASK]["status"], "NEEDS_REVIEW")
 
     def test_decision_tampering_is_detected(self):
         with tempfile.TemporaryDirectory() as temporary:

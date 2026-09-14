@@ -138,6 +138,8 @@ def validate_brief(payload: Any, task_id: str) -> Dict[str, Any]:
         "requiredReading", "realTimeChecks", "allowedActions", "forbiddenActions", "preflightSnapshot",
         "executionSequence", "acceptance", "hardStops", "rollbackPlan", "deliverables", "handbackRule",
     }
+    if isinstance(payload, dict) and "acceptancePolicy" in payload:
+        required.add("acceptancePolicy")
     brief = require_exact_object(payload, required, "TASK_PACKAGE_BRIEF_SCHEMA_UNSUPPORTED")
     if brief["briefSchemaVersion"] != SCHEMA_VERSION or brief["recordType"] != "C04_TASK_PACKAGE_BRIEF":
         raise TaskPackageError("TASK_PACKAGE_BRIEF_SCHEMA_UNSUPPORTED")
@@ -154,7 +156,24 @@ def validate_brief(payload: Any, task_id: str) -> Dict[str, Any]:
         {"positiveCases", "negativeCases", "idempotencyChecks", "rollbackChecks", "logAndHistoryChecks", "readbackChecks"},
         "TASK_PACKAGE_ACCEPTANCE_INVALID",
     )
+    from acceptance_policy import validate_policy, group_is_not_applicable, AcceptancePolicyError
+    policy = None
+    if "acceptancePolicy" in brief:
+        try:
+            policy = validate_policy(brief["acceptancePolicy"])
+        except AcceptancePolicyError as error:
+            raise TaskPackageError(str(error))
+        for reason in policy["notApplicable"].values():
+            require_safe_text(reason, "TASK_PACKAGE_ACCEPTANCE_REASON_INVALID")
+    if any(group_is_not_applicable(policy, key) and value != [] for key, value in acceptance.items()):
+        raise TaskPackageError("ACCEPTANCE_CONTRADICTORY_REQUIREMENT")
+    normalized_acceptance = {
+        key: [] if value == [] and group_is_not_applicable(policy, key)
+        else require_text_list(value, "TASK_PACKAGE_ACCEPTANCE_INVALID")
+        for key, value in acceptance.items()
+    }
     return {
+        **({"acceptancePolicy": policy} if policy is not None else {}),
         "windowRecommendation": {"mode": mode, "reason": require_safe_text(window["reason"], "WINDOW_RECOMMENDATION_INVALID")},
         "dependencies": require_reference_list(brief["dependencies"], "TASK_PACKAGE_DEPENDENCIES_INVALID"),
         "requiredReading": require_reference_records(brief["requiredReading"], "TASK_PACKAGE_REQUIRED_READING_INVALID"),
@@ -163,7 +182,7 @@ def validate_brief(payload: Any, task_id: str) -> Dict[str, Any]:
         "forbiddenActions": require_text_list(brief["forbiddenActions"], "TASK_PACKAGE_FORBIDDEN_ACTIONS_INVALID"),
         "preflightSnapshot": require_text_list(brief["preflightSnapshot"], "TASK_PACKAGE_SNAPSHOT_INVALID"),
         "executionSequence": require_text_list(brief["executionSequence"], "TASK_PACKAGE_EXECUTION_SEQUENCE_INVALID"),
-        "acceptance": {key: require_text_list(value, "TASK_PACKAGE_ACCEPTANCE_INVALID") for key, value in acceptance.items()},
+        "acceptance": normalized_acceptance,
         "hardStops": require_text_list(brief["hardStops"], "TASK_PACKAGE_HARD_STOPS_INVALID"),
         "rollbackPlan": require_text_list(brief["rollbackPlan"], "TASK_PACKAGE_ROLLBACK_INVALID"),
         "deliverables": require_text_list(brief["deliverables"], "TASK_PACKAGE_DELIVERABLES_INVALID"),
@@ -264,6 +283,24 @@ def package_from(ledger: Dict[str, Any], task: Dict[str, Any], project_id: str, 
         "receiptIds": [INITIAL_RECEIPT_ID],
         "latestReceiptId": INITIAL_RECEIPT_ID,
     }
+    if task.get("outlineContractDigest"):
+        contract = ledger.get("outlineContract", {})
+        if contract.get("digest") != task["outlineContractDigest"]:
+            contract = ledger.get("outlineHistory", {}).get(task["outlineContractDigest"], {})
+        handoff = contract.get("handoff", {})
+        if (contract.get("digest") != task["outlineContractDigest"]
+                or canonical_digest(handoff) != contract.get("digest")):
+            raise TaskPackageError("TASK_OUTLINE_CONTRACT_DIGEST_MISMATCH")
+        outcome_ids = task.get("outcomeIds", [])
+        outcomes = [item for item in handoff["outcomes"] if item["outcomeId"] in outcome_ids]
+        if not outcome_ids or len(outcomes) != len(outcome_ids):
+            raise TaskPackageError("TASK_OUTCOME_REFERENCE_INVALID")
+        goal_ids = {item["goalId"] for item in outcomes}
+        package["task"]["outcomeContract"] = {
+            "digest": contract["digest"], "outline": handoff["outline"],
+            "goals": [item for item in handoff["goals"] if item["goalId"] in goal_ids],
+            "outcomes": outcomes,
+        }
     return package
 
 
@@ -358,6 +395,12 @@ def load_package(data_root: Path, project_id: str, package_id: str) -> Dict[str,
         or package.get("latestReceiptId") != INITIAL_RECEIPT_ID
     ):
         raise TaskPackageError("DRAFT_TASK_PACKAGE_SCHEMA_UNSUPPORTED")
+    if "acceptancePolicy" in package:
+        from acceptance_policy import validate_policy, AcceptancePolicyError
+        try:
+            validate_policy(package["acceptancePolicy"])
+        except AcceptancePolicyError as error:
+            raise TaskPackageError(str(error))
     return package
 
 

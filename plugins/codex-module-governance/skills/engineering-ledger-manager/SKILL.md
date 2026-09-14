@@ -18,14 +18,22 @@ description: 维护 Codex 模块唯一详细工程总账：登记任务、窗口
 ## 可登记的事实
 
 - Boss + Fable 5 已规划的 Codex 任务。
+- 新版大纲可依照[大纲成果交接协议](../../references/outline-outcomes.md)导入已批准的目标与成果，再为新任务登记成果关联。导入不自动生成候选对应的任务，也不重写历史任务。规划归属可以是 Boss 指定的总设计师，不要求固定模型。
+- 大纲改版使用同一协议的 revise-outline 与 reconcile-outline，保留 outlineHistory 和受影响任务的承接关系；read-summary 的 businessProgress 直接由本账本和 C06 决定派生，不另建成果状态表。
 - 每项任务只认一个不可变身份：`任务ID｜业务名称`。任务窗口在其后增加代际 `｜G1`、`｜G2`；业务名称不能脱离任务 ID 单独传播。
 - 任务窗口与最多 3 个一级子 Agent 的登记信息。
+- 登记模型时遵守[模型选择与真实运行记录](../../references/runtime-model-policy.md)：记录实际选择，模型不是身份；非默认模型手工登记须同时提供模型和证据，不覆盖历史回执。
 - 每个窗口保存稳定窗口身份、当前任务和承接历史。窗口最多两条串行任务记录：第 1 项 `DONE` 后为 `AVAILABLE_FOR_REUSE`，第 2 项 `DONE` 后为 `RETIRED`；不得登记第 3 项。
 - 对象占用声明；发生重叠时保留两份声明，标记 `CONFLICT` 和硬停。
 - 证据、裁定和 Skill 的不透明引用与状态，不保存真实文件、日志或密钥。
 - 施工回传的完成信号；相同信号只回报“已接收”，不重复推进状态。
+- 执行安排改版的唯一当前摘要及历史由 C09 `revise-plan` 经 C03 标准回执记录在 `executionPlanRevisions`；不得手改。具体规则见[启动图协议第 8 节](../../references/central-construction/project-execution-map.md)。原批准、任务和旧版本不覆盖。
 
 ## 状态边界
+
+涉及等材料/外部审批或交付后问题时，读取[外部等待与交付后反馈](../../references/task-followthrough.md)。复用原任务，记录明确责任与恢复条件；不冒充已设提醒或已中断运行。历史 DONE 与当前反馈同时呈现，可补关联已有修复；只有对应原问题的新 C06 验收及 Boss 最终批准后，才以 close-feedback 留证关闭。不手改状态，不另开一次记账审批。
+
+涉及运行中人工纠偏时，先读[纠偏候选协议](../../references/task-corrections.md)。C03 记录连续版本、局部暂停及核验；C14 回执派生通信进度。只有当前中央实际读回并登记绑定当前版本的生效证据后才释放恢复资格，不把 APPLIED 当验收。当前仍仅限候选隔离验证，不得直接在真实项目启用或手改解除暂停。
 
 - 本 Skill 可以把施工任务记录为 `PLANNED`、`READY`、`IN_PROGRESS`、`NEEDS_REVIEW`、`PARTIAL`、`CONFLICT`、`BLOCKED` 或撤销状态。
 - `DONE` 必须等待 C06 独立验收和 Boss 批准；C03 不得自行写入。
@@ -60,7 +68,7 @@ python3 plugins/codex-module-governance/scripts/ledger_manager.py \
 
 - 不建立跨模块详细总账，不写 Claude 模块任务明细。
 - 不允许窗口或子 Agent 直接更新总账；它们只能把结果回给父窗口，再经 Boss 和模块中央处理。
-- 不接受真实业务数据、客户资料、文件绝对路径、Cookie、账号、密钥或实际证据文件。
+- 不接受真实业务数据、客户资料、Cookie、账号、密钥或实际证据文件正文。用于运行定位的私有输入路径只保留于私有计划/运行快照，不向公共产品仓库或业务摘要复制；它不是业务文件正文的存储许可。
 - 不覆盖既有回执；每一次账本变更都生成一份不可覆盖的私有回执。
 - 发现索引不一致、回执校验失败、并发账本锁或对象冲突时，停止推进并报告 `CONFLICT` / `REFUSED`。
 - 运行时任务标题、任务包身份或回传任务 ID 与总账不一致时，报告 `TASK_IDENTITY_MISMATCH / NEEDS_REVIEW`，不得把任务推进为 `IN_PROGRESS`。

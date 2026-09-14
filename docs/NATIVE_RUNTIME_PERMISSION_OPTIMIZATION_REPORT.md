@@ -1,6 +1,6 @@
 # v0.22 Codex 原生运行优化回执
 
-> 本文保留 `0.22.0` 原始验收证据。`0.22.1` 已将任务权限收紧为 `:workspace`/`qianyi-task-terra` + 精确 `writableRoots` + `governanceDataRootAccess=DENIED`；当前规则以 [0.22.1 新项目启动修复回执](NEW_PROJECT_STARTUP_REPAIR_REPORT.md) 为准。
+> 本文保留 `0.22.0` 原始验收证据。后续收紧方案又被 Boss 的最新权限决定取代；当前规则以 [权限策略放宽回执](PERMISSION_POLICY_RELAXATION_REPORT.md) 为准。
 
 ## 状态
 

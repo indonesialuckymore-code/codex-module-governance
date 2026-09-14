@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://qianyi.local/schemas/codex-module-governance/codex-role-handover-package.schema.json",
+  "title": "C08 immutable role handover package and optional reviewed delta",
+  "type": "object",
+  "required": ["schemaVersion", "recordType", "handoverId", "projectId", "role", "sourceThreadRef", "sourceGeneration", "targetGeneration", "routingSnapshot", "ledgerSnapshot", "continuitySnapshot", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": "0.15.0"}, "recordType": {"const": "C08_ROLE_HANDOVER_PACKAGE"},
+    "handoverId": {"type": "string"}, "projectId": {"type": "string"},
+    "role": {"enum": ["CURRENT_CENTRAL", "CURRENT_ADJUDICATION"]},
+    "sourceThreadRef": {"type": "string"},
+    "sourceGeneration": {"type": "integer", "minimum": 1}, "targetGeneration": {"type": "integer", "minimum": 1},
+    "routingSnapshot": {"type": "object", "required": ["revision", "digest", "roles"]},
+    "ledgerSnapshot": {
+      "type": "object", "required": ["revision", "digest", "taskStatus", "windows", "hardStops"],
+      "properties": {
+        "sectionDigests": {"type": "object", "additionalProperties": {"$ref": "#/$defs/digest"}},
+        "taskContinuity": {"type": "object", "additionalProperties": {"type": "object"}}
+      }
+    },
+    "continuitySnapshot": {"type": "object", "required": ["pendingTaskEventIds", "openAdjudicationRefs"]},
+    "boundary": {"type": "object", "required": ["roleSwitched", "oldRoleStillActive", "businessWritePerformed", "requiresSuccessorVerification"],
+      "properties": {"roleSwitched": {"const": false}, "oldRoleStillActive": {"const": true}, "businessWritePerformed": {"const": false}, "requiresSuccessorVerification": {"const": true}}},
+    "delta": {
+      "type": "object", "additionalProperties": false,
+      "required": ["baseHandoverId", "basePackageDigest", "changedLedgerSections", "addedPendingEventIds", "removedPendingEventIds", "successorMustReadChanges"],
+      "properties": {
+        "baseHandoverId": {"type": "string"}, "basePackageDigest": {"$ref": "#/$defs/digest"},
+        "changedLedgerSections": {"$ref": "#/$defs/refs"},
+        "addedPendingEventIds": {"$ref": "#/$defs/refs"}, "removedPendingEventIds": {"$ref": "#/$defs/refs"},
+        "successorMustReadChanges": {"const": true}
+      }
+    }
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "refs": {"type": "array", "uniqueItems": true, "items": {"type": "string"}}
+  }
+}

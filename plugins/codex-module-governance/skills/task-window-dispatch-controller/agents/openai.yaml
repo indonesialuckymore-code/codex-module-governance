@@ -1,4 +1,4 @@
 interface:
   display_name: "任务窗口调度控制器"
-  short_description: "派发 Terra 任务并执行窗口两任务上限"
-  default_prompt: "使用 $task-window-dispatch-controller 验证启动图批准、任务包、占用和窗口承接次数；新 Git 任务先在保存项目 local 环境建立归属，再交接到同项目 worktree。强制 Terra、唯一项目可写根和中央私有目录 DENIED；真实回读成功后才登记，禁止同窗口第 3 项。"
+  short_description: "按已批范围派发任务，默认 Terra 可修改，续办保留模型并核验真实运行"
+  default_prompt: "使用 $task-window-dispatch-controller 核对批准、任务包、占用和项目归属，按所选模型与实际权限派发；新任务默认 Terra，续办保留当前模型，真实读回后才登记。"

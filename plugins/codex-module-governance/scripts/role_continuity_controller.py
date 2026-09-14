@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import copy
+import inspect
+from runtime_model_policy import valid_model
 import json
 import os
 import re
@@ -26,6 +28,8 @@ from ledger_manager import (
     REFERENCE_PATTERN,
     TASK_ID_PATTERN,
     canonical_digest,
+    commit_mutation,
+    ledger_lock,
     load_ledger,
     record_completion_signal,
     verify_ledger,
@@ -234,15 +238,10 @@ def replace_json(path: Path, value: Dict[str, Any]) -> None:
 @contextmanager
 def continuity_lock(data_root: Path, project_id: str) -> Iterator[None]:
     path = project_root(data_root, project_id) / ".continuity.lock"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        write_exclusive(path, {"pid": os.getpid(), "createdAt": utc_now()})
-    except ContinuityError:
-        raise ContinuityError("C08C_OPERATION_LOCK_PRESENT")
-    try:
+    from process_lock import process_lock
+    with process_lock(path, lambda: write_exclusive(path, {"pid": os.getpid(), "createdAt": utc_now()}),
+                      ContinuityError, "C08C_OPERATION_LOCK_PRESENT"):
         yield
-    finally:
-        path.unlink(missing_ok=True)
 
 
 def require_writer(writer_id: Optional[str]) -> None:
@@ -301,7 +300,26 @@ def commit_routing(data_root: Path, project_id: str, before: Optional[Dict[str, 
         "afterRoutingDigest": canonical_digest(after),
         "afterRouting": after,
     }
-    write_exclusive(routing_receipts(data_root, project_id) / f"{receipt_id}.json", receipt)
+    receipt_file = routing_receipts(data_root, project_id) / f"{receipt_id}.json"
+    if receipt_file.exists() and operation == 'ACTIVATE_ROLE_SUCCESSOR':
+        pending = read_json(receipt_file, 'C08C_PENDING_ROUTING_RECEIPT_INVALID')
+        saved = pending.get('afterRouting')
+        def comparable(value):
+            result = copy.deepcopy(value)
+            for role in result.get('roles', {}).values():
+                if isinstance(role, dict): role.pop('activatedAt', None)
+            return result
+        if (not isinstance(saved, dict) or pending.get('operation') != operation
+                or pending.get('receiptId') != receipt_id or pending.get('projectId') != project_id
+                or pending.get('schemaVersion') != SCHEMA_VERSION
+                or pending.get('recordType') != 'C08_IMMUTABLE_ROLE_ROUTING_RECEIPT'
+                or pending.get('beforeRoutingDigest') != receipt['beforeRoutingDigest']
+                or pending.get('afterRoutingDigest') != canonical_digest(saved)
+                or comparable(saved) != comparable(after)):
+            raise ContinuityError('C08C_PENDING_ROUTING_RECEIPT_CONFLICT')
+        after = saved  # Finish the same prepared commit, preserving its original time.
+    else:
+        write_exclusive(receipt_file, receipt)
     replace_json(routing_path(data_root, project_id), after)
     return after, receipt_id
 
@@ -317,7 +335,7 @@ def verify_routing(data_root: Path, project_id: str) -> Dict[str, Any]:
             receipt.get("schemaVersion") != SCHEMA_VERSION
             or receipt.get("recordType") != "C08_IMMUTABLE_ROLE_ROUTING_RECEIPT"
             or receipt.get("receiptId") != receipt_id
-            or receipt.get("operation") not in {"INITIALIZE_ROLE_ROUTING", "ACTIVATE_ROLE_SUCCESSOR"}
+            or receipt.get("operation") not in {"INITIALIZE_ROLE_ROUTING", "ACTIVATE_ROLE_SUCCESSOR", "RECORD_ROLE_MODEL_READBACK"}
             or receipt.get("projectId") != project_id
             or receipt.get("beforeRoutingDigest") != previous
             or not isinstance(snapshot, dict)
@@ -345,6 +363,9 @@ def initialize(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         raise ContinuityError("C08C_INITIAL_CENTRAL_MUST_BE_CALLING_THREAD")
     runtime_project = ref(args.runtime_project_id, "C08C_RUNTIME_PROJECT_ID_INVALID")
     execution_map = ref(args.execution_map_ref, "C08C_EXECUTION_MAP_REF_INVALID")
+    model = getattr(args, "model", None)
+    if model is not None and not valid_model(model):
+        raise ContinuityError("C08C_ROLE_MODEL_INVALID")
     with continuity_lock(data_root, project_id):
         if routing_path(data_root, project_id).exists():
             existing = verify_routing(data_root, project_id)
@@ -355,11 +376,38 @@ def initialize(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         def mutate(after: Dict[str, Any]) -> None:
             after["roles"]["CURRENT_CENTRAL"] = {
                 "generation": 1, "activeThreadRef": central_thread, "runtimeProjectId": runtime_project,
-                "model": ROLE_MODELS["CURRENT_CENTRAL"], "status": "ACTIVE", "activatedAt": utc_now(),
+                "model": model or "UNVERIFIED", "status": "ACTIVE", "activatedAt": utc_now(),
                 "previousThreadRefs": [], "source": "INITIAL_CENTRAL", "executionMapRef": execution_map,
             }
         routing, receipt_id = commit_routing(data_root, project_id, None, "INITIALIZE_ROLE_ROUTING", mutate)
     return {"status": "ROLE_ROUTING_INITIALIZED", "projectId": project_id, "revision": routing["revision"], "centralGeneration": 1, "receiptId": receipt_id, "writePerformed": True}, 0
+
+
+def record_model(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
+    """Update an observed model without replacing the central or its authority."""
+    data_root = load_data_root(args)
+    project_id = project_ref(args.project_id)
+    require_writer(args.writer_id)
+    thread = ref(args.current_thread_ref, "C08C_THREAD_REF_INVALID")
+    evidence = ref(args.evidence_ref, "C08C_MODEL_EVIDENCE_INVALID")
+    if not valid_model(args.model) or evidence != thread:
+        raise ContinuityError("C08C_MODEL_EVIDENCE_INVALID")
+    with continuity_lock(data_root, project_id):
+        before = verify_routing(data_root, project_id)
+        active = current_role(before, "CURRENT_CENTRAL", thread)
+        if active["runtimeProjectId"] != args.runtime_project_id:
+            raise ContinuityError("C08C_RUNTIME_PROJECT_ID_MISMATCH")
+        if active.get("model") == args.model and active.get("modelEvidenceRef") == evidence:
+            return {"status": "IDEMPOTENT_ROLE_MODEL_READBACK", "writePerformed": False}, 0
+
+        def mutate(after):
+            after["roles"]["CURRENT_CENTRAL"].update(
+                model=args.model, modelEvidenceRef=evidence, modelObservedAt=utc_now())
+
+        routing, receipt_id = commit_routing(data_root, project_id, before, "RECORD_ROLE_MODEL_READBACK", mutate)
+    return {"status": "ROLE_MODEL_RECORDED", "model": args.model,
+            "centralGeneration": routing["roles"]["CURRENT_CENTRAL"]["generation"],
+            "receiptId": receipt_id, "writePerformed": True, "roleSwitched": False, "ledgerUpdated": False}, 0
 
 
 def validate_handover_request(value: Dict[str, Any], project_id: str) -> Dict[str, Any]:
@@ -388,6 +436,88 @@ def pending_event_ids(data_root: Path, project_id: str) -> List[str]:
     return sorted(path.stem for path in inbox.glob("*.json") if not acknowledgement_path(data_root, project_id, path.stem).exists())
 
 
+def handover_ledger_snapshot(ledger: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "revision": ledger["revision"], "digest": canonical_digest(ledger),
+        "taskStatus": {key: task.get("status") for key, task in sorted(ledger["tasks"].items())},
+        "windows": [{**{key: value.get(key) for key in ("windowId", "taskId", "runtimeThreadRef", "generation",
+            "status", "assignmentCount", "maxAssignments")}, "currentTaskId": window_current_task_id(value)}
+            for value in ledger["windows"].values()],
+        "hardStops": ledger["hardStops"],
+        "sectionDigests": {key: canonical_digest(value) for key, value in ledger.items()},
+        "taskContinuity": {key: {field: task[field] for field in ("outcomeIds", "outlineContractDigest", "outlineImpacts", "directionCorrections",
+            "directionVerifications", "externalWaits", "deliveryFeedback") if field in task}
+            for key, task in ledger["tasks"].items()},
+    }
+
+
+def handover_continuity_snapshot(root, project, ledger, include_messages=True):
+    value = {"pendingTaskEventIds": pending_event_ids(root, project),
+        "openAdjudicationRefs": sorted(key for key, item in ledger["adjudications"].items()
+            if item.get("stage") != "BOSS_DECIDED")}
+    if include_messages:
+        from handover_automation import communication_snapshot
+        value["communicationDigest"] = canonical_digest(communication_snapshot(root, project))
+    return value
+
+
+def refresh_handover(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
+    data_root = load_data_root(args); project_id = project_ref(args.project_id); require_writer(args.writer_id)
+    handover_id = ref(args.handover_id, "C08C_HANDOVER_ID_INVALID")
+    revision_id = ref(args.revision_id, "C08C_HANDOVER_ID_INVALID")
+    if revision_id == handover_id: raise ContinuityError("C08C_REFRESH_REQUIRES_NEW_ID")
+    with continuity_lock(data_root, project_id), ledger_lock(data_root, project_id):
+        routing = verify_routing(data_root, project_id)
+        current_role(routing, "CURRENT_CENTRAL", args.current_thread_ref)
+        base = load_handover(data_root, project_id, handover_id)
+        source = routing["roles"].get(base["sourceRole"])
+        if (not source or source["activeThreadRef"] != base["sourceThreadRef"]
+                or source["generation"] != base["sourceGeneration"]
+                or (base["mode"] == "BOOTSTRAP_ADJUDICATION_FROM_CENTRAL"
+                    and routing["roles"].get(base["role"]) is not None)):
+            raise ContinuityError("C08C_HANDOVER_SOURCE_CHANGED")
+        ledger = verified_ledger(data_root, project_id)
+        snapshot = handover_ledger_snapshot(ledger)
+        continuity = handover_continuity_snapshot(data_root, project_id, ledger)
+        def is_current(package):
+            return (package["routingSnapshot"]["digest"] == canonical_digest(routing)
+                and package["ledgerSnapshot"]["digest"] == snapshot["digest"]
+                and package["continuitySnapshot"] == continuity)
+        root = handover_root(data_root, project_id, revision_id)
+        if root.exists():
+            existing = load_handover(data_root, project_id, revision_id)
+            if existing.get("delta", {}).get("basePackageDigest") != canonical_digest(base):
+                raise ContinuityError("C08C_HANDOVER_ID_REUSED")
+            return {"status": "IDEMPOTENT_HANDOVER_REFRESH", "handoverId": revision_id,
+                "snapshotCurrent": is_current(existing), "writePerformed": False, "roleSwitched": False}, 0
+        if is_current(base):
+            return {"status": "HANDOVER_ALREADY_CURRENT", "handoverId": handover_id,
+                "snapshotCurrent": True, "writePerformed": False, "roleSwitched": False}, 0
+        if base.get("refreshDepth", 0) >= 8:
+            raise ContinuityError("C08C_HANDOVER_REFRESH_LIMIT")
+        old_events = set(base["continuitySnapshot"]["pendingTaskEventIds"])
+        new_events = set(continuity["pendingTaskEventIds"])
+        old_sections = base["ledgerSnapshot"].get("sectionDigests", {})
+        package = {**base, "handoverId": revision_id, "createdAt": utc_now(), "refreshDepth": base.get("refreshDepth", 0) + 1,
+            "sourceInputDigest": canonical_digest({"basePackageDigest": canonical_digest(base), "revisionId": revision_id}),
+            "routingSnapshot": {"revision": routing["revision"], "digest": canonical_digest(routing), "roles": routing["roles"]},
+            "ledgerSnapshot": snapshot, "continuitySnapshot": continuity,
+            "delta": {"baseHandoverId": handover_id, "basePackageDigest": canonical_digest(base),
+                "changedLedgerSections": sorted(key for key in set(old_sections) | set(snapshot["sectionDigests"])
+                    if old_sections.get(key) != snapshot["sectionDigests"].get(key)),
+                "addedPendingEventIds": sorted(new_events - old_events),
+                "removedPendingEventIds": sorted(old_events - new_events),
+                "successorMustReadChanges": True}}
+        receipt = {"schemaVersion": SCHEMA_VERSION, "recordType": "C08_IMMUTABLE_ROLE_HANDOVER_RECEIPT",
+            "createdAt": utc_now(), "handoverId": revision_id, "projectId": project_id,
+            "artifactDigest": canonical_digest(package), "artifact": package}
+        root.mkdir(parents=True, exist_ok=False)
+        write_exclusive(root / "receipt-000000-package.json", receipt)
+        write_exclusive(root / "handover-package.json", package)
+        return {"status": "HANDOVER_REFRESHED", "handoverId": revision_id, "delta": package["delta"],
+            "snapshotCurrent": True, "writePerformed": True, "roleSwitched": False}, 0
+
+
 def prepare_handover(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     data_root = load_data_root(args); project_id = project_ref(args.project_id); require_writer(args.writer_id)
     raw, input_digest = private_json(args.request, data_root, "C08C_HANDOVER_REQUEST_INVALID_JSON")
@@ -407,14 +537,6 @@ def prepare_handover(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         if existing.get("sourceInputDigest") == input_digest:
             return {"status": "IDEMPOTENT_HANDOVER_PACKAGE", "handoverId": request["handoverId"], "writePerformed": False}, 0
         raise ContinuityError("C08C_HANDOVER_ID_REUSED")
-    task_status = {task_id: task.get("status") for task_id, task in sorted(ledger["tasks"].items())}
-    windows = [
-        {
-            **{key: value.get(key) for key in ("windowId", "taskId", "runtimeThreadRef", "generation", "status", "assignmentCount", "maxAssignments")},
-            "currentTaskId": window_current_task_id(value),
-        }
-        for value in ledger["windows"].values()
-    ]
     open_adjudications = sorted(key for key, value in ledger["adjudications"].items() if value.get("stage") != "BOSS_DECIDED")
     package = {
         "schemaVersion": SCHEMA_VERSION, "recordType": "C08_ROLE_HANDOVER_PACKAGE", "createdAt": utc_now(),
@@ -422,8 +544,8 @@ def prepare_handover(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         "sourceGeneration": source["generation"], "sourceThreadRef": source["activeThreadRef"],
         "targetGeneration": 1 if current is None else current["generation"] + 1,
         "routingSnapshot": {"revision": routing["revision"], "digest": canonical_digest(routing), "roles": routing["roles"]},
-        "ledgerSnapshot": {"revision": ledger["revision"], "digest": canonical_digest(ledger), "taskStatus": task_status, "windows": windows, "hardStops": ledger["hardStops"]},
-        "continuitySnapshot": {"pendingTaskEventIds": pending_event_ids(data_root, project_id), "openAdjudicationRefs": open_adjudications},
+        "ledgerSnapshot": handover_ledger_snapshot(ledger),
+        "continuitySnapshot": handover_continuity_snapshot(data_root, project_id, ledger),
         "boundary": {"roleSwitched": False, "oldRoleStillActive": True, "businessWritePerformed": False, "requiresSuccessorVerification": True},
     }
     receipt = {"schemaVersion": SCHEMA_VERSION, "recordType": "C08_IMMUTABLE_ROLE_HANDOVER_RECEIPT", "createdAt": utc_now(), "handoverId": request["handoverId"], "projectId": project_id, "artifactDigest": canonical_digest(package), "artifact": package}
@@ -449,13 +571,40 @@ def validate_activation(value: Dict[str, Any], package: Dict[str, Any]) -> Dict[
         raise ContinuityError("C08C_ACTIVATION_SCHEMA_INVALID")
     if activation["handoverPackageDigest"] != canonical_digest(package):
         raise ContinuityError("C08C_HANDOVER_DIGEST_MISMATCH")
-    model = str(activation["model"]).strip()
-    if model != ROLE_MODELS[package["role"]]:
-        raise ContinuityError("C08C_ROLE_MODEL_MISMATCH")
+    model = activation["model"]
+    if not valid_model(model):
+        raise ContinuityError("C08C_ROLE_MODEL_INVALID")
     successor = ref(activation["successorThreadRef"], "C08C_SUCCESSOR_THREAD_REF_INVALID")
     if successor == package["sourceThreadRef"]:
         raise ContinuityError("C08C_SUCCESSOR_MUST_BE_NEW_TASK")
+    if activation["runtimeProjectId"] != package["routingSnapshot"]["roles"][package["sourceRole"]]["runtimeProjectId"]:
+        raise ContinuityError("C08C_SUCCESSOR_PROJECT_MISMATCH")
+    if any(isinstance(role, dict) and role.get("activeThreadRef") == successor
+           for role in package["routingSnapshot"]["roles"].values()):
+        raise ContinuityError("C08C_SUCCESSOR_ALREADY_ACTIVE_ROLE")
     return {"successorThreadRef": successor, "runtimeProjectId": ref(activation["runtimeProjectId"], "C08C_RUNTIME_PROJECT_ID_INVALID"), "model": model}
+
+
+def persist_activation_result(root: Path, package: Dict[str, Any], activation: Dict[str, Any],
+                              input_digest: str, routing: Dict[str, Any]) -> None:
+    role = routing["roles"][package["role"]]
+    artifact = {
+        "schemaVersion": SCHEMA_VERSION, "recordType": "C08_ROLE_SUCCESSOR_ACTIVATED", "createdAt": role["activatedAt"],
+        "projectId": package["projectId"], "handoverId": package["handoverId"], "role": package["role"], **activation,
+        "sourceThreadRef": package["sourceThreadRef"], "sourceGeneration": package["sourceGeneration"],
+        "targetGeneration": package["targetGeneration"], "sourceInputDigest": input_digest,
+        "routingReceiptId": routing["latestReceiptId"], "routingRevision": routing["revision"],
+        "boundary": {"onlyOneActiveRole": True, "sourceIsReadOnlyForwarder": True, "businessWritePerformed": False}}
+    receipt = {"schemaVersion": SCHEMA_VERSION, "recordType": "C08_IMMUTABLE_ROLE_ACTIVATION_RECEIPT",
+        "createdAt": artifact["createdAt"], "projectId": package["projectId"], "handoverId": package["handoverId"],
+        "artifactDigest": canonical_digest(artifact), "artifact": artifact}
+    for name, value in (("receipt-000001-activation.json", receipt), ("activation.json", artifact)):
+        path = root / name
+        if path.exists():
+            if read_json(path, "C08C_ACTIVATION_INVALID") != value:
+                raise ContinuityError("C08C_ACTIVATION_RESULT_CONFLICT")
+        else:
+            write_exclusive(path, value)
 
 
 def activate_successor(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
@@ -466,14 +615,39 @@ def activate_successor(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     if target.exists():
         existing = read_json(target, "C08C_ACTIVATION_INVALID")
         if existing.get("sourceInputDigest") == input_digest:
+            receipt = read_json(root / "receipt-000001-activation.json", "C08C_ACTIVATION_RESULT_CONFLICT")
+            routing = verify_routing(data_root, project_id)
+            if (receipt.get("artifact") != existing or receipt.get("artifactDigest") != canonical_digest(existing)
+                    or existing.get("routingReceiptId") not in routing["receiptIds"]
+                    or any(existing.get(key) != value for key, value in activation.items())):
+                raise ContinuityError("C08C_ACTIVATION_RESULT_CONFLICT")
+            committed = read_json(routing_receipts(data_root, project_id) / f"{existing['routingReceiptId']}.json",
+                "C08C_ROUTING_RECEIPT_MISSING")["afterRouting"]
+            committed_role = committed["roles"].get(package["role"]) or {}
+            if (committed_role.get("activeThreadRef") != activation["successorThreadRef"]
+                    or committed_role.get("generation") != package["targetGeneration"]):
+                raise ContinuityError("C08C_ACTIVATION_RESULT_CONFLICT")
             return {"status": "IDEMPOTENT_SUCCESSOR_ACTIVATION", "handoverId": handover_id, "writePerformed": False}, 0
         raise ContinuityError("C08C_HANDOVER_ALREADY_ACTIVATED")
-    with continuity_lock(data_root, project_id):
+    with continuity_lock(data_root, project_id), ledger_lock(data_root, project_id):
         routing = verify_routing(data_root, project_id); ledger = verified_ledger(data_root, project_id)
-        current_continuity = {
-            "pendingTaskEventIds": pending_event_ids(data_root, project_id),
-            "openAdjudicationRefs": sorted(key for key, value in ledger["adjudications"].items() if value.get("stage") != "BOSS_DECIDED"),
-        }
+        binding = {"handoverId": handover_id, "packageDigest": canonical_digest(package), "inputDigest": input_digest}
+        # Routing is the sole commit point. Result files are recoverable projections.
+        committed = None
+        for receipt_id in routing["receiptIds"]:
+            snapshot = read_json(routing_receipts(data_root, project_id) / f"{receipt_id}.json",
+                "C08C_ROUTING_RECEIPT_MISSING")["afterRouting"]
+            if (snapshot["roles"].get(package["role"]) or {}).get("activationBinding") == binding:
+                committed = snapshot
+                break
+        if committed is not None:
+            committed_role = routing["roles"].get(package["role"]) or {}
+            persist_activation_result(root, package, activation, input_digest, committed)
+            return {"status": "SUCCESSOR_ACTIVATION_RESULT_RECOVERED", "handoverId": handover_id,
+                "activeThreadRef": committed_role["activeThreadRef"], "generation": committed_role["generation"],
+                "routingRevision": routing["revision"], "writePerformed": True, "roleSwitched": False}, 0
+        current_continuity = handover_continuity_snapshot(data_root, project_id, ledger,
+            "communicationDigest" in package["continuitySnapshot"])
         if (
             canonical_digest(routing) != package["routingSnapshot"]["digest"]
             or canonical_digest(ledger) != package["ledgerSnapshot"]["digest"]
@@ -489,25 +663,18 @@ def activate_successor(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             if not isinstance(current, dict) or current["activeThreadRef"] != package["sourceThreadRef"] or current["generation"] != package["sourceGeneration"]:
                 raise ContinuityError("C08C_HANDOVER_SOURCE_CHANGED")
             previous = [*current.get("previousThreadRefs", []), current["activeThreadRef"]]
+        from handover_automation import require_activation_proof
+        require_activation_proof(data_root, project_id, package, activation)
         def mutate(after: Dict[str, Any]) -> None:
             after["roles"][package["role"]] = {
                 "generation": package["targetGeneration"], "activeThreadRef": activation["successorThreadRef"],
                 "runtimeProjectId": activation["runtimeProjectId"], "model": activation["model"], "status": "ACTIVE",
                 "activatedAt": utc_now(), "previousThreadRefs": previous, "source": package["mode"],
                 "executionMapRef": package["executionMapRef"],
+                "activationBinding": binding,
             }
         updated, routing_receipt = commit_routing(data_root, project_id, routing, "ACTIVATE_ROLE_SUCCESSOR", mutate)
-        artifact = {
-            "schemaVersion": SCHEMA_VERSION, "recordType": "C08_ROLE_SUCCESSOR_ACTIVATED", "createdAt": utc_now(),
-            "projectId": project_id, "handoverId": handover_id, "role": package["role"], **activation,
-            "sourceThreadRef": package["sourceThreadRef"], "sourceGeneration": package["sourceGeneration"],
-            "targetGeneration": package["targetGeneration"], "sourceInputDigest": input_digest,
-            "routingReceiptId": routing_receipt, "routingRevision": updated["revision"],
-            "boundary": {"onlyOneActiveRole": True, "sourceIsReadOnlyForwarder": True, "businessWritePerformed": False},
-        }
-        receipt = {"schemaVersion": SCHEMA_VERSION, "recordType": "C08_IMMUTABLE_ROLE_ACTIVATION_RECEIPT", "createdAt": utc_now(), "projectId": project_id, "handoverId": handover_id, "artifactDigest": canonical_digest(artifact), "artifact": artifact}
-        write_exclusive(root / "receipt-000001-activation.json", receipt)
-        write_exclusive(target, artifact)
+        persist_activation_result(root, package, activation, input_digest, updated)
     return {"status": "ROLE_SUCCESSOR_ACTIVE", "handoverId": handover_id, "role": package["role"], "generation": package["targetGeneration"], "activeThreadRef": activation["successorThreadRef"], "previousThreadRef": package["sourceThreadRef"], "routingRevision": updated["revision"], "writePerformed": True}, 0
 
 
@@ -579,6 +746,10 @@ def load_return_handback(raw_path: str, data_root: Path, project_id: str) -> Tup
         "taskId", "windowId", "completionSignalId", "submittedBy", "bossHandbackAuthorization", "executedScopeRefs", "evidenceRefs",
         "testAndObjectRefs", "parentQualityReviewRefs", "unresolvedRefs", "residualRiskRefs",
     }
+    if "directionContext" in handback:
+        from ledger_manager import validate_direction_context
+        validate_direction_context(handback["directionContext"])
+        required = required | {"directionContext"}
     if set(handback) != required or handback.get("handbackSchemaVersion") != "0.8.0" or handback.get("recordType") != "C06_TASK_WINDOW_HANDBACK" or handback.get("projectId") != project_id:
         raise ContinuityError("C08C_RETURN_HANDBACK_SCHEMA_INVALID")
     ticket_id = return_ticket_ref(handback.get("returnTicketId"), "C08C_RETURN_TICKET_ID_INVALID")
@@ -595,7 +766,101 @@ def load_return_handback(raw_path: str, data_root: Path, project_id: str) -> Tup
         "returnTicketId": ticket_id, "handbackId": handback_id, "taskId": task_id, "windowId": window_id,
         "completionSignalId": completion_signal_id, "routeRevisionSeen": handback["routeRevisionSeen"],
         "relativePath": relative_private_path(Path(raw_path), data_root, "C08C_PRIVATE_INPUT_REQUIRED"),
+        "bossHandbackAuthorization": handback.get("bossHandbackAuthorization"),
+        "executedScopeRefs": handback.get("executedScopeRefs"),
+        "parentQualityReviewRefs": handback.get("parentQualityReviewRefs"),
     }, digest
+
+
+def superseding_conflict_validation_id(
+    data_root: Path, project_id: str, ledger: Dict[str, Any], handback: Dict[str, Any]
+) -> Optional[str]:
+    """Return the single verified C06 conflict being superseded, otherwise None."""
+    task = ledger.get("tasks", {}).get(handback.get("taskId"))
+    window = ledger.get("windows", {}).get(handback.get("windowId"))
+    authorization = handback.get("bossHandbackAuthorization")
+    scope_refs = handback.get("executedScopeRefs")
+    parent_refs = handback.get("parentQualityReviewRefs")
+    if (
+        not isinstance(task, dict) or task.get("status") != "CONFLICT"
+        or not isinstance(window, dict) or window_current_task_id(window) != handback.get("taskId")
+        or not isinstance(authorization, dict) or authorization.get("status") != "APPROVED"
+        or not isinstance(authorization.get("reference"), str) or not authorization["reference"].strip()
+        or not isinstance(scope_refs, list) or not all(isinstance(item, str) for item in scope_refs)
+        or parent_refs != []
+    ):
+        return None
+    matches = [
+        stop for stop in ledger.get("hardStops", [])
+        if stop.get("code") == "C06_VALIDATION_CONFLICT"
+        and stop.get("taskId") == handback.get("taskId")
+        and stop.get("validationId") in scope_refs
+    ]
+    if len(matches) != 1:
+        return None
+    validation_id = matches[0].get("validationId")
+    decision_path = data_root / "handover-validations" / project_id / validation_id / "validation-decision.json"
+    try:
+        decision = json.loads(decision_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None
+    if (
+        not isinstance(decision, dict)
+        or decision.get("recordType") != "C06_VALIDATION_DECISION"
+        or decision.get("validationId") != validation_id
+        or decision.get("taskId") != handback.get("taskId")
+        or decision.get("outcome") != "CONFLICT"
+    ):
+        return None
+    return validation_id
+
+
+def record_superseding_conflict_completion(
+    data_root: Path, project_id: str, task_id: str, signal_id: str,
+    conflict_validation_id: str, caller_thread_ref: str,
+) -> Dict[str, Any]:
+    """Record a completion signal without clearing or bypassing the active conflict."""
+    with ledger_lock(data_root, project_id):
+        before = load_ledger(data_root, project_id)
+        task = before["tasks"][task_id]
+        if task.get("status") != "CONFLICT":
+            raise ContinuityError("C08C_SUPERSEDING_CONFLICT_CONTEXT_CHANGED")
+        matches = [
+            stop for stop in before.get("hardStops", [])
+            if stop.get("code") == "C06_VALIDATION_CONFLICT"
+            and stop.get("taskId") == task_id
+            and stop.get("validationId") == conflict_validation_id
+        ]
+        if len(matches) != 1:
+            raise ContinuityError("C08C_SUPERSEDING_CONFLICT_CONTEXT_CHANGED")
+        if signal_id in task.get("completionSignalIds", []):
+            return {
+                "status": "IDEMPOTENT_DUPLICATE_SIGNAL", "taskId": task_id,
+                "signalId": signal_id, "currentTaskStatus": "CONFLICT", "writePerformed": False,
+            }
+
+        def mutate(after: Dict[str, Any]) -> None:
+            target = after["tasks"][task_id]
+            target["completionSignalIds"].append(signal_id)
+            target["history"].append({
+                "at": utc_now(), "event": "C08_SUPERSEDING_CONFLICT_RETURN_ADMITTED",
+                "signalId": signal_id, "conflictValidationId": conflict_validation_id,
+                "from": "CONFLICT", "to": "CONFLICT", "by": CENTRAL_WRITER,
+            })
+
+        commit_kwargs = {}
+        if "caller_thread_ref" in inspect.signature(commit_mutation).parameters:
+            commit_kwargs["caller_thread_ref"] = caller_thread_ref
+        return commit_mutation(
+            data_root, project_id, before, CENTRAL_WRITER,
+            "C08_ADMIT_SUPERSEDING_CONFLICT_RETURN",
+            {
+                "taskId": task_id, "signalId": signal_id,
+                "conflictValidationId": conflict_validation_id,
+                "toStatus": "CONFLICT", "occupancyReleased": False,
+            },
+            mutate, **commit_kwargs,
+        )
 
 
 def read_return_submission(data_root: Path, project_id: str, ticket_id: str) -> Dict[str, Any]:
@@ -660,6 +925,29 @@ def return_validation_aborted(data_root: Path, project_id: str, ticket_id: str) 
         return False
     read_return_validation_abort(data_root, project_id, ticket_id)
     return True
+
+
+def validation_reissue_after_abort_allowed(
+    data_root: Path, project_id: str, ticket_id: str, submission: Dict[str, Any]
+) -> bool:
+    """Allow a new immutable ticket after a reserved predecessor was aborted.
+
+    The prior admission already moved the task to NEEDS_REVIEW, so the reissue
+    must not attempt to record a second completion signal.  Scope remains bound
+    to the same task and window, and the old ticket/abort history is preserved.
+    """
+    ledger = verified_ledger(data_root, project_id)
+    task = ledger.get("tasks", {}).get(submission["taskId"])
+    if not isinstance(task, dict) or task.get("status") != "NEEDS_REVIEW":
+        return False
+    for prior_ticket_id in pending_return_ticket_ids(data_root, project_id):
+        if prior_ticket_id == ticket_id or not return_validation_abort_path(data_root, project_id, prior_ticket_id).exists():
+            continue
+        read_return_validation_abort(data_root, project_id, prior_ticket_id)
+        prior = read_return_submission(data_root, project_id, prior_ticket_id)
+        if prior.get("taskId") == submission.get("taskId") and prior.get("windowId") == submission.get("windowId"):
+            return True
+    return False
 
 
 def return_ticket_state(data_root: Path, project_id: str, ticket_id: str) -> str:
@@ -735,6 +1023,104 @@ def persist_return_event(data_root: Path, project_id: str, ticket_id: str, routi
     return event
 
 
+def prepared_recovery_return_case(
+    data_root: Path,
+    project_id: str,
+    ledger: Dict[str, Any],
+    task_id: str,
+    window_id: str,
+) -> Optional[str]:
+    """Verify the narrow recovery exit that permits handback, never business resumption."""
+    recovery = ledger.get("recovery", {})
+    task = ledger.get("tasks", {}).get(task_id)
+    window = ledger.get("windows", {}).get(window_id)
+    if (
+        recovery.get("state") != "RESUME_REVIEW_REQUIRED"
+        or recovery.get("decisionAction") != "PREPARE_RESUME"
+        or not isinstance(task, dict)
+        or task.get("status") != "BLOCKED"
+        or not isinstance(window, dict)
+        or window.get("status") != "DISCONNECTED"
+        or window_current_task_id(window) != task_id
+    ):
+        return None
+    case_id = recovery.get("activeCaseId")
+    if not isinstance(case_id, str):
+        return None
+    try:
+        from disconnection_recovery_controller import RecoveryError, verify_stage
+
+        freeze = verify_stage(data_root, project_id, case_id, "freeze", "C08_FREEZE_DISCONNECTED_CONTEXT")
+        verify_stage(data_root, project_id, case_id, "takeover", "C08_RECOVER_CENTRAL_CONTROL")
+        decision = verify_stage(data_root, project_id, case_id, "decision", "C08_RECORD_RECOVERY_DECISION")
+    except RecoveryError as error:
+        raise ContinuityError(f"C08C_RECOVERY_RETURN_INTEGRITY_INVALID:{error}")
+    if (
+        freeze.get("incidentType") != "TASK_WINDOW"
+        or freeze.get("taskId") != task_id
+        or freeze.get("targetId") != window_id
+        or window_id not in freeze.get("affectedContext", {}).get("windowIds", [])
+        or decision.get("action") != "PREPARE_RESUME"
+        or canonical_digest(ledger.get("objectOccupancies", {})) != freeze.get("snapshot", {}).get("objectOccupanciesDigest")
+    ):
+        raise ContinuityError("C08C_RECOVERY_RETURN_CONTEXT_MISMATCH")
+    return case_id
+
+
+def record_recovery_return_completion(
+    data_root: Path,
+    project_id: str,
+    task_id: str,
+    window_id: str,
+    signal_id: str,
+    expected_case_id: str,
+    caller_thread_ref: str,
+) -> Dict[str, Any]:
+    """Move a disconnected task directly to review while keeping business execution stopped."""
+    with ledger_lock(data_root, project_id):
+        before = load_ledger(data_root, project_id)
+        case_id = prepared_recovery_return_case(data_root, project_id, before, task_id, window_id)
+        if case_id != expected_case_id:
+            raise ContinuityError("C08C_RECOVERY_RETURN_CONTEXT_CHANGED")
+        task = before["tasks"][task_id]
+        if signal_id in task["completionSignalIds"]:
+            return {
+                "status": "IDEMPOTENT_DUPLICATE_SIGNAL",
+                "taskId": task_id,
+                "signalId": signal_id,
+                "currentTaskStatus": task["status"],
+                "writePerformed": False,
+            }
+
+        def mutate(after: Dict[str, Any]) -> None:
+            target = after["tasks"][task_id]
+            target["completionSignalIds"].append(signal_id)
+            target["status"] = "NEEDS_REVIEW"
+            target["history"].append({
+                "at": utc_now(), "event": "C08_RECOVERY_RETURN_ADMITTED", "caseId": case_id,
+                "signalId": signal_id, "from": "BLOCKED", "to": "NEEDS_REVIEW", "by": CENTRAL_WRITER,
+            })
+            after["recovery"].update({
+                "state": "CLOSED", "closedAt": utc_now(),
+                "closureReason": "RETURN_ADMITTED_FOR_INDEPENDENT_VALIDATION",
+                "businessExecutionResumed": False, "occupancyReleaseStatus": "RETAINED_PENDING_C06_AND_BOSS",
+            })
+
+        commit_kwargs = {}
+        if "caller_thread_ref" in inspect.signature(commit_mutation).parameters:
+            commit_kwargs["caller_thread_ref"] = caller_thread_ref
+        return commit_mutation(
+            data_root, project_id, before, CENTRAL_WRITER, "C08_ADMIT_RECOVERY_RETURN",
+            {
+                "caseId": case_id, "taskId": task_id, "windowId": window_id,
+                "signalId": signal_id, "toStatus": "NEEDS_REVIEW",
+                "businessExecutionResumed": False, "occupancyReleased": False,
+            },
+            mutate,
+            **commit_kwargs,
+        )
+
+
 def submit_return(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     data_root = load_data_root(args); project_id = project_ref(args.project_id)
     handback, handback_digest = load_return_handback(args.handback, data_root, project_id)
@@ -743,7 +1129,18 @@ def submit_return(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     task = ledger["tasks"].get(handback["taskId"]); window = ledger["windows"].get(handback["windowId"])
     if handback["routeRevisionSeen"] > routing["revision"]:
         raise ContinuityError("C08C_RETURN_FUTURE_ROUTE_REVISION")
-    if not isinstance(task, dict) or task.get("status") not in {"IN_PROGRESS", "NEEDS_REVIEW"} or not isinstance(window, dict) or window_current_task_id(window) != handback["taskId"]:
+    normal_source = (
+        isinstance(task, dict) and task.get("status") in {"IN_PROGRESS", "NEEDS_REVIEW"}
+        and isinstance(window, dict) and window_current_task_id(window) == handback["taskId"]
+    )
+    superseding_conflict_id = None if normal_source else superseding_conflict_validation_id(
+        data_root, project_id, ledger, handback
+    )
+    superseding_source = superseding_conflict_id is not None
+    recovery_case_id = None if normal_source or superseding_source else prepared_recovery_return_case(
+        data_root, project_id, ledger, handback["taskId"], handback["windowId"]
+    )
+    if not normal_source and not superseding_source and recovery_case_id is None:
         raise ContinuityError("C08C_RETURN_SOURCE_MISMATCH")
     source_window = {"windowId": handback["windowId"], "runtimeThreadRef": window.get("runtimeThreadRef", window.get("windowId")), "generation": window.get("generation", 1)}
     if not isinstance(source_window["generation"], int) or source_window["generation"] < 1:
@@ -761,7 +1158,15 @@ def submit_return(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
                 "projectId": project_id, "returnTicketId": ticket_id, "handbackId": handback["handbackId"], "taskId": handback["taskId"],
                 "windowId": handback["windowId"], "completionSignalId": handback["completionSignalId"], "sourceWindow": source_window,
                 "routeRevisionSeen": handback["routeRevisionSeen"], "sourceHandbackRelativePath": handback["relativePath"], "sourceHandbackDigest": handback_digest,
-                "boundary": {"chatReplyIsNotDeliveryProof": True, "centralGetsSummaryOnly": True, "taskDoneDeclared": False, "businessWritePerformed": False},
+                "boundary": {
+                    "chatReplyIsNotDeliveryProof": True, "centralGetsSummaryOnly": True,
+                    "taskDoneDeclared": False, "businessWritePerformed": False,
+                    "recoveryReturnOnly": recovery_case_id is not None,
+                    "recoveryCaseId": recovery_case_id,
+                    "supersedingConflictReturnOnly": superseding_source,
+                    "supersedingConflictValidationId": superseding_conflict_id,
+                    "businessExecutionResumed": False,
+                },
             }
             receipt = {"returnSchemaVersion": RETURN_SCHEMA_VERSION, "recordType": "C08_IMMUTABLE_RETURN_SUBMISSION_RECEIPT", "createdAt": utc_now(), "projectId": project_id, "returnTicketId": ticket_id, "submissionDigest": canonical_digest(submission), "submission": submission}
             write_exclusive(return_submission_receipt_path(data_root, project_id, ticket_id), receipt)
@@ -842,14 +1247,40 @@ def admit_return(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
                 raise ContinuityError("C08C_RETURN_ADMISSION_INVALID")
             return {"status": "IDEMPOTENT_RETURN_ADMISSION", "returnState": return_ticket_state(data_root, project_id, ticket_id), "returnTicketId": ticket_id, "taskId": submission["taskId"], "writePerformed": False}, 0
         acknowledgement = ensure_return_event_acknowledgement(data_root, project_id, ticket_id, current_thread_ref, admission_ref, routing)
-        signal_result, signal_code = record_completion_signal(argparse.Namespace(data_root=str(data_root), config=None, project_id=project_id, writer_id=CENTRAL_WRITER, caller_thread_ref=args.current_thread_ref, task_id=submission["taskId"], signal_id=submission["completionSignalId"]))
-        if signal_code != 0:
-            raise ContinuityError("C08C_RETURN_COMPLETION_SIGNAL_FAILED")
+        recovery_case_id = submission.get("boundary", {}).get("recoveryCaseId")
+        superseding_conflict_id = submission.get("boundary", {}).get("supersedingConflictValidationId")
+        if superseding_conflict_id is not None:
+            signal_result = record_superseding_conflict_completion(
+                data_root, project_id, submission["taskId"], submission["completionSignalId"],
+                superseding_conflict_id, current_thread_ref,
+            )
+        elif recovery_case_id is not None:
+            signal_result = record_recovery_return_completion(
+                data_root, project_id, submission["taskId"], submission["windowId"],
+                submission["completionSignalId"], recovery_case_id, current_thread_ref,
+            )
+        elif validation_reissue_after_abort_allowed(data_root, project_id, ticket_id, submission):
+            signal_result = {"receiptId": None}
+        else:
+            signal_result, signal_code = record_completion_signal(argparse.Namespace(data_root=str(data_root), config=None, project_id=project_id, writer_id=CENTRAL_WRITER, caller_thread_ref=args.current_thread_ref, task_id=submission["taskId"], signal_id=submission["completionSignalId"]))
+            if signal_code != 0:
+                raise ContinuityError("C08C_RETURN_COMPLETION_SIGNAL_FAILED")
         artifact = {
             "returnSchemaVersion": RETURN_SCHEMA_VERSION, "recordType": "C08_RETURN_ADMISSION_RECEIPT", "createdAt": utc_now(), "projectId": project_id,
             "returnTicketId": ticket_id, "taskId": submission["taskId"], "completionSignalId": submission["completionSignalId"], "eventId": delivery["delivery"]["eventId"],
             "acknowledgementDigest": canonical_digest(acknowledgement), "ledgerReceiptId": signal_result.get("receiptId"), "admissionRef": admission_ref,
-            "boundary": {"centralReadSummaryOnly": True, "taskMovedToNeedsReview": True, "taskDoneDeclared": False, "businessWritePerformed": False},
+            "boundary": {
+                "centralReadSummaryOnly": True,
+                "taskMovedToNeedsReview": superseding_conflict_id is None,
+                "taskDoneDeclared": False, "businessWritePerformed": False,
+                "recoveryReturnOnly": recovery_case_id is not None,
+                "recoveryCaseId": recovery_case_id,
+                "supersedingConflictReturnOnly": superseding_conflict_id is not None,
+                "supersedingConflictValidationId": superseding_conflict_id,
+                "validationReissueAfterAbort": signal_result.get("receiptId") is None and recovery_case_id is None and superseding_conflict_id is None,
+                "businessExecutionResumed": False,
+                "occupancyReleased": False,
+            },
         }
         write_exclusive(target, artifact)
     return {"status": "RETURN_ADMITTED_FOR_INDEPENDENT_VALIDATION", "returnState": "ADMITTED", "returnTicketId": ticket_id, "taskId": submission["taskId"], "centralPayload": "SUMMARY_ONLY", "doneRecorded": False, "writePerformed": True, "message": "中央已确认回传并登记完成信号；下一步由独立验收槽处理，中央不读取施工原文。"}, 0
@@ -894,6 +1325,58 @@ def reserve_next_return(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
             write_exclusive(return_reservation_path(data_root, project_id, ticket_id), reservation)
             return {"status": "RETURN_VALIDATION_RESERVED", "returnState": "VALIDATING", "returnTicketId": ticket_id, "taskId": submission["taskId"], "validatorThreadRef": validator_thread_ref, "validatorModel": RETURN_VALIDATOR_MODEL, "validationInput": {"returnTicketId": ticket_id, "taskId": submission["taskId"], "handbackId": submission["handbackId"]}, "centralPayload": "TICKET_AND_STATUS_ONLY", "writePerformed": True}, 0
     return {"status": "RETURN_INBOX_EMPTY", "maxConcurrentValidations": 1, "writePerformed": False}, 0
+
+
+def abort_return_validation(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
+    """Abort a reserved validation that produced no C06 decision.
+
+    This preserves the immutable return and reservation history while freeing
+    the single validation slot for a corrected, immutable reissue. It never
+    changes the task status or any business object.
+    """
+    data_root = load_data_root(args); project_id = project_ref(args.project_id); require_writer(args.writer_id)
+    ticket_id = return_ticket_ref(args.return_ticket_id, "C08C_RETURN_TICKET_ID_INVALID")
+    current_thread_ref = ref(args.current_thread_ref, "C08C_THREAD_REF_INVALID")
+    validator_thread_ref = ref(args.validator_thread_ref, "C08C_VALIDATOR_THREAD_REF_INVALID")
+    boss_authorization_ref = ref(args.boss_authorization_ref, "C08C_RETURN_VALIDATION_ABORT_AUTHORIZATION_INVALID")
+    reason_ref = ref(args.reason_ref, "C08C_RETURN_VALIDATION_ABORT_REASON_INVALID")
+    routing = verify_routing(data_root, project_id); current_role(routing, "CURRENT_CENTRAL", current_thread_ref)
+    with continuity_lock(data_root, project_id):
+        submission = read_return_delivery(data_root, project_id, ticket_id)["submission"]
+        reservation = read_json(return_reservation_path(data_root, project_id, ticket_id), "C08C_RETURN_VALIDATION_NOT_RESERVED")
+        if reservation.get("validatorThreadRef") != validator_thread_ref or reservation.get("returnTicketId") != ticket_id:
+            raise ContinuityError("C08C_RETURN_VALIDATION_RESERVATION_MISMATCH")
+        if return_validation_path(data_root, project_id, ticket_id).exists():
+            raise ContinuityError("C08C_RETURN_VALIDATION_ALREADY_RECORDED")
+        target = return_validation_abort_path(data_root, project_id, ticket_id)
+        if target.exists():
+            existing = read_return_validation_abort(data_root, project_id, ticket_id)
+            if existing.get("validatorThreadRef") == validator_thread_ref and existing.get("reasonRef") == reason_ref:
+                return {"status": "IDEMPOTENT_RETURN_VALIDATION_ABORT", "returnState": "VALIDATION_ABORTED", "returnTicketId": ticket_id, "taskId": submission["taskId"], "writePerformed": False}, 0
+            raise ContinuityError("C08C_RETURN_VALIDATION_ABORT_ALREADY_RECORDED")
+        abort = {
+            "returnSchemaVersion": RETURN_SCHEMA_VERSION,
+            "recordType": "C08_RETURN_VALIDATION_ABORT",
+            "createdAt": utc_now(),
+            "projectId": project_id,
+            "returnTicketId": ticket_id,
+            "taskId": submission["taskId"],
+            "handbackId": submission["handbackId"],
+            "validatorThreadRef": validator_thread_ref,
+            "centralThreadRef": current_thread_ref,
+            "bossAuthorizationRef": boss_authorization_ref,
+            "reasonRef": reason_ref,
+            "reservationDigest": canonical_digest(reservation),
+            "boundary": {
+                "validationReservationAborted": True,
+                "validationResultRecorded": False,
+                "returnEvidencePreserved": True,
+                "taskStatusChanged": False,
+                "businessWritePerformed": False,
+            },
+        }
+        write_exclusive(target, abort)
+    return {"status": "RETURN_VALIDATION_ABORTED", "returnState": "VALIDATION_ABORTED", "returnTicketId": ticket_id, "taskId": submission["taskId"], "writePerformed": True, "businessWritePerformed": False}, 0
 
 
 def record_return_validation(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
@@ -989,8 +1472,24 @@ def parse_args() -> argparse.Namespace:
     source = parser.add_mutually_exclusive_group(required=True); source.add_argument("--data-root"); source.add_argument("--config")
     parser.add_argument("--project-id", required=True); parser.add_argument("--writer-id")
     commands = parser.add_subparsers(dest="command", required=True)
+    model_parser = commands.add_parser("record-model")
+    model_parser.add_argument("--current-thread-ref", required=True)
+    model_parser.add_argument("--runtime-project-id", required=True)
+    model_parser.add_argument("--model", required=True)
+    model_parser.add_argument("--evidence-ref", required=True)
     initialize_parser = commands.add_parser("initialize"); initialize_parser.add_argument("--calling-thread-ref", required=True); initialize_parser.add_argument("--central-thread-ref", required=True); initialize_parser.add_argument("--runtime-project-id", required=True); initialize_parser.add_argument("--execution-map-ref", required=True)
     prepare_parser = commands.add_parser("prepare-handover"); prepare_parser.add_argument("--request", required=True)
+    refresh_parser = commands.add_parser("refresh-handover")
+    for field in ("handover-id", "revision-id", "current-thread-ref"):
+        refresh_parser.add_argument("--" + field, required=True)
+    for operation in ("prepare-successor", "record-successor", "record-handover-readback", "record-handover-opened"):
+        operation_parser = commands.add_parser(operation)
+        operation_parser.add_argument("--handover-id", required=True)
+        operation_parser.add_argument("--current-thread-ref", required=True)
+        operation_parser.add_argument("--authorization-ref" if operation == "prepare-successor" else "--proof", required=True)
+        if operation == "prepare-successor":
+            operation_parser.add_argument("--model")
+    initialize_parser.add_argument("--model")
     activation_parser = commands.add_parser("activate-successor"); activation_parser.add_argument("--handover-id", required=True); activation_parser.add_argument("--activation", required=True)
     event_parser = commands.add_parser("submit-event"); event_parser.add_argument("--event", required=True)
     return_parser = commands.add_parser("submit-return"); return_parser.add_argument("--handback", required=True)
@@ -998,6 +1497,7 @@ def parse_args() -> argparse.Namespace:
     policy_parser = commands.add_parser("configure-return-policy"); policy_parser.add_argument("--policy", required=True); policy_parser.add_argument("--current-thread-ref", required=True)
     admit_parser = commands.add_parser("admit-return"); admit_parser.add_argument("--return-ticket-id", required=True); admit_parser.add_argument("--current-thread-ref", required=True); admit_parser.add_argument("--admission-ref", required=True)
     reserve_parser = commands.add_parser("reserve-next-return"); reserve_parser.add_argument("--current-thread-ref", required=True); reserve_parser.add_argument("--validator-thread-ref", required=True)
+    abort_parser = commands.add_parser("abort-return-validation"); abort_parser.add_argument("--return-ticket-id", required=True); abort_parser.add_argument("--current-thread-ref", required=True); abort_parser.add_argument("--validator-thread-ref", required=True); abort_parser.add_argument("--boss-authorization-ref", required=True); abort_parser.add_argument("--reason-ref", required=True)
     result_parser = commands.add_parser("record-return-validation"); result_parser.add_argument("--return-ticket-id", required=True); result_parser.add_argument("--current-thread-ref", required=True); result_parser.add_argument("--validator-thread-ref", required=True); result_parser.add_argument("--validation-id", required=True)
     pending_parser = commands.add_parser("list-pending"); pending_parser.add_argument("--current-thread-ref", required=True)
     ack_parser = commands.add_parser("acknowledge-event"); ack_parser.add_argument("--event-id", required=True); ack_parser.add_argument("--current-thread-ref", required=True); ack_parser.add_argument("--acknowledgement-ref", required=True)
@@ -1006,7 +1506,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def dispatch(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
-    return {"initialize": initialize, "prepare-handover": prepare_handover, "activate-successor": activate_successor, "submit-event": submit_event, "submit-return": submit_return, "reconcile-return": reconcile_return, "configure-return-policy": configure_return_policy, "admit-return": admit_return, "reserve-next-return": reserve_next_return, "record-return-validation": record_return_validation, "list-pending": list_pending, "acknowledge-event": acknowledge_event, "verify": verify_all}[args.command](args)
+    if args.command in {"prepare-successor", "record-successor", "record-handover-readback", "record-handover-opened"}:
+        from handover_automation import operate
+        return operate(args)
+    if args.command == "record-model":
+        return record_model(args)
+    if args.command == "refresh-handover":
+        return refresh_handover(args)
+    return {"initialize": initialize, "prepare-handover": prepare_handover, "activate-successor": activate_successor, "submit-event": submit_event, "submit-return": submit_return, "reconcile-return": reconcile_return, "configure-return-policy": configure_return_policy, "admit-return": admit_return, "reserve-next-return": reserve_next_return, "abort-return-validation": abort_return_validation, "record-return-validation": record_return_validation, "list-pending": list_pending, "acknowledge-event": acknowledge_event, "verify": verify_all}[args.command](args)
 
 
 def main() -> int:
@@ -1019,4 +1526,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Runtime helpers must share this module's exception and lock definitions.
+    sys.modules["role_continuity_controller"] = sys.modules[__name__]
     sys.exit(main())

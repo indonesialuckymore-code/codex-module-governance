@@ -10,8 +10,10 @@ description: 检查经 Boss 审阅的 Codex 待审任务包是否与当前任务
 ## 检查顺序
 
 1. 校验 C04 任务包和不可覆盖回执。
+   有 acceptancePolicy 时读取[按成果和实际影响验收](../../references/adaptive-acceptance.md)，核对影响声明与真实对象；声明不改状态但申请 WRITE 时拒绝，不因任务名为“研究”而放行。
 2. 校验 C03 总账和回执链，确认任务仍为 `PLANNED`。
 3. 确认 Boss 已审阅任务包及本次对象范围，依赖已经明确满足。
+   已登记执行安排改版时，还须从 C03 当前版本核对必要依赖和排程等待；`WAITING_FOR_EXECUTION_ARRANGEMENT` 不预留对象、不推进 `READY`，不能只凭旧复核文件标了 SATISFIED 就放行。
 4. 检查窗口建议：当前任务已有唯一活动窗口时沿用本次承接；已完成旧窗口只有 `assignmentCount=1`、`currentTaskId=null`、状态为 `AVAILABLE_FOR_REUSE` 时才能作为第 2 次且最后一次承接；达到 2 次或已退役时禁止复用。
 5. 比较每个对象的 `objectKey` 和 `conflictKey`。非排他只读可以并行；任一写入或排他资源重叠时，后启动任务硬停。
 6. 先预演。只有显式批准应用后，才把整组占用一次性写入 C03，并把任务推进到 `READY`；任何一项冲突时不得部分占用。

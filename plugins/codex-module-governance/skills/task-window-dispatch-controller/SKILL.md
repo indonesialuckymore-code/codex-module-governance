@@ -1,6 +1,6 @@
 ---
 name: task-window-dispatch-controller
-description: 在 Boss 对单项任务或中央启动图作出范围化批准且 C05 占用验收通过后，按并行波次准备和批量派发 Codex 任务窗口及最多 3 个一级子 Agent；任务窗口可在原范围内主动补派独立子 Agent，但必须经过结构化回传、父窗口读证和质量闸门，不能牺牲最终质量。强制绑定 Codex 保存项目、gpt-5.6-terra 和工作区受限权限，只有运行时返回正确项目归属、真实任务 ID、模型与权限控制回执后才登记 C03。Use when 中央要派发一个或一批任务、放行后续依赖波次、复用旧窗口、创建或补派一级子 Agent、修复新任务掉进“最近”而非项目分组、登记真实运行结果或汇总子 Agent 回传。
+description: 在 Boss 对单项任务或中央启动图作出范围化批准且 C05 占用验收通过后，按并行波次准备和批量派发 Codex 任务窗口及最多 3 个一级子 Agent；任务窗口可在原范围内主动补派独立子 Agent，但必须经过结构化回传、父窗口读证和质量闸门，不能牺牲最终质量。绑定 Codex 保存项目；模型默认 Terra 可修改，续办保留当前模型；任务权限默认原生完全访问，工作区受限为可选高隔离模式，只有运行时返回正确项目归属、真实任务 ID、模型与实际权限回执后才登记 C03。Use when 中央要派发一个或一批任务、放行后续依赖波次、复用旧窗口、创建或补派一级子 Agent、修复新任务掉进“最近”而非项目分组、登记真实运行结果或汇总子 Agent 回传。
 ---
 
 # 任务窗口与一级子 Agent 调度
@@ -13,20 +13,22 @@ description: 在 Boss 对单项任务或中央启动图作出范围化批准且 
 
 ## 两段式派发
 
+有人工纠偏时先读[纠偏候选协议](../../references/task-corrections.md)。仅在生效核验释放恢复资格后继续；旧派发/补派单不能复用，当前单中的 `directionContext`、`directionInstructionRef` 及原生动作 `requiredDirectionContext`/`requiredDirectionInstructionRef` 必须传入执行上下文，与原批准任务包一起阅读。旧做法只在被当前指令替代的部分失效，不能因此扩大范围或重做全部成果。即使中央返回已准备任务，原生动作执行前仍须读回当前执行保护与版本；验证边界见[候选版状态](../../references/release-status.md)。
+
 1. `prepare` 验证 C04、C05、C03、Boss 批准和恢复状态，只生成不可覆盖派发单。
 2. 派发单固定任务身份：总账/任务包使用 `任务ID｜业务名称`，Codex 窗口使用 `任务ID｜业务名称｜G代际`。
-3. Codex 运行时按派发单的完整标题创建新任务、发送到旧任务或创建一级子 Agent。新任务必须调用原生 `create_thread` 且明确传入 `model: "gpt-5.6-terra"`；复用旧窗口必须调用原生 `send_message_to_thread` 且明确传入同一 `model`；一级子 Agent 必须用原生 `spawn_agent` 且明确传入同一 `model`。只在提示词里写“请使用 Terra”不算派发。
-4. 只有所有要求的运行时对象都成功、标题/任务 ID/代际完全匹配、返回真实 ID，并同时回传模型控制和权限控制记录后，`confirm` 才登记窗口和子 Agent，并把任务从 `READY` 推进为 `IN_PROGRESS`。权限必须为 `WORKTREE_SCOPED`，profile 只允许 `:workspace` 或 `qianyi-task-terra`，必须列出唯一任务可写根，并记录 `governanceDataRootAccess=DENIED`；完整访问和通用 `workspace-write` 一律拒绝。
-5. Sol、Luna、缺少模型/权限控制记录、方法不匹配、可写根包含中央私有目录、`danger-full-access` 或部分创建，都不得更新总账；报告对应的 `C10_* / NEEDS_REVIEW`。已产生的孤立对象应交 C08 冻结或收回，不能冒充合格窗口。
-6. 如果当前 Codex 表面不能自动创建任务，`export-fallback` 只生成可复制任务包交 Boss 手工建窗；Boss 必须先在模型菜单选择 **5.6 Terra**，把权限设为工作区受限并关闭完整访问，保留两项证据，随后分别以 `MANUAL_UI_TERRA_SELECTION_EVIDENCE` 和 `MANUAL_UI_PERMISSION_EVIDENCE` 完成 C10 确认。没有该手工包与证据，手工窗口不得登记。
+3. Codex 运行时按派发单完整标题及模型选择创建新任务、复用任务或委派一级子 Agent。派发前读取[模型选择与真实运行记录](../../references/runtime-model-policy.md)：新任务默认 Terra，明确指定可改；续办未要求换模型时省略原生消息的 `model` 参数并读回实际选择。
+4. 只有所有要求的运行时对象都成功、标题/任务 ID/代际完全匹配、返回真实 ID，并同时回传模型控制和实际权限记录后，`confirm` 才登记窗口和子 Agent，并把任务从 `READY` 推进为 `IN_PROGRESS`。默认接受 `FULL_ACCESS/full-access`；Boss 主动选择高隔离时接受 Codex 原生 `WORKTREE_SCOPED/:workspace`。不得创建或要求自定义权限 Profile。
+5. 缺少模型/权限读回、权限 class/profile 不匹配或部分创建，都不得更新总账；非 Terra 本身不是失败。受限模式若写根包含中央私有目录仍须拒绝；完全访问明确记录 `governanceDataRootAccess=NOT_RESTRICTED`，不把系统能力冒充业务授权。
+6. 平台不能自动创建任务时，`export-fallback` 提供手工建窗包；采用所选模型并保留模型、权限证据，以 `MANUAL_UI_MODEL_SELECTION_EVIDENCE` 和 `MANUAL_UI_PERMISSION_EVIDENCE` 完成确认。旧 Terra 人工证据只用于真实 Terra 历史兼容。
 
 ## 权限门禁
 
-1. Terra 管“由什么模型施工”，权限门禁管“它可以碰到哪里”；两者缺一不可。
-2. 任务窗口必须是 `WORKTREE_SCOPED`。`danger-full-access`、`full-access`、缺证据或只有提示词承诺均禁止进入 `IN_PROGRESS`。
-3. 权限回执必须同时包含 `profile`、`method`、`evidenceRef`、`writableRoots`和 `governanceDataRootAccess`。`writableRoots` 必须是非空绝对路径列表，当前运行目录必须位于其中；中央私有治理目录不得落入任一可写根。
-4. 一级子 Agent 默认继承父任务窗口的受限权限；回执必须引用父窗口运行身份，且 profile 和 `writableRoots` 完全一致。若运行时能提供独立读回，也可用独立权限回执。
-5. 旧窗口即使有 Terra 凭据，只要没有完整权限边界凭据，就不得承接第二项任务；允许完成当前任务，但下一项应新开合格窗口。
+1. 模型读回记录“实际由什么模型施工”，权限读回记录“平台允许碰到哪里”；业务范围另行核验。
+2. 任务窗口默认 `FULL_ACCESS`；`WORKTREE_SCOPED` 为 Boss 可选的高隔离模式。缺证据、class/profile 不匹配或只有提示词承诺仍禁止进入 `IN_PROGRESS`。
+3. 权限回执必须同时包含 `permissionClass`、`profile`、`method`、`evidenceRef`、`writableRoots` 和 `governanceDataRootAccess`。完全访问使用空 `writableRoots` 与 `NOT_RESTRICTED`；受限模式使用非空绝对写根与 `DENIED`。
+4. 一级子 Agent 默认继承父任务窗口的实际权限；回执必须引用父窗口运行身份，且 class、profile、写根和治理目录访问状态完全一致。若运行时能提供独立读回，也可用独立权限回执。
+5. 旧窗口即使有模型凭据，只要没有完整权限边界凭据，就不得承接第二项任务；允许完成当前任务，但下一项应新开合格窗口。
 6. Codex 权限 Profile 仍属运行时能力；C10 只验收真实读回/界面证据，不把配置文件文本当成已生效事实。
 
 ## 窗口两任务上限
@@ -46,30 +48,27 @@ description: 在 Boss 对单项任务或中央启动图作出范围化批准且 
 - C05 `bossReview.reference` 必须与 C10 `bossApprovalRef` 完全相同。C04 任务包仍是不可单独派发的草案；实际施工合同由 C10 派发单内嵌给任务窗口，不要另找不存在的“最终任务包”。
 - 同一波所有任务先分别通过 C04、C05 和 `prepare`，再批量调用运行时；某个任务失败不把其他已真实成功且无冲突的任务伪装成失败，但失败项不得写入 `IN_PROGRESS`。
 - 后续波次复用原启动图批准，但仍要验证前置任务已由 C06 + Boss 确认为 `DONE`，并重新运行 C05。
+- 已采用执行安排改版时，使用 C03 当前版本及[启动图协议第 8 节](../../references/central-construction/project-execution-map.md)。`scopeDigest` 仍指向原批准依据，不能改成新安排摘要；C10 复核当前等待条件，不能用旧入口绕过。仅执行排序改版不要求把所有原派发重新做一遍。
 - C06 返回 `successorDispatch.required=true` 时，中央直接准备并真实派发所有新近合格任务；范围未变化时不再向 Boss 请求“下一项”批准。
 
 ## 项目归属门禁
 
 1. 派发前先读取 Codex 保存项目清单，用保存路径匹配唯一项目 ID。
-2. 新 Git 任务不直接创建 worktree 候选。第一段固定使用 `project + local`，并读回正确 `projectId`；非 Git 项目到此完成。
-3. Git 任务第二段将这个逻辑派发受控交接到同一保存项目的标准 worktree，方法固定为 `LOCAL_BOOTSTRAP_TO_WORKTREE`。私有确认保留唯一 local 引导任务引用和唯一最终 worktree 任务引用，C03 只登记最终引用。
-4. 派发单必须同时记录 `initialTarget` 和 `finalTarget`，运行时严格照此执行，不得另传自定义目录、`projectless` 或新项目 ID。
-5. 最终回读必须同时满足：`projectId` 与引导阶段相同、Git 目录是 Codex 标准 worktree、任务 ID 真实且与标题一致、Terra 和权限证据完整。
-6. 第一段 `projectId` 为空、交接失败或最终不匹配时，立即报告 `PROJECT_ASSOCIATION_MISMATCH / NEEDS_REVIEW`，将未确认候选交 C08 冻结/退役，不循环创建更多窗口。
+2. 派发前必须读取唯一[项目归属证据协议](../../references/project-association.md)。新 Git 任务默认直接使用 `project + worktree`，非 Git 使用 `project + local`。不为填充界面项目编号强制往返交接。
+3. 已准备的历史 `LOCAL_BOOTSTRAP_TO_WORKTREE` 派发单仍按原单确认，不改写旧单；新单的 `initialTarget` 和 `finalTarget` 相同。
+4. 最终回读优先直接项目编号。字段缺失时仅在原生创建关联、实际任务读回及保存项目/Git 关系完整交叉核验后继续。保留原始空值与独立 `verifiedProjectId`，不能假称平台已直接返回编号或侧栏分组已修好。
+5. 证据必须保存工具原文、摘要和逐字段提取映射；程序验证实际目录关系，而不是相信同名目录。直接编号矛盾、证据缺失或关系不符仍拒绝，不循环创建更多窗口。
+6. 模型、权限、完整标题、真实任务 ID 与任务占用仍分别验收；项目核验通过不能替代这些条件。
 
-“同一项目”指 Codex 左栏归入同一个项目。Git 并行任务仍使用不同 worktree 物理目录，这是本地文件隔离，不是跑到另一个项目。
+“同一项目”指绑定同一个 Codex 保存项目；侧栏分组是单独的界面投影。Git 并行任务使用不同 worktree 物理目录，这是本地文件隔离，不是另建项目。
 
-## Terra 模型门禁
+## 模型证据与身份分离
 
-1. `windowAction.model` 与每个 `subAgents[].model` 固定为 `gpt-5.6-terra`；没有“按用户当前默认模型”的回退。
-2. 创建、复用和补派均必须走对应的原生模型参数，不能靠任务窗口在聊天中自行切换。
-3. C10 只会把已记录 `model`、`runtimeModel` 和 `modelEnforcement` 的 Terra 窗口写入工程总账。旧版或手工直登、但没有这三项证据的窗口为 `UNVERIFIED`，不得作为第二项任务的复用窗口。
-4. 新窗口如未成功指定 Terra，中央保持任务 `READY`；不得以“先用 Sol 做、之后再换”为理由开始施工。复用窗口如没有 Terra 证据，C05 改选新窗口或等待明确裁定。
-5. 模型不是业务验收质量的替代品。Terra 只保证派工的一致模型；C06 独立验收、Boss 最终裁定、对象占用和真实读回规则不变。
+新建默认、显式选择、续办保留、手工降级及历史证据兼容统一使用[模型选择与真实运行记录](../../references/runtime-model-policy.md)。C03 的 `model`、`runtimeModel` 和模型回执应一致反映实际选择；未知模型不是已确认状态。模型可用性由平台判断，C06 独立验收、Boss 最终批准及对象占用不因切换模型改变。
 
 ## 原生任务动作
 
-- 新开任务用 `codex_app__create_thread`；复用用 `codex_app__send_message_to_thread`；两者都必须传 Terra 并回读任务。
+- 新开任务用 `codex_app__create_thread`；复用用 `codex_app__send_message_to_thread`；按派发单选择或保留模型并回读任务，不把默认值强制覆盖到续办消息。
 - 第二次承接后用 `codex_app__set_thread_title` 改成新的完整标题并回读；标题只是界面投影，不是任务状态。
 - 中央用 `codex_app__wait_threads` 按最多 8 个一组等待，不逐个轮询；完成后仍须读取 C08/C14 票据。
 - 任务窗口不置顶；当前中央和当前裁定可置顶。只有 C06 + Boss 已 `DONE` 且窗口已 `RETIRED` 才允许归档。
@@ -103,7 +102,7 @@ description: 在 Boss 对单项任务或中央启动图作出范围化批准且 
 【状态】NEEDS_REVIEW / PARTIAL / BLOCKED
 ```
 
-父窗口不得把多个回复直接拼接成结论。所有子 Agent 回传齐全后，父窗口必须：逐项覆盖任务包的正例、反例、幂等、回滚、日志/历史和读回验收；读回关键证据；逐项处理子 Agent 间冲突；确认没有越出原范围或出现未知写入；再提交 `record-parent-quality-review`。只有该质量闸门通过，父窗口才能申请 C06；C06 和 Boss 最终批准仍是整项 `DONE` 的唯一通道。
+父窗口不得把多个回复直接拼接成结论。所有子 Agent 回传齐全后，按[按成果和实际影响验收](../../references/adaptive-acceptance.md)逐项覆盖同一任务合同：适用项读回实际证据，不适用项引用预定理由和核验依据，不能伪造测试。读回关键证据、处理子 Agent 间冲突、确认未越界或出现未知写入后，提交 `record-parent-quality-review`。只有该质量闸门通过，父窗口才能申请 C06；C06 和 Boss 最终批准仍是整项 `DONE` 的唯一通道。
 
 ## 向中央回传
 
@@ -118,8 +117,8 @@ description: 在 Boss 对单项任务或中央启动图作出范围化批准且 
 - C10 调度 Codex 任务，不直接修改业务系统。
 - 派发单不等于运行时已成功。
 - 任务卡出现在“最近”或自定义目录，不等于已正确归入项目。
-- 仅有标准 worktree 路径也不等于项目归属成功；应用回读的 `projectId` 为空仍须修复或硬停。
+- 仅有标准 worktree 路径不等于项目归属成功；应用 `projectId` 为空时必须按唯一证据协议核验，不能凭目录同名放行。
 - 可复制任务包也不等于运行时已成功，不得伪造任务或 Agent ID。
-- 任务卡底部当前显示 Sol、或没有 Terra 模型控制记录，均不等于已按任务包派发；不得开始施工或向中央发送“已开始”。
+- 任务卡显示的模型不能单独证明完成派发；须取得真实任务、项目、模型和权限回执，但不因用户选择 Sol 或其他模型拒绝开工。
 - 任务窗口不得绕过任务包、对象占用和硬停条件。
 - 失联后保留占用并转 C08，不自动重派。

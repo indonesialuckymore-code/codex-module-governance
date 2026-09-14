@@ -34,6 +34,7 @@ ARTIFACTS = {
     "freeze": ("freeze.json", "receipt-000000-freeze"),
     "takeover": ("takeover.json", "receipt-000001-takeover"),
     "decision": ("decision.json", "receipt-000002-decision"),
+    "resume": ("resume.json", "receipt-000003-resume"),
     "release": ("release.json", "receipt-000003-release"),
 }
 
@@ -418,6 +419,153 @@ def decide(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
     return public("RECOVERY_DECISION_RECORDED", case_id, True, action=decision["action"], occupancyPreserved=True, ledgerReceiptId=mutation["receiptId"]), 0
 
 
+def validate_replacement_resume(payload: Dict[str, Any], case_id: str) -> Dict[str, Any]:
+    value = require_exact(
+        payload,
+        {
+            "resumeSchemaVersion", "recordType", "caseId", "expectedRecoveryEpoch",
+            "taskId", "disconnectedWindowId", "bossAuthorization", "reasonRef",
+        },
+        "C08_REPLACEMENT_RESUME_SCHEMA_UNSUPPORTED",
+    )
+    if (
+        value["resumeSchemaVersion"] != SCHEMA_VERSION
+        or value["recordType"] != "C08_TASK_WINDOW_REPLACEMENT_AUTHORIZATION"
+        or require_reference(value["caseId"], "C08_CASE_ID_INVALID") != case_id
+    ):
+        raise RecoveryError("C08_REPLACEMENT_RESUME_SCHEMA_UNSUPPORTED")
+    if not isinstance(value["expectedRecoveryEpoch"], int) or value["expectedRecoveryEpoch"] < 1:
+        raise RecoveryError("C08_RECOVERY_EPOCH_INVALID")
+    boss = require_exact(
+        value["bossAuthorization"], {"status", "reference"},
+        "C08_BOSS_REPLACEMENT_AUTHORIZATION_INVALID",
+    )
+    if boss["status"] != "APPROVED":
+        raise RecoveryError("C08_BOSS_REPLACEMENT_AUTHORIZATION_REQUIRED")
+    return {
+        "expectedRecoveryEpoch": value["expectedRecoveryEpoch"],
+        "taskId": require_task_id(value["taskId"], "C08_TASK_ID_INVALID"),
+        "disconnectedWindowId": require_reference(value["disconnectedWindowId"], "C08_WINDOW_ID_INVALID"),
+        "bossAuthorizationRef": require_reference(boss["reference"], "C08_BOSS_REPLACEMENT_REF_INVALID"),
+        "reasonRef": require_reference(value["reasonRef"], "C08_REASON_REF_INVALID"),
+    }
+
+
+def resume(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
+    """Authorize normal C05/C10 redispatch after a task-window disconnection.
+
+    This closes only the recovery freeze and returns the task to READY. It does
+    not create a runtime task, resume business execution, or release occupancy.
+    """
+    data_root = load_data_root(args)
+    project_id = require_project_id(args.project_id)
+    case_id = require_reference(args.case_id, "C08_CASE_ID_INVALID")
+    freeze_artifact = verify_stage(data_root, project_id, case_id, "freeze", "C08_FREEZE_DISCONNECTED_CONTEXT")
+    verify_stage(data_root, project_id, case_id, "takeover", "C08_RECOVER_CENTRAL_CONTROL")
+    decision_artifact = verify_stage(data_root, project_id, case_id, "decision", "C08_RECORD_RECOVERY_DECISION")
+    raw, input_digest = load_private(args.authorization, data_root, "C08_REPLACEMENT_RESUME_INVALID_JSON")
+    authorization = validate_replacement_resume(raw, case_id)
+    require_writer(args.writer_id)
+    target = artifact_path(data_root, project_id, case_id, "resume")
+    if target.exists():
+        existing = verify_stage(data_root, project_id, case_id, "resume", "C08_AUTHORIZE_TASK_WINDOW_REPLACEMENT")
+        if existing.get("sourceInputDigest") == input_digest:
+            return public(
+                "IDEMPOTENT_TASK_WINDOW_REPLACEMENT_AUTHORIZATION", case_id, False,
+                newDispatchAllowed=True, occupancyPreserved=True,
+            ), 0
+        raise RecoveryError("C08_REPLACEMENT_RESUME_ALREADY_EXISTS_WITH_DIFFERENT_CONTENT")
+    if (
+        freeze_artifact.get("incidentType") != "TASK_WINDOW"
+        or decision_artifact.get("action") != "PREPARE_RESUME"
+        or freeze_artifact.get("taskId") != authorization["taskId"]
+        or freeze_artifact.get("targetId") != authorization["disconnectedWindowId"]
+    ):
+        raise RecoveryError("C08_REPLACEMENT_RESUME_CONTEXT_MISMATCH")
+    with recovery_lock(data_root, project_id), ledger_lock(data_root, project_id):
+        before = load_ledger(data_root, project_id)
+        recovery = before.get("recovery", {})
+        task = before.get("tasks", {}).get(authorization["taskId"])
+        window = before.get("windows", {}).get(authorization["disconnectedWindowId"])
+        if (
+            recovery.get("state") != "RESUME_REVIEW_REQUIRED"
+            or recovery.get("activeCaseId") != case_id
+            or recovery.get("recoveryEpoch") != authorization["expectedRecoveryEpoch"]
+            or recovery.get("decisionAction") != "PREPARE_RESUME"
+            or not isinstance(task, dict) or task.get("status") != "BLOCKED"
+            or not isinstance(window, dict) or window.get("status") != "DISCONNECTED"
+            or window.get("currentTaskId", window.get("taskId")) != authorization["taskId"]
+        ):
+            raise RecoveryError("C08_REPLACEMENT_RESUME_STATE_OR_EPOCH_MISMATCH")
+        if canonical_digest(before.get("objectOccupancies", {})) != freeze_artifact["snapshot"]["objectOccupanciesDigest"]:
+            raise RecoveryError("C08_OCCUPANCY_CHANGED_DURING_RECOVERY")
+
+        def mutate(after: Dict[str, Any]) -> None:
+            now = utc_now()
+            target_task = after["tasks"][authorization["taskId"]]
+            target_task["status"] = "READY"
+            target_task["history"].append({
+                "at": now, "event": "C08_TASK_WINDOW_REPLACEMENT_AUTHORIZED",
+                "caseId": case_id, "from": "BLOCKED", "to": "READY",
+                "disconnectedWindowId": authorization["disconnectedWindowId"],
+                "bossAuthorizationRef": authorization["bossAuthorizationRef"],
+                "by": CENTRAL_WRITER,
+            })
+            old_window = after["windows"][authorization["disconnectedWindowId"]]
+            old_window["status"] = "REPLACED_READ_ONLY"
+            old_window["currentTaskId"] = None
+            old_window["replacementAuthorizedAt"] = now
+            for assignment in old_window.get("assignmentHistory", []):
+                if assignment.get("taskId") == authorization["taskId"] and assignment.get("status") == "ACTIVE":
+                    assignment["status"] = "DISCONNECTED_REPLACED"
+                    assignment["replacementAuthorizedAt"] = now
+            for agent_id in freeze_artifact.get("affectedContext", {}).get("subAgentIds", []):
+                if agent_id in after.get("subAgents", {}):
+                    after["subAgents"][agent_id]["status"] = "REPLACED_READ_ONLY"
+            after["recovery"].update({
+                "state": "CLOSED", "closedAt": now,
+                "closureReason": "BOSS_AUTHORIZED_TASK_WINDOW_REPLACEMENT",
+                "businessExecutionResumed": False,
+                "newDispatchAllowed": True,
+                "occupancyReleaseStatus": "PRESERVED_FOR_REPLACEMENT",
+            })
+
+        result = commit_mutation(
+            data_root, project_id, before, CENTRAL_WRITER,
+            "C08_AUTHORIZE_TASK_WINDOW_REPLACEMENT",
+            {
+                "caseId": case_id, "taskId": authorization["taskId"],
+                "disconnectedWindowId": authorization["disconnectedWindowId"],
+                "toStatus": "READY", "businessExecutionResumed": False,
+                "newDispatchAllowed": True, "occupancyReleased": False,
+            },
+            mutate,
+            caller_thread_ref=args.caller_thread_ref,
+        )
+        mutation = ledger_mutation(result, data_root, project_id)
+        artifact = {
+            "schemaVersion": SCHEMA_VERSION,
+            "recordType": "C08_TASK_WINDOW_REPLACEMENT_AUTHORIZATION",
+            "createdAt": utc_now(), "projectId": project_id, "caseId": case_id,
+            **authorization, "sourceInputDigest": input_digest,
+            "freezeDigest": canonical_digest(freeze_artifact),
+            "decisionDigest": canonical_digest(decision_artifact),
+            "ledgerOperation": "C08_AUTHORIZE_TASK_WINDOW_REPLACEMENT",
+            "ledgerMutation": mutation,
+            "boundary": {
+                "businessExecutionResumed": False, "newDispatchAllowed": True,
+                "requiresC05AndC10": True, "occupancyReleased": False,
+                "oldWindowReadOnly": True,
+            },
+        }
+        persist_stage(data_root, project_id, case_id, "resume", "C08_AUTHORIZE_TASK_WINDOW_REPLACEMENT", artifact)
+    return public(
+        "TASK_WINDOW_REPLACEMENT_AUTHORIZED", case_id, True,
+        newDispatchAllowed=True, occupancyPreserved=True,
+        ledgerReceiptId=mutation["receiptId"], taskStatus="READY",
+    ), 0
+
+
 def validate_release(payload: Dict[str, Any], case_id: str) -> Dict[str, Any]:
     value = require_exact(payload, {"releaseSchemaVersion", "recordType", "caseId", "bossReleaseAuthorization", "validationId", "rollbackConfirmed", "noBusinessWritesOutstanding"}, "C08_RELEASE_SCHEMA_UNSUPPORTED")
     if value["releaseSchemaVersion"] != SCHEMA_VERSION or value["recordType"] != "C08_OCCUPANCY_RELEASE_INPUT" or require_reference(value["caseId"], "C08_CASE_ID_INVALID") != case_id:
@@ -498,6 +646,8 @@ def verify_command(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
         latest = verify_stage(data_root, project_id, case_id, "takeover", "C08_RECOVER_CENTRAL_CONTROL"); stage = "CONTROL_RECOVERED"
     if artifact_path(data_root, project_id, case_id, "decision").exists():
         latest = verify_stage(data_root, project_id, case_id, "decision", "C08_RECORD_RECOVERY_DECISION"); stage = "DECIDED"
+    if artifact_path(data_root, project_id, case_id, "resume").exists():
+        latest = verify_stage(data_root, project_id, case_id, "resume", "C08_AUTHORIZE_TASK_WINDOW_REPLACEMENT"); stage = "REPLACEMENT_AUTHORIZED"
     if artifact_path(data_root, project_id, case_id, "release").exists():
         latest = verify_stage(data_root, project_id, case_id, "release", "C08_RELEASE_COMPLETED_OR_CANCELLED_OCCUPANCY"); stage = "CLOSED"
     ledger = verified_ledger(data_root, project_id)
@@ -515,13 +665,14 @@ def parse_args() -> argparse.Namespace:
     action = freeze_parser.add_mutually_exclusive_group(required=True); action.add_argument("--dry-run", action="store_true"); action.add_argument("--apply", action="store_true")
     takeover_parser = commands.add_parser("takeover"); takeover_parser.add_argument("--case-id", required=True); takeover_parser.add_argument("--authorization", required=True)
     decision_parser = commands.add_parser("decide"); decision_parser.add_argument("--case-id", required=True); decision_parser.add_argument("--decision", required=True)
+    resume_parser = commands.add_parser("resume"); resume_parser.add_argument("--case-id", required=True); resume_parser.add_argument("--authorization", required=True)
     release_parser = commands.add_parser("release"); release_parser.add_argument("--case-id", required=True); release_parser.add_argument("--release", required=True)
     verify_parser = commands.add_parser("verify"); verify_parser.add_argument("--case-id", required=True)
     return parser.parse_args()
 
 
 def dispatch(args: argparse.Namespace) -> Tuple[Dict[str, Any], int]:
-    return {"freeze": freeze, "takeover": takeover, "decide": decide, "release": release, "verify": verify_command}[args.command](args)
+    return {"freeze": freeze, "takeover": takeover, "decide": decide, "resume": resume, "release": release, "verify": verify_command}[args.command](args)
 
 
 def main() -> int:

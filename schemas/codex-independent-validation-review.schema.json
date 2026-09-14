@@ -6,13 +6,62 @@
   "additionalProperties": false,
   "required": ["reviewSchemaVersion", "recordType", "validationId", "handbackId", "taskId", "centralReviewer", "scopeAssessment", "evidenceAssessment"],
   "properties": {
-    "reviewSchemaVersion": { "const": "0.7.0" },
+    "reviewSchemaVersion": { "const": "0.8.0" },
     "recordType": { "const": "C06_INDEPENDENT_VALIDATION_REVIEW" },
     "validationId": { "type": "string" },
     "handbackId": { "type": "string" },
     "taskId": { "type": "string" },
     "centralReviewer": { "type": "object" },
     "scopeAssessment": { "type": "object" },
-    "evidenceAssessment": { "type": "object" }
+    "evidenceAssessment": {"$ref": "#/$defs/evidenceAssessment"},
+    "feedbackAssessments": {"$ref": "#/$defs/feedbackAssessments"}
+    ,"outcomeAssessments": {"$ref": "#/$defs/outcomeAssessments"}
+  },
+  "$defs": {
+    "outcomeAssessments": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {"type": "object", "additionalProperties": false,
+        "required": ["outcomeId", "criterionId", "reference", "verdict", "independentlyReadBack"],
+        "properties": {
+          "outcomeId": {"type": "string"}, "criterionId": {"type": "string"},
+          "reference": {"$ref": "#/$defs/evidenceItem/properties/reference"},
+          "verdict": {"enum": ["PASS", "FAIL", "MISSING"]}, "independentlyReadBack": {"type": "boolean"}
+        }
+      }
+    },
+    "feedbackAssessments": {
+      "type": "array", "minItems": 1, "maxItems": 80,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["originalTaskId", "feedbackId", "feedbackDigest", "evidenceRef", "issueResolved", "independentlyReadBack"],
+        "properties": {
+          "originalTaskId": {"$ref": "#/$defs/evidenceItem/properties/reference"},
+          "feedbackId": {"$ref": "#/$defs/evidenceItem/properties/reference"},
+          "feedbackDigest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+          "evidenceRef": {"$ref": "#/$defs/evidenceItem/properties/reference"},
+          "issueResolved": {"type": "boolean"}, "independentlyReadBack": {"type": "boolean"}
+        }
+      }
+    },
+    "evidenceItem": {
+      "type": "object", "additionalProperties": false,
+      "required": ["reference", "verdict", "independentlyReadBack"],
+      "properties": {
+        "reference": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$"},
+        "verdict": {"enum": ["PASS", "FAIL", "MISSING", "NOT_APPLICABLE"]},
+        "independentlyReadBack": {"type": "boolean"}
+      }
+    },
+    "evidenceAssessment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["beforeSnapshot", "afterSnapshot", "positiveCase", "negativeCase", "idempotency", "rollback", "logsAndHistory", "upstreamReadback", "downstreamReadback", "testAndObjectIds"],
+      "properties": {
+        "beforeSnapshot": {"$ref": "#/$defs/evidenceItem"}, "afterSnapshot": {"$ref": "#/$defs/evidenceItem"},
+        "positiveCase": {"$ref": "#/$defs/evidenceItem"}, "negativeCase": {"$ref": "#/$defs/evidenceItem"},
+        "idempotency": {"$ref": "#/$defs/evidenceItem"}, "rollback": {"$ref": "#/$defs/evidenceItem"},
+        "logsAndHistory": {"$ref": "#/$defs/evidenceItem"}, "upstreamReadback": {"$ref": "#/$defs/evidenceItem"},
+        "downstreamReadback": {"$ref": "#/$defs/evidenceItem"}, "testAndObjectIds": {"$ref": "#/$defs/evidenceItem"}
+      }
+    }
   }
 }

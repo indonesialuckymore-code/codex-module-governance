@@ -16,7 +16,7 @@ from typing import Any
 
 PLUGIN = "codex-module-governance"
 MARKETPLACE = "qianyi-codex-governance"
-CURRENT_VERSION = "0.22.1"
+CURRENT_VERSION = "0.23.0-rc.1"
 REQUIRED_SKILLS = {
     "construction-outline-planner",
     "new-project-initializer",
@@ -73,7 +73,7 @@ def assert_repo(repo: Path) -> None:
     if source != {"source": "local", "path": f"./plugins/{PLUGIN}"}:
         raise C13Error("C13_MARKETPLACE_SOURCE_INVALID")
     metadata = manifest(repo)
-    if metadata.get("name") != PLUGIN or metadata.get("version") != CURRENT_VERSION:
+    if metadata.get("name") != PLUGIN or metadata.get("version", "").split("+", 1)[0] != CURRENT_VERSION:
         raise C13Error("C13_PLUGIN_VERSION_MISMATCH")
     if metadata.get("repository") != "https://github.com/indonesialuckymore-code/codex-module-governance":
         raise C13Error("C13_REPOSITORY_METADATA_MISMATCH")
@@ -145,7 +145,7 @@ def upgrade(installed_plugin: Path, source_repo: Path, backup_root: Path, simula
             (staged / ".codex-plugin" / "plugin.json").write_text("{}\n", encoding="utf-8")
         try:
             staged_manifest = load_json(staged / ".codex-plugin" / "plugin.json")
-            if staged_manifest.get("name") != PLUGIN or staged_manifest.get("version") != CURRENT_VERSION:
+            if staged_manifest.get("name") != PLUGIN or staged_manifest.get("version") != manifest(source_repo)["version"]:
                 raise C13Error("C13_STAGED_UPGRADE_INVALID")
             displaced = parent / f".{PLUGIN}.previous"
             if displaced.exists():
@@ -161,14 +161,36 @@ def upgrade(installed_plugin: Path, source_repo: Path, backup_root: Path, simula
             if not installed_plugin.exists() and backup.exists():
                 copy_tree(backup, installed_plugin)
             raise C13Error(f"C13_UPGRADE_ABORTED_PREVIOUS_VERSION_PRESERVED:{error}")
-    return {"status": "UPGRADE_VERIFIED", "fromVersion": before_manifest.get("version"), "toVersion": CURRENT_VERSION, "backupPath": str(backup), "pluginPath": str(installed_plugin), "digest": tree_digest(installed_plugin)}
+    return {"status": "UPGRADE_VERIFIED", "fromVersion": before_manifest.get("version"), "toVersion": manifest(source_repo)["version"], "backupPath": str(backup), "pluginPath": str(installed_plugin), "digest": tree_digest(installed_plugin)}
 
 
-def rollback(installed_plugin: Path, backup: Path) -> dict[str, Any]:
+def assert_rollback_data_compatible(backup: Path, private_roots: list[Path]) -> None:
+    if not private_roots or any(not root.is_dir() for root in private_roots):
+        raise C13Error('C13_ALL_PRIVATE_DATA_ROOTS_REQUIRED')
+    target = load_json(backup / '.codex-plugin/plugin.json').get('version')
+    if isinstance(target, str) and target.split("+", 1)[0] == CURRENT_VERSION:
+        return
+    for root in private_roots:
+        for path in (root / 'module-ledgers').glob('*/ledger.json'):
+            ledger = load_json(path)
+            if (any(ledger.get(key) for key in ('outlineContract', 'outlineHistory', 'outlineRevisions', 'executionPlanRevisions'))
+                    or any(any(task.get(key) for key in ('directionCorrections', 'externalWaits', 'deliveryFeedback', 'outlineImpacts'))
+                           for task in ledger.get('tasks', {}).values())):
+                raise C13Error('C13_NEW_WORK_REQUIRES_CURRENT_READER_NO_DESTRUCTIVE_DOWNGRADE')
+        if any((root / 'role-continuity').glob('*/handovers/*/native-operations/*.json')):
+            raise C13Error('C13_NEW_HANDOVER_REQUIRES_CURRENT_READER')
+        for path in (root / 'task-packages').glob('*/drafts/*/task-package.json'):
+            package = load_json(path)
+            if package.get('acceptancePolicy') or package.get('task', {}).get('outcomeContract'):
+                raise C13Error('C13_NEW_ACCEPTANCE_REQUIRES_CURRENT_READER')
+
+
+def rollback(installed_plugin: Path, backup: Path, private_roots: list[Path] | None = None) -> dict[str, Any]:
     if not installed_plugin.is_dir() or not backup.is_dir():
         raise C13Error("C13_ROLLBACK_SOURCE_NOT_FOUND")
     current = load_json(installed_plugin / ".codex-plugin" / "plugin.json").get("version")
     restored = load_json(backup / ".codex-plugin" / "plugin.json").get("version")
+    assert_rollback_data_compatible(backup, private_roots or [])
     parent = installed_plugin.parent
     with tempfile.TemporaryDirectory(prefix="c13-rollback-", dir=parent) as temp:
         staged = Path(temp) / PLUGIN
@@ -183,7 +205,8 @@ def rollback(installed_plugin: Path, backup: Path) -> dict[str, Any]:
             displaced.rename(installed_plugin)
             raise
         shutil.rmtree(displaced)
-    return {"status": "ROLLBACK_VERIFIED", "fromVersion": current, "toVersion": restored, "pluginPath": str(installed_plugin), "digest": tree_digest(installed_plugin)}
+    return {"status": "ROLLBACK_VERIFIED", "fromVersion": current, "toVersion": restored, "pluginPath": str(installed_plugin), "digest": tree_digest(installed_plugin),
+            "verificationScope": "PROGRAM_AND_DECLARED_DATA_FORMATS_ONLY", "runtimeAcceptancePerformed": False}
 
 
 def git_clone(source: str, target: Path) -> None:
@@ -222,7 +245,7 @@ def smoke(repo: Path, previous_source: str | None) -> dict[str, Any]:
             shutil.rmtree(installed)
             copy_tree(plugin_root(previous), installed)
             upgrade_result = upgrade(installed, clone, root / "backups", False)
-            rollback_result = rollback(installed, Path(upgrade_result["backupPath"]))
+            rollback_result = rollback(installed, Path(upgrade_result["backupPath"]), [Path(private_temp)])
             if rollback_result["toVersion"] != old_manifest.get("version"):
                 raise C13Error("C13_ROLLBACK_VERSION_MISMATCH")
             shutil.rmtree(installed)
@@ -254,6 +277,7 @@ def parse_args() -> argparse.Namespace:
     rollback_parser = commands.add_parser("rollback")
     rollback_parser.add_argument("--installed-plugin", required=True)
     rollback_parser.add_argument("--backup", required=True)
+    rollback_parser.add_argument('--private-data-root', action='append', required=True)
     smoke_parser = commands.add_parser("smoke")
     smoke_parser.add_argument("--repo", required=True)
     smoke_parser.add_argument("--previous-source")
@@ -268,7 +292,8 @@ def main() -> int:
         elif args.command == "upgrade":
             output = upgrade(Path(args.installed_plugin).resolve(), Path(args.source_repo).resolve(), Path(args.backup_root).resolve(), args.simulate_failure)
         elif args.command == "rollback":
-            output = rollback(Path(args.installed_plugin).resolve(), Path(args.backup).resolve())
+            output = rollback(Path(args.installed_plugin).resolve(), Path(args.backup).resolve(),
+                [Path(root).resolve() for root in args.private_data_root])
         else:
             output = smoke(Path(args.repo).resolve(), args.previous_source)
         print(json.dumps(output, ensure_ascii=False, indent=2, sort_keys=True))

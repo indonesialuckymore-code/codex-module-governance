@@ -181,6 +181,50 @@ class LedgerManagerTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(output["reason"], "DONE_REQUIRES_C06_INDEPENDENT_VALIDATION")
 
+    def test_cancel_unstarted_ready_task_releases_only_its_claims(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary) / "private-data"
+            self.initialize(data_root)
+            self.add_task(data_root, "C-07")
+            self.add_task(data_root, "C-08")
+            self.command(data_root, "transition-task", "--task-id", "C-07", "--to-status", "READY", "--reason", "Ready")
+            self.command(data_root, "claim-object", "--object-key", "file:cancel-me", "--owner-type", "task", "--owner-id", "C-07", "--intent", "WRITE")
+            self.command(data_root, "claim-object", "--object-key", "file:keep-me", "--owner-type", "task", "--owner-id", "C-08", "--intent", "WRITE")
+
+            code, output = self.command(
+                data_root, "cancel-unstarted-task",
+                "--task-id", "C-07",
+                "--boss-decision-ref", "boss-priority-change-001",
+                "--reason", "Boss reprioritized the unstarted task.",
+            )
+
+            self.assertEqual(code, 0, output)
+            self.assertEqual(output["status"], "UNSTARTED_TASK_CANCELLED")
+            self.assertEqual(output["releasedClaimCount"], 1)
+            ledger = json.loads((data_root / "module-ledgers" / PROJECT_ID / "ledger.json").read_text(encoding="utf-8"))
+            self.assertEqual(ledger["tasks"]["C-07"]["status"], "CANCELLED")
+            self.assertNotIn("file:cancel-me", ledger["objectOccupancies"])
+            self.assertIn("file:keep-me", ledger["objectOccupancies"])
+            self.assertEqual(ledger["releasedOccupancies"][-1]["releaseType"], "CANCELLED_PRE_RUNTIME")
+
+    def test_cancel_unstarted_task_refuses_active_runtime_window(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary) / "private-data"
+            self.initialize(data_root)
+            self.add_task(data_root, "C-07")
+            self.command(data_root, "transition-task", "--task-id", "C-07", "--to-status", "READY", "--reason", "Ready")
+            self.command(data_root, "register-window", "--window-id", "window-active", "--task-id", "C-07", "--context-mode", "NEW")
+
+            code, output = self.command(
+                data_root, "cancel-unstarted-task",
+                "--task-id", "C-07",
+                "--boss-decision-ref", "boss-priority-change-001",
+                "--reason", "Must refuse once a runtime window is active.",
+            )
+
+            self.assertEqual(code, 2)
+            self.assertEqual(output["reason"], "CANCEL_UNSTARTED_TASK_HAS_ACTIVE_WINDOW")
+
     def test_object_conflict_preserves_both_claims_and_hard_stops(self):
         with tempfile.TemporaryDirectory() as temporary:
             data_root = Path(temporary) / "private-data"
@@ -214,6 +258,64 @@ class LedgerManagerTests(unittest.TestCase):
             fourth_code, fourth_output = self.command(data_root, "register-sub-agent", "--sub-agent-id", "agent-004", "--window-id", "window-001", "--role", "Must be refused")
             self.assertEqual(fourth_code, 2)
             self.assertEqual(fourth_output["reason"], "FIRST_LEVEL_SUB_AGENT_LIMIT_REACHED")
+
+    def test_manual_window_registration_preserves_native_thread_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary) / "private-data"
+            self.initialize(data_root)
+            self.add_task(data_root)
+            native_ref = "00000000-0000-7000-8000-000000000001"
+            code, output = self.command(
+                data_root, "register-window", "--window-id", "window-native",
+                "--task-id", "C-07", "--context-mode", "NEW",
+                "--runtime-thread-ref", native_ref,
+                "--runtime-thread-evidence-ref", "native-identity-readback-001",
+            )
+            self.assertEqual(code, 0, output)
+            ledger = json.loads((data_root / "module-ledgers" / PROJECT_ID / "ledger.json").read_text(encoding="utf-8"))
+            self.assertEqual(ledger["windows"]["window-native"]["runtimeThreadRef"], native_ref)
+            self.assertEqual(ledger["windows"]["window-native"]["runtimeThreadEvidenceRef"], "native-identity-readback-001")
+            self.assertEqual(ledger["tasks"]["C-07"]["status"], "PLANNED")
+            self.assertEqual(self.command(data_root, "verify")[0], 0)
+
+    def test_manual_native_identity_requires_evidence_and_cannot_alias_another_window(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary) / "private-data"
+            self.initialize(data_root)
+            self.add_task(data_root)
+            args = ["--task-id", "C-07", "--context-mode", "NEW"]
+            native_ref = "00000000-0000-7000-8000-000000000001"
+            for extra in (["--runtime-thread-ref", native_ref], ["--runtime-thread-evidence-ref", "readback-001"]):
+                code, output = self.command(data_root, "register-window", "--window-id", "window-incomplete", *args, *extra)
+                self.assertEqual(code, 2, output)
+                self.assertEqual(output["reason"], "WINDOW_RUNTIME_THREAD_EVIDENCE_INCOMPLETE")
+            identity = ["--runtime-thread-ref", native_ref, "--runtime-thread-evidence-ref", "readback-001"]
+            self.assertEqual(self.command(data_root, "register-window", "--window-id", "window-first", *args, *identity)[0], 0)
+            ledger_path = data_root / "module-ledgers" / PROJECT_ID / "ledger.json"
+            before = ledger_path.read_bytes()
+            code, output = self.command(data_root, "register-window", "--window-id", "window-alias", *args, *identity)
+            self.assertEqual(code, 2, output)
+            self.assertEqual(output["reason"], "WINDOW_RUNTIME_THREAD_ALREADY_REGISTERED")
+            self.assertEqual(ledger_path.read_bytes(), before)
+
+    def test_manual_window_registration_accepts_full_access_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary) / "private-data"
+            self.initialize(data_root)
+            self.add_task(data_root)
+            code, output = self.command(
+                data_root, "register-window", "--window-id", "window-full-access", "--task-id", "C-07", "--context-mode", "NEW",
+                "--runtime-model-evidence-ref", "manual-terra-full-access",
+                "--runtime-permission-profile", "full-access",
+                "--runtime-permission-evidence-ref", "manual-permission-full-access",
+                "--governance-data-root-access", "NOT_RESTRICTED",
+            )
+            self.assertEqual(code, 0, output)
+            ledger = json.loads((data_root / "module-ledgers" / PROJECT_ID / "ledger.json").read_text(encoding="utf-8"))
+            permission = ledger["windows"]["window-full-access"]["permissionEnforcement"]
+            self.assertEqual(permission["permissionClass"], "FULL_ACCESS")
+            self.assertEqual(permission["writableRoots"], [])
+            self.assertEqual(permission["governanceDataRootAccess"], "NOT_RESTRICTED")
 
     def test_task_id_is_embedded_in_every_task_and_window_title(self):
         with tempfile.TemporaryDirectory() as temporary:

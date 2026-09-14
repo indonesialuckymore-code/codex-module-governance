@@ -1,6 +1,6 @@
 # C10 施工报告
 
-> 本文是 `0.22.0` 历史施工证据。`0.22.1` 已用“先 project local 引导、再交接到 worktree”取代项目本地往返修复，并取消通用 `workspace-write` 的合格任务资格。当前规则以 [0.22.1 新项目启动修复回执](NEW_PROJECT_STARTUP_REPAIR_REPORT.md) 为准。
+> 本文仅为历史施工证据。强制受限权限及新任务 local 引导均非当前默认；当前操作以 [安装说明](INSTALLATION.md) 和随包协议为准，旧封存单保持兼容。
 
 ## 状态
 

@@ -4,9 +4,16 @@
   "title": "C06 task-window handback",
   "type": "object",
   "additionalProperties": false,
-  "required": ["handbackSchemaVersion", "recordType", "handbackId", "projectId", "packageId", "c05ReviewId", "taskId", "windowId", "completionSignalId", "submittedBy", "bossHandbackAuthorization", "executedScopeRefs", "evidenceRefs", "testAndObjectRefs", "parentQualityReviewRefs", "unresolvedRefs", "residualRiskRefs"],
+  "required": ["handbackSchemaVersion", "recordType", "handbackId", "returnTicketId", "routeRevisionSeen", "projectId", "packageId", "c05ReviewId", "taskId", "windowId", "completionSignalId", "submittedBy", "bossHandbackAuthorization", "executedScopeRefs", "evidenceRefs", "testAndObjectRefs", "parentQualityReviewRefs", "unresolvedRefs", "residualRiskRefs"],
   "properties": {
-    "handbackSchemaVersion": { "const": "0.7.0" },
+    "handbackSchemaVersion": { "const": "0.8.0" },
+    "returnTicketId": { "type": "string", "minLength": 3 },
+    "routeRevisionSeen": { "type": "integer", "minimum": 1 },
+    "directionContext": { "type": "object", "additionalProperties": false,
+      "required": ["revision", "digest"], "properties": {
+        "revision": { "type": "integer", "minimum": 1 },
+        "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      } },
     "recordType": { "const": "C06_TASK_WINDOW_HANDBACK" },
     "handbackId": { "type": "string" },
     "projectId": { "type": "string" },

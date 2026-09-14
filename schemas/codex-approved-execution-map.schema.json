@@ -6,7 +6,22 @@
   "additionalProperties": false,
   "required": ["executionMapSchemaVersion", "recordType", "planId", "projectId", "authorization", "executionPlan"],
   "properties": {
-    "executionMapSchemaVersion": { "const": "0.17.0" },
+    "executionMapSchemaVersion": { "enum": ["0.17.0", "0.23.0"] },
+    "approvedPlan": {
+      "allOf": [
+        { "$ref": "#/properties/executionPlan" },
+        { "properties": { "tasks": { "items": { "not": { "required": ["schedulingDependencies"] } } } } }
+      ]
+    },
+    "planRevision": {
+      "type": "object", "additionalProperties": false,
+      "required": ["revisionId", "parentDigest", "reasonRef"],
+      "properties": {
+        "revisionId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$" },
+        "reasonRef": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$" },
+        "parentDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    },
     "recordType": { "const": "C09_APPROVED_EXECUTION_MAP" },
     "planId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$" },
     "projectId": { "type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$" },
@@ -35,6 +50,10 @@
             "required": ["taskId", "dependencies", "packageId", "c05ReviewId", "c05ReviewPath", "c10RequestPath"],
             "properties": {
               "taskId": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9._-]{2,127}$" },
+              "schedulingDependencies": {
+                "type": "array", "uniqueItems": true, "maxItems": 100,
+                "items": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9._-]{2,127}$" }
+              },
               "dependencies": {
                 "type": "array",
                 "maxItems": 40,
@@ -50,5 +69,13 @@
         }
       }
     }
-  }
+  },
+  "allOf": [{
+    "if": { "properties": { "executionMapSchemaVersion": { "const": "0.23.0" } } },
+    "then": { "required": ["approvedPlan", "planRevision"] },
+    "else": {
+      "not": { "anyOf": [{ "required": ["approvedPlan"] }, { "required": ["planRevision"] }] },
+      "properties": { "executionPlan": { "properties": { "tasks": { "items": { "not": { "required": ["schedulingDependencies"] } } } } } }
+    }
+  }]
 }

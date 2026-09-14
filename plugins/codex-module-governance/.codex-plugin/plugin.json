@@ -1,7 +1,7 @@
 {
   "name": "codex-module-governance",
-  "version": "0.22.1",
-  "description": "Private Codex governance with one Boss-facing central entry, native task lifecycle controls, bounded runtime permissions, receipt-backed communication, automatic return inbox and automatic successor dispatch.",
+  "version": "0.23.0-rc.1+codex.20260914031026",
+  "description": "Candidate governance with one central workbench, outcome-linked tasks, flexible models, native permissions, versioned corrections and receipt-backed handover. See bundled release status for validation boundaries.",
   "author": {
     "name": "QIANYI"
   },
@@ -9,12 +9,26 @@
   "license": "UNLICENSED",
   "skills": "./skills/",
   "interface": {
-    "displayName": "Codex 模块治理",
-    "shortDescription": "私有多任务施工治理、建档与工程总账。",
-    "longDescription": "先由唯一总设计师形成全项目施工大纲，再由启动该项目的当前任务窗口成为唯一 CURRENT_CENTRAL，一次理清任务、依赖和并行波次。中央与任务窗口以原生任务消息和可验证回执双向通信；合法 DONE 后自动续派，每个任务窗口最多承接两项串行任务。新 Git 任务先在已保存项目的 local 环境建立归属，再受控交接到标准 worktree。所有任务窗口和一级子 Agent 都必须使用 5.6 Terra、受限权限和明确可写根，且不得访问中央私有治理目录。",
+    "displayName": "Codex \u6a21\u5757\u6cbb\u7406",
+    "shortDescription": "\u79c1\u6709\u591a\u4efb\u52a1\u65bd\u5de5\u6cbb\u7406\u3001\u5efa\u6863\u4e0e\u5de5\u7a0b\u603b\u8d26\u3002",
+    "longDescription": "\u5019\u9009\u7248\uff0c\u5df2\u9a8c\u8bc1\u8303\u56f4\u4e0e\u5269\u4f59\u8fb9\u754c\u89c1\u968f\u5305 references/release-status.md\uff0c\u4e0d\u7b49\u4e8e\u751f\u4ea7\u4e0a\u7ebf\u3002\u5f53\u524d\u7a97\u53e3\u5c31\u662f\u552f\u4e00\u4e2d\u592e\u5de5\u4f5c\u53f0\uff0c\u6a21\u578b\u7531\u7528\u6237\u9009\u62e9\uff1b\u65b0\u6d3e\u4efb\u52a1\u9ed8\u8ba4 Terra\uff0c\u53ef\u4fee\u6539\uff0c\u7eed\u529e\u4fdd\u7559\u5f53\u524d\u9009\u62e9\u3002\u9ed8\u8ba4\u539f\u751f\u5b8c\u5168\u8bbf\u95ee\uff0c\u5de5\u4f5c\u533a\u53d7\u9650\u4e3a\u53ef\u9009\u6a21\u5f0f\uff0c\u4e0d\u518d\u5f3a\u52a0\u81ea\u5b9a\u4e49\u6743\u9650\u3002\u56f4\u7ed5\u53ef\u7528\u6210\u679c\u7ec4\u7ec7\u901a\u7528\u9879\u76ee\u4efb\u52a1\uff0c\u8054\u52a8\u5927\u7eb2\u7248\u672c\u3001\u5c40\u90e8\u7ea0\u504f\u3001\u7b49\u5f85\u3001\u53cd\u9988\u4e0e\u72ec\u7acb\u9a8c\u6536\u3002\u4e2d\u592e\u6362\u7a97\u901a\u8fc7\u6301\u4e45\u4ea4\u63a5\u5305\u3001\u540c\u9879\u76ee\u7ee7\u4efb\u8bfb\u56de\u4e0e\u552f\u4e00\u8def\u7531\u63a5\u7ba1\u5b8c\u6210\u3002",
     "developerName": "QIANYI",
     "category": "Productivity",
-    "capabilities": ["Reusable construction-outline planning", "One-pass central execution map", "Native thread create, reuse, readback, monitoring and lifecycle projection", "Terra plus bounded-permission runtime gate", "Receipt-backed bidirectional task communication", "Receipt-backed automatic return inbox", "Single-slot independent validation", "Automatic successor dispatch", "Two-task sequential window lifecycle", "Quality-gated proactive sub-agent delegation", "Stable task identity", "Logical central and adjudication roles", "Durable task event inbox", "Planned role handover", "Scoped batch approval", "Dependency-wave dispatch", "Saved-project task binding", "Boss natural-language governance gateway", "Single central governance router", "Two-phase task-window dispatch", "First-level sub-agent control", "External Skill registry and adapters", "Verified module ledger", "Atomic occupancy review", "Independent validation", "Boss-controlled adjudication", "Disconnection recovery control"],
-    "defaultPrompt": "把当前任务窗口登记为本项目首代 CURRENT_CENTRAL，不要再创建第二个中央。读取完整冻结大纲和最新总账，一次输出全部任务、Boss 决策、依赖与并行波次；批准后持续自动放行合格任务。任务窗口必须同时通过 Terra、保存项目、明确可写根和中央私有目录拒绝访问读回；中央与任务窗口的消息必须经 C14 原生投递和收件确认。"
+    "capabilities": [
+      "Outcome-linked construction planning",
+      "One central workbench",
+      "Flexible models with Terra default for new tasks",
+      "Native full access with optional workspace isolation",
+      "Versioned outline and local corrections",
+      "Receipt-backed communication and handover",
+      "Adaptive independent acceptance with Boss final approval",
+      "External wait and delivery feedback lifecycle",
+      "Business outcome progress projection",
+      "Scoped dependency-wave dispatch",
+      "Saved-project binding",
+      "Verified ledger and occupancy review",
+      "Disconnection recovery"
+    ],
+    "defaultPrompt": "\u5f53\u524d\u7a97\u53e3\u5c31\u662f\u552f\u4e00\u4e2d\u592e\uff0c\u4e0d\u518d\u65b0\u5efa\u521d\u59cb\u4e2d\u592e\u3002\u56f4\u7ed5\u9879\u76ee\u76ee\u6807\u4e0e\u53ef\u7528\u6210\u679c\u5b89\u6392\u4efb\u52a1\uff0c\u4e0d\u673a\u68b0\u62c6\u5206\u5185\u90e8\u6b65\u9aa4\u3002\u4e2d\u592e\u53ef\u5207\u6362\u6a21\u578b\uff0c\u65b0\u4efb\u52a1\u9ed8\u8ba4 Terra \u53ef\u4fee\u6539\uff0c\u7eed\u529e\u4fdd\u7559\u9009\u62e9\uff1b\u6743\u9650\u4f7f\u7528\u539f\u751f\u6a21\u5f0f\uff0c\u9ed8\u8ba4\u5b8c\u5168\u8bbf\u95ee\u3002\u6279\u51c6\u8303\u56f4\u5185\u8fde\u7eed\u63a8\u8fdb\uff0c\u7b49\u5f85\u4e0e\u7ea0\u504f\u53ea\u5f71\u54cd\u76f8\u5173\u5de5\u4f5c\u3002\u56de\u8bfb\u771f\u5b9e\u9879\u76ee\u3001\u6a21\u578b\u3001\u6743\u9650\u548c\u901a\u4fe1\u8bc1\u636e\uff1b\u4e2d\u592e\u6362\u7a97\u6309 C08 \u5b8c\u6210\u5efa\u7a97\u3001\u8865\u8bfb\u3001\u63a5\u7ba1\u548c\u6253\u5f00\uff0c\u4e0d\u628a\u6d4b\u8bd5\u6216\u53e3\u5934\u58f0\u660e\u5f53\u4f5c\u8fd0\u884c\u9a8c\u6536\u3002"
   }
 }

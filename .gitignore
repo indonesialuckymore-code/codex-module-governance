@@ -26,3 +26,11 @@ coverage/
 __pycache__/
 *.py[cod]
 .venv-c13/
+
+# Private local engineering evidence and retired machine-specific repair tools
+/docs/GOVERNANCE_REDESIGN_20260913.md
+/install-v0.22.1-local.sh
+/migrate-codex-permissions-v0221.py
+/repair-codex-project-roots-v0221.py
+/test_migrate_codex_permissions_v0221.py
+/test_repair_codex_project_roots_v0221.py

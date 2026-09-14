@@ -28,29 +28,40 @@
             "additionalProperties": false,
             "required": ["model", "method", "evidenceRef"],
             "properties": {
-              "model": { "const": "gpt-5.6-terra" },
+              "model": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$", "not": { "enum": ["UNKNOWN", "UNVERIFIED", "DEFAULT", "NONE"] } },
               "method": { "const": "NATIVE_SPAWN_AGENT_MODEL_PARAMETER" },
               "evidenceRef": { "type": "string", "minLength": 1 }
             }
           },
           "permissionControl": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["permissionClass", "profile", "method", "evidenceRef", "writableRoots", "governanceDataRootAccess"],
-            "properties": {
-              "permissionClass": { "const": "WORKTREE_SCOPED" },
-              "profile": { "enum": [":workspace", "qianyi-task-terra"] },
-              "method": { "enum": ["INHERITED_FROM_PARENT_WINDOW", "SUB_AGENT_PERMISSION_READBACK"] },
-              "evidenceRef": { "type": "string", "minLength": 1 },
-              "writableRoots": {
-                "type": "array",
-                "minItems": 1,
-                "maxItems": 8,
-                "uniqueItems": true,
-                "items": { "type": "string", "pattern": "^/" }
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["permissionClass", "profile", "method", "evidenceRef", "writableRoots", "governanceDataRootAccess"],
+                "properties": {
+                  "permissionClass": { "const": "FULL_ACCESS" },
+                  "profile": { "enum": ["full-access", ":danger-full-access", "danger-full-access", "disabled"] },
+                  "method": { "enum": ["INHERITED_FROM_PARENT_WINDOW", "SUB_AGENT_PERMISSION_READBACK"] },
+                  "evidenceRef": { "type": "string", "minLength": 1 },
+                  "writableRoots": { "type": "array", "maxItems": 0 },
+                  "governanceDataRootAccess": { "const": "NOT_RESTRICTED" }
+                }
               },
-              "governanceDataRootAccess": { "const": "DENIED" }
-            }
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["permissionClass", "profile", "method", "evidenceRef", "writableRoots", "governanceDataRootAccess"],
+                "properties": {
+                  "permissionClass": { "const": "WORKTREE_SCOPED" },
+                  "profile": { "enum": [":workspace"] },
+                  "method": { "enum": ["INHERITED_FROM_PARENT_WINDOW", "SUB_AGENT_PERMISSION_READBACK"] },
+                  "evidenceRef": { "type": "string", "minLength": 1 },
+                  "writableRoots": { "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": { "type": "string", "pattern": "^/" } },
+                  "governanceDataRootAccess": { "const": "DENIED" }
+                }
+              }
+            ]
           }
         }
       }

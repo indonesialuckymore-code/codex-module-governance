@@ -54,7 +54,7 @@ def c03(data_root, command, *arguments):
     ])
 
 
-def setup_project(data_root):
+def setup_project(data_root, brief_mutation=None):
     code, output = invoke(C02_SCRIPT, [
         "--data-root", str(data_root), "--project-id", PROJECT_ID,
         "--display-name", "C05 Isolated Validation", "--scope-summary", "Fictional occupancy validation only.", "--apply",
@@ -66,6 +66,10 @@ def setup_project(data_root):
         raise AssertionError(output)
     add_task(data_root, TASK_ID)
     brief = create_brief(data_root)
+    if brief_mutation:
+        value = json.loads(brief.read_text())
+        brief_mutation(value)
+        brief.write_text(json.dumps(value), encoding="utf-8")
     code, output = invoke(C04_SCRIPT, [
         "--data-root", str(data_root), "--project-id", PROJECT_ID,
         "--writer-id", "codex-module-central", "generate", "--package-id", PACKAGE_ID,
@@ -307,13 +311,28 @@ class OccupancyConflictCheckerTests(unittest.TestCase):
             self.assertEqual(code, 0, output)
             self.assertEqual(output["windowDecision"]["status"], "OPEN_NEW_WINDOW")
 
-    def test_terra_window_with_full_or_missing_permission_is_not_reused(self):
+    def test_terra_window_with_missing_permission_is_not_reused(self):
         ledger = {
             "tasks": {"C-OLD": {"taskId": "C-OLD", "status": "DONE"}, TASK_ID: {"taskId": TASK_ID, "status": "PLANNED"}},
             "windows": {"window-unsafe": {"windowId": "window-unsafe", "taskId": "C-OLD", "currentTaskId": None, "model": "gpt-5.6-terra", "runtimeModel": "gpt-5.6-terra", "modelEnforcement": {"model": "gpt-5.6-terra", "method": "NATIVE_CREATE_THREAD_MODEL_PARAMETER", "evidenceRef": "terra-proof-unsafe"}, "status": "AVAILABLE_FOR_REUSE", "assignmentCount": 1, "assignmentHistory": [{"assignmentNumber": 1, "taskId": "C-OLD"}]}},
         }
         review = {"reviewId": REVIEW_ID, "taskId": TASK_ID, "windowReview": {"mode": "AUTO", "candidateWindowId": None, "contextCompatibility": "COMPATIBLE"}}
         self.assertEqual(resolve_window({}, ledger, review)["status"], "OPEN_NEW_WINDOW")
+
+    def test_terra_window_with_full_access_can_be_reused(self):
+        ledger = {
+            "tasks": {"C-OLD": {"taskId": "C-OLD", "status": "DONE"}, TASK_ID: {"taskId": TASK_ID, "status": "PLANNED"}},
+            "windows": {"window-full": {
+                "windowId": "window-full", "taskId": "C-OLD", "currentTaskId": None,
+                "model": "gpt-5.6-terra", "runtimeModel": "gpt-5.6-terra",
+                "modelEnforcement": {"model": "gpt-5.6-terra", "method": "NATIVE_CREATE_THREAD_MODEL_PARAMETER", "evidenceRef": "terra-proof-full"},
+                "permissionEnforcement": {"permissionClass": "FULL_ACCESS", "profile": "full-access", "method": "PERMISSION_PROFILE_READBACK", "evidenceRef": "permission-proof-full", "writableRoots": [], "governanceDataRootAccess": "NOT_RESTRICTED"},
+                "status": "AVAILABLE_FOR_REUSE", "assignmentCount": 1, "maxAssignments": 2,
+                "assignmentHistory": [{"assignmentNumber": 1, "taskId": "C-OLD"}],
+            }},
+        }
+        review = {"reviewId": REVIEW_ID, "taskId": TASK_ID, "windowReview": {"mode": "AUTO", "candidateWindowId": None, "contextCompatibility": "COMPATIBLE"}}
+        self.assertEqual(resolve_window({}, ledger, review)["status"], "REUSE_EXISTING_WINDOW")
 
     def test_available_window_gets_only_second_assignment_and_retired_window_is_refused(self):
         ledger = {

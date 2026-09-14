@@ -13,7 +13,7 @@
     "role": { "enum": ["CURRENT_CENTRAL", "CURRENT_ADJUDICATION"] },
     "successorThreadRef": { "type": "string" },
     "runtimeProjectId": { "type": "string" },
-    "model": { "const": "gpt-5.6-sol" },
+    "model": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$", "not": { "enum": ["UNKNOWN", "UNVERIFIED", "DEFAULT", "NONE"] } },
     "handoverPackageDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
   }
 }
